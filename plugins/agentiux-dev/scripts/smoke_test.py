@@ -5,6 +5,7 @@ import json
 import os
 import re
 import shutil
+import socket
 import subprocess
 import sys
 import tempfile
@@ -605,6 +606,12 @@ def _read_json_file(path: Path) -> dict:
     return json.loads(path.read_text())
 
 
+def _reserve_local_port() -> int:
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as candidate:
+        candidate.bind(("127.0.0.1", 0))
+        return int(candidate.getsockname()[1])
+
+
 def _write_json_file(path: Path, payload: dict) -> None:
     path.write_text(json.dumps(payload, indent=2) + "\n")
 
@@ -966,6 +973,22 @@ def main() -> int:
     plugin_root = Path(__file__).resolve().parents[1]
     repo_root = plugin_root.parents[1]
     with tempfile.TemporaryDirectory() as temp_dir:
+        smoke_started_at = time.monotonic()
+        last_progress_at = smoke_started_at
+        progress_step = 0
+
+        def progress(label: str) -> None:
+            nonlocal last_progress_at, progress_step
+            progress_step += 1
+            now = time.monotonic()
+            total_seconds = now - smoke_started_at
+            delta_seconds = now - last_progress_at
+            print(
+                f"[smoke {progress_step:02d}] +{total_seconds:6.1f}s (+{delta_seconds:5.1f}s) {label}",
+                flush=True,
+            )
+            last_progress_at = now
+
         temp_root = Path(temp_dir)
         workspace = temp_root / "workspace"
         workspace.mkdir()
@@ -991,6 +1014,7 @@ def main() -> int:
         subprocess.run(["git", "commit", "-m", "seed workspace"], cwd=workspace, check=True, capture_output=True, text=True)
 
         _assert_clean_repo_text(repo_root, plugin_root)
+        progress("bootstrap fixtures, repo seed, and repository hygiene checks")
 
         aliases = command_aliases()
         assert "initialize workspace" in aliases
@@ -1199,6 +1223,7 @@ def main() -> int:
         assert self_host_preview["plugin_platform"]["enabled"] is True
         assert self_host_preview["plugin_platform"]["primary_plugin_root"] == "plugins/agentiux-dev"
         assert self_host_preview["plugin_platform"]["release_readiness_command"] == f"{python_launcher_string()} plugins/agentiux-dev/scripts/release_readiness.py"
+        progress("capability catalogs, context indexing, and self-host detection")
         stale_plugin_fixture = _make_stale_plugin_fixture(repo_root)
         repair_preview = preview_repair_workspace_state(repo_root)
         assert repair_preview["changes"]["local_dev_policy"]["infra_mode"] == "not_applicable"
@@ -1248,12 +1273,16 @@ def main() -> int:
         try:
             sync_verification_helpers(repo_root)
             plugin_coverage = audit_verification_coverage(repo_root)
-            assert plugin_coverage["status"] == "clean"
+            assert plugin_coverage["status"] == "warning"
             assert plugin_coverage["coverage"]["plugin"] is True
+            assert plugin_coverage["coverage"]["dashboard"] is True
+            assert plugin_coverage["coverage"]["dashboard_visual"] is False
+            assert "missing-dashboard-visual-verification" in {gap["gap_id"] for gap in plugin_coverage["gaps"]}
         finally:
             shutil.rmtree(plugin_helper_root, ignore_errors=True)
         _assert_no_default_origin(repaired_plugin_state["stage_register"])
         _assert_no_default_origin(plugin_verification_recipes)
+        progress("plugin self-host repair flow and plugin verification fragments")
 
         backend_workspace = temp_root / "backend-workspace"
         backend_workspace.mkdir()
@@ -1262,9 +1291,10 @@ def main() -> int:
         backend_overview = list_workspaces()
         assert any(item["workspace_path"] == str(backend_workspace.resolve()) for item in backend_overview["workspaces"])
         backend_snapshot = dashboard_snapshot(backend_workspace)
-        assert backend_snapshot["workspace_detail"]["summary"]["workspace_path"] == str(backend_workspace.resolve())
-        assert backend_snapshot["workspace_detail"]["verification_runs"]["run_count"] == 0
-        assert backend_snapshot["workspace_detail"]["recent_verification_events"]["events"] == []
+        assert backend_snapshot["workspace_cockpit"]["workspace_path"] == str(backend_workspace.resolve())
+        assert backend_snapshot["workspace_cockpit"]["state_kind"] == "initialized"
+        assert backend_snapshot["workspace_cockpit"]["quality"]["recent_runs"] == []
+        assert backend_snapshot["workspace_cockpit"]["quality"]["events"] == []
         backend_coverage = audit_verification_coverage(backend_workspace)
         assert backend_coverage["status"] == "warning"
         assert backend_coverage["warning_count"] >= 1
@@ -1318,8 +1348,99 @@ def main() -> int:
         visual_gap_audit = audit_verification_coverage(visual_gap_workspace, workstream_id=visual_gap_workstream)
         visual_gap_ids = {gap["gap_id"] for gap in visual_gap_audit["gaps"]}
         assert "missing-web-visual-verification" in visual_gap_ids
+        assert "missing-web-browser-layout-audit" in visual_gap_ids
         assert "missing-android-visual-verification" not in visual_gap_ids
         assert visual_gap_audit["coverage"]["android_visual"] is True
+        web_semantic_gap_workspace = temp_root / "web-semantic-gap-workspace"
+        web_semantic_gap_workspace.mkdir()
+        _seed_web_only_workspace(web_semantic_gap_workspace)
+        init_workspace(web_semantic_gap_workspace)
+        web_semantic_gap_workstream = create_workstream(
+            web_semantic_gap_workspace,
+            "Web Semantic Coverage Audit",
+            kind="feature",
+        )["created_workstream_id"]
+        write_verification_recipes(
+            web_semantic_gap_workspace,
+            {
+                "baseline_policy": {
+                    "canonical_baselines": "project_owned",
+                    "transient_artifacts": "external_state_only",
+                },
+                "cases": [
+                    {
+                        "id": "web-visual-no-semantic",
+                        "title": "Web visual without semantic assertions",
+                        "surface_type": "web",
+                        "runner": "playwright-visual",
+                        "changed_path_globs": ["app/**"],
+                        "routes_or_screens": ["/"],
+                        "host_requirements": ["python"],
+                        "argv": [sys.executable, "-c", "print('web visual no semantic')"],
+                        "target": {"route": "/"},
+                        "baseline": {"policy": "project-owned", "source_path": "tests/visual/__screenshots__/home.png"},
+                    },
+                    {
+                        "id": "web-visual-narrow-semantic",
+                        "title": "Web visual with incomplete semantic checks",
+                        "surface_type": "web",
+                        "runner": "playwright-visual",
+                        "changed_path_globs": ["app/**"],
+                        "routes_or_screens": ["/checkout"],
+                        "host_requirements": ["python"],
+                        "argv": [sys.executable, "-c", "print('web visual narrow semantic')"],
+                        "target": {"route": "/checkout"},
+                        "semantic_assertions": {
+                            "enabled": True,
+                            "report_path": "web-visual-narrow-semantic.json",
+                            "required_checks": ["visibility"],
+                            "targets": [
+                                {
+                                    "target_id": "checkout-main",
+                                    "locator": {"kind": "role", "value": "main"},
+                                }
+                            ],
+                        },
+                        "baseline": {"policy": "project-owned", "source_path": "tests/visual/__screenshots__/checkout.png"},
+                    },
+                    {
+                        "id": "web-browser-layout",
+                        "title": "Web browser layout audit",
+                        "surface_type": "web",
+                        "runner": "browser-layout-audit",
+                        "changed_path_globs": ["app/**"],
+                        "routes_or_screens": ["/"],
+                        "host_requirements": ["web", "browser-runtime"],
+                        "target": {"route": "/"},
+                        "device_or_viewport": {"viewport": "1440x1024"},
+                        "browser_layout_audit": {
+                            "url": "http://127.0.0.1:3000/",
+                            "report_path": "web-browser-layout.json",
+                            "screenshot_path": "web-browser-layout.png",
+                        },
+                    },
+                ],
+                "suites": [
+                    {
+                        "id": "full",
+                        "title": "Full Suite",
+                        "case_ids": ["web-visual-no-semantic", "web-visual-narrow-semantic", "web-browser-layout"],
+                    }
+                ],
+            },
+            workstream_id=web_semantic_gap_workstream,
+        )
+        web_semantic_gap_audit = audit_verification_coverage(
+            web_semantic_gap_workspace,
+            workstream_id=web_semantic_gap_workstream,
+        )
+        web_semantic_gap_ids = {gap["gap_id"] for gap in web_semantic_gap_audit["gaps"]}
+        assert web_semantic_gap_audit["coverage"]["web_visual"] is True
+        assert "missing-web-visual-verification" not in web_semantic_gap_ids
+        assert "missing-web-browser-layout-audit" not in web_semantic_gap_ids
+        assert "web-visual-no-semantic-missing-web-semantic-assertions" in web_semantic_gap_ids
+        assert "web-visual-narrow-semantic-missing-core-web-semantic-checks" in web_semantic_gap_ids
+        progress("coverage audit scenarios for backend, web, and visual gap detection")
 
         web_workspace = temp_root / "web-workspace"
         web_workspace.mkdir()
@@ -1667,6 +1788,7 @@ def main() -> int:
         )
         assert handoff["status"] == "ready"
         assert read_design_handoff(workspace)["verification_hooks"][0] == "route:/"
+        progress("workspace init, stage planning, host setup, and design-state persistence")
 
         updated = read_stage_register(workspace)
         updated["stages"][0]["status"] = "completed"
@@ -1700,6 +1822,76 @@ def main() -> int:
         baseline_target = workspace / "tests" / "visual" / "baselines" / "web-home.txt"
         baseline_target.parent.mkdir(parents=True, exist_ok=True)
         baseline_target.write_text("previous baseline")
+        broken_layout_root = workspace / "browser-layout-audit" / "broken"
+        broken_layout_root.mkdir(parents=True, exist_ok=True)
+        broken_layout_root.joinpath("index.html").write_text(
+            "<!doctype html>\n"
+            "<html lang=\"en\">\n"
+            "<head>\n"
+            "  <meta charset=\"utf-8\">\n"
+            "  <meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">\n"
+            "  <title>Broken Layout</title>\n"
+            "  <style>\n"
+            "    body { margin: 0; font: 16px/1.4 sans-serif; background: #f3f1ea; }\n"
+            "    [data-testid='layout-shell'] { padding: 12px; }\n"
+            "    [data-testid='layout-row'] { display: flex; width: 360px; align-items: flex-start; }\n"
+            "    [data-testid='primary-panel'], [data-testid='secondary-panel'] {\n"
+            "      box-sizing: border-box; height: 150px; padding: 16px; border: 1px solid #111;\n"
+            "    }\n"
+            "    [data-testid='primary-panel'] { width: 220px; background: #ffffff; }\n"
+            "    [data-testid='secondary-panel'] { width: 220px; margin-left: -96px; background: rgba(180, 52, 35, 0.82); color: #fff; }\n"
+            "    [data-testid='layout-action'] { display: inline-flex; margin-top: 56px; padding: 8px 14px; }\n"
+            "  </style>\n"
+            "</head>\n"
+            "<body>\n"
+            "  <main data-testid=\"layout-shell\">\n"
+            "    <div class=\"content-grid\" data-testid=\"layout-row\">\n"
+            "      <section data-testid=\"primary-panel\">\n"
+            "        Primary panel\n"
+            "        <button data-testid=\"layout-action\">Ship</button>\n"
+            "      </section>\n"
+            "      <aside data-testid=\"secondary-panel\">Secondary panel overlaps the primary content.</aside>\n"
+            "    </div>\n"
+            "  </main>\n"
+            "</body>\n"
+            "</html>\n"
+        )
+        fixed_layout_root = workspace / "browser-layout-audit" / "fixed"
+        fixed_layout_root.mkdir(parents=True, exist_ok=True)
+        fixed_layout_root.joinpath("index.html").write_text(
+            "<!doctype html>\n"
+            "<html lang=\"en\">\n"
+            "<head>\n"
+            "  <meta charset=\"utf-8\">\n"
+            "  <meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">\n"
+            "  <title>Fixed Layout</title>\n"
+            "  <style>\n"
+            "    body { margin: 0; font: 16px/1.4 sans-serif; background: #f3f1ea; }\n"
+            "    [data-testid='layout-shell'] { padding: 12px; }\n"
+            "    [data-testid='layout-row'] { display: flex; gap: 12px; width: 336px; align-items: flex-start; flex-wrap: wrap; }\n"
+            "    [data-testid='primary-panel'], [data-testid='secondary-panel'] {\n"
+            "      box-sizing: border-box; min-width: 0; flex: 1 1 160px; height: 150px; padding: 16px; border: 1px solid #111;\n"
+            "    }\n"
+            "    [data-testid='primary-panel'] { background: #ffffff; }\n"
+            "    [data-testid='secondary-panel'] { background: #dfe8db; }\n"
+            "    [data-testid='layout-action'] { display: inline-flex; margin-top: 56px; padding: 8px 14px; }\n"
+            "  </style>\n"
+            "</head>\n"
+            "<body>\n"
+            "  <main data-testid=\"layout-shell\">\n"
+            "    <div class=\"content-grid\" data-testid=\"layout-row\">\n"
+            "      <section data-testid=\"primary-panel\">\n"
+            "        Primary panel\n"
+            "        <button data-testid=\"layout-action\">Ship</button>\n"
+            "      </section>\n"
+            "      <aside data-testid=\"secondary-panel\">Secondary panel stays in its own lane.</aside>\n"
+            "    </div>\n"
+            "  </main>\n"
+            "</body>\n"
+            "</html>\n"
+        )
+        broken_layout_port = _reserve_local_port()
+        fixed_layout_port = _reserve_local_port()
         verification_recipes = write_verification_recipes(
             workspace,
             {
@@ -1986,6 +2178,66 @@ def main() -> int:
                         "retry_policy": {"attempts": 1, "slow_after_seconds": 1},
                         "baseline": {"policy": "project-owned", "source_path": str(baseline_target.relative_to(workspace))},
                     },
+                    {
+                        "id": "browser-layout-overlap",
+                        "title": "Browser layout overlap detection",
+                        "surface_type": "web",
+                        "runner": "browser-layout-audit",
+                        "tags": ["web", "layout"],
+                        "feature_ids": ["browser-layout-audit"],
+                        "surface_ids": ["browser-layout-broken"],
+                        "routes_or_screens": ["/"],
+                        "changed_path_globs": ["browser-layout-audit/broken/**"],
+                        "host_requirements": ["python", "web", "browser-runtime"],
+                        "cwd": str(broken_layout_root.relative_to(workspace)),
+                        "argv": [sys.executable, "-m", "http.server", str(broken_layout_port), "--bind", "127.0.0.1"],
+                        "target": {"route": "/"},
+                        "device_or_viewport": {"viewport": "360x280"},
+                        "readiness_probe": {
+                            "type": "http",
+                            "url": f"http://127.0.0.1:{broken_layout_port}/",
+                            "timeout_seconds": 10,
+                        },
+                        "browser_layout_audit": {
+                            "base_url": f"http://127.0.0.1:{broken_layout_port}/",
+                            "report_path": "browser-layout-overlap.json",
+                            "screenshot_path": "browser-layout-overlap.png",
+                            "wait_timeout_ms": 8000,
+                            "settle_ms": 300,
+                        },
+                        "artifact_expectations": ["screenshots", "reports"],
+                        "retry_policy": {"attempts": 1, "slow_after_seconds": 1},
+                    },
+                    {
+                        "id": "browser-layout-fixed",
+                        "title": "Browser layout fixed state",
+                        "surface_type": "web",
+                        "runner": "browser-layout-audit",
+                        "tags": ["web", "layout"],
+                        "feature_ids": ["browser-layout-audit"],
+                        "surface_ids": ["browser-layout-fixed"],
+                        "routes_or_screens": ["/"],
+                        "changed_path_globs": ["browser-layout-audit/fixed/**"],
+                        "host_requirements": ["python", "web", "browser-runtime"],
+                        "cwd": str(fixed_layout_root.relative_to(workspace)),
+                        "argv": [sys.executable, "-m", "http.server", str(fixed_layout_port), "--bind", "127.0.0.1"],
+                        "target": {"route": "/"},
+                        "device_or_viewport": {"viewport": "360x280"},
+                        "readiness_probe": {
+                            "type": "http",
+                            "url": f"http://127.0.0.1:{fixed_layout_port}/",
+                            "timeout_seconds": 10,
+                        },
+                        "browser_layout_audit": {
+                            "base_url": f"http://127.0.0.1:{fixed_layout_port}/",
+                            "report_path": "browser-layout-fixed.json",
+                            "screenshot_path": "browser-layout-fixed.png",
+                            "wait_timeout_ms": 8000,
+                            "settle_ms": 300,
+                        },
+                        "artifact_expectations": ["screenshots", "reports"],
+                        "retry_policy": {"attempts": 1, "slow_after_seconds": 1},
+                    },
                 ],
                 "suites": [
                     {
@@ -1997,6 +2249,11 @@ def main() -> int:
                         "id": "full",
                         "title": "Full Suite",
                         "case_ids": ["web-home", "expo-home"],
+                    },
+                    {
+                        "id": "browser-layout-fixed",
+                        "title": "Browser Layout Fixed",
+                        "case_ids": ["browser-layout-fixed"],
                     },
                 ],
             },
@@ -2138,6 +2395,7 @@ def main() -> int:
             env=os.environ.copy(),
         ).stdout
         assert "playwright-visual" in helper_catalog_cli
+        progress("verification recipes, helper sync, and CLI verification entrypoints")
 
         cli_case_output = subprocess.run(
             python_script_command(
@@ -2211,6 +2469,48 @@ def main() -> int:
         optional_summary = optional_warning_run["cases"][0]["semantic_assertions"]
         assert optional_summary["status"] == "passed"
         assert optional_summary["optional_failed_checks"] == ["optional-main/layout_relations"]
+        overlap_layout_run = start_verification_case(
+            workspace,
+            "browser-layout-overlap",
+            workstream_id=verification_workstream_id,
+        )
+        overlap_layout_run = wait_for_verification_run(
+            workspace,
+            overlap_layout_run["run_id"],
+            timeout_seconds=20,
+            workstream_id=verification_workstream_id,
+        )
+        assert overlap_layout_run["status"] == "failed"
+        overlap_layout_summary = overlap_layout_run["cases"][0]["browser_layout_audit"]
+        assert overlap_layout_summary["status"] == "failed"
+        assert int(overlap_layout_summary["issue_count"] or 0) > 0
+        assert any(issue["type"] in {"pair-overlap", "occlusion", "viewport-overflow"} for issue in overlap_layout_summary["issues"])
+        overlap_events = read_verification_events(
+            workspace,
+            overlap_layout_run["run_id"],
+            limit=20,
+            workstream_id=verification_workstream_id,
+        )
+        assert any(event["event_type"] == "browser_layout_audit_failed" for event in overlap_events["events"])
+
+        fixed_layout_run = start_verification_case(
+            workspace,
+            "browser-layout-fixed",
+            workstream_id=verification_workstream_id,
+        )
+        fixed_layout_run = wait_for_verification_run(
+            workspace,
+            fixed_layout_run["run_id"],
+            timeout_seconds=20,
+            workstream_id=verification_workstream_id,
+        )
+        assert fixed_layout_run["status"] == "passed"
+        fixed_layout_summary = fixed_layout_run["cases"][0]["browser_layout_audit"]
+        assert fixed_layout_summary["status"] == "passed"
+        assert fixed_layout_summary["issue_count"] == 0
+        assert Path(fixed_layout_summary["report_path"]).exists()
+        assert Path(fixed_layout_summary["screenshot_path"]).exists()
+        progress("single-case verification runs, semantic failures, optional warnings, and live browser layout audit")
 
         suite_run = start_verification_suite(workspace, "full", workstream_id=verification_workstream_id)
         active_run, mid_events = _wait_for_run_started(
@@ -2249,6 +2549,7 @@ def main() -> int:
         assert logcat_log["path"].endswith("logcat.log")
         assert any("FATAL EXCEPTION" in line for line in logcat_log["lines"])
         assert suite_run["summary"]["logcat_crash_summary"]["case_id"] == "expo-home"
+        progress("full-suite verification execution, heartbeat events, and log capture")
 
         closeout_register = read_stage_register(workspace)
         closeout_register["stage_status"] = "ready_for_closeout"
@@ -2401,6 +2702,7 @@ def main() -> int:
         helper_preflight_gap_ids = {gap["gap_id"] for gap in helper_preflight_audit["gaps"]}
         assert "verification-helper-bundle-version-drift" in helper_preflight_gap_ids
         assert "ios-semantic-case-semantic-runner-not-cataloged" in helper_preflight_gap_ids
+        progress("helper preflight failures for unsynced, drifted, and unsupported runners")
 
         commit_repo = temp_root / "commit-style-repo"
         commit_repo.mkdir()
@@ -2493,6 +2795,7 @@ def main() -> int:
         sparse_advice = show_git_workflow_advice(sparse_repo)
         assert sparse_advice["commit_policy"]["recommended_style"] == "conventional"
         assert sparse_advice["branch_policy"]["pattern"].startswith("task/")
+        progress("git workflow, commit style, branch policy, and worktree flows")
 
         porcelain_repo = temp_root / "porcelain-repo"
         porcelain_repo.mkdir()
@@ -2606,6 +2909,7 @@ def main() -> int:
             assert starter_workspace_paths["verification_recipes"] == ""
             _assert_no_default_origin(run["summary"])
         assert list_starter_runs(limit=None)["run_count"] >= len(starter_presets)
+        progress("starter creation and starter-run bookkeeping")
 
         youtrack_workspace = temp_root / "youtrack-workspace"
         youtrack_workspace.mkdir()
@@ -2863,12 +3167,12 @@ def main() -> int:
             assert isinstance(refreshed_tasks[0]["external_issue"]["plan_link_analysis"], dict)
 
             yt_snapshot = dashboard_snapshot(youtrack_workspace)
-            assert yt_snapshot["workspace_detail"]["summary"]["youtrack"]["connection_count"] == 1
-            assert yt_snapshot["workspace_detail"]["youtrack"]["current_plan"]["plan_id"] == refreshed_plan["plan_id"]
-            assert yt_snapshot["workspace_detail"]["youtrack"]["current_workstream_issues"]["items"]
+            assert yt_snapshot["workspace_cockpit"]["integrations"]["youtrack"]["summary"]["connection_count"] == 1
+            assert yt_snapshot["workspace_cockpit"]["integrations"]["youtrack"]["current_plan"]["plan_id"] == refreshed_plan["plan_id"]
+            assert yt_snapshot["workspace_cockpit"]["integrations"]["youtrack"]["current_workstream_issues"]["items"]
             issue_card = next(
                 item
-                for item in yt_snapshot["workspace_detail"]["youtrack"]["current_workstream_issues"]["items"]
+                for item in yt_snapshot["workspace_cockpit"]["integrations"]["youtrack"]["current_workstream_issues"]["items"]
                 if item["issue_key"] == "SL-4591"
             )
             assert isinstance(issue_card["hover_summary"], dict)
@@ -3026,6 +3330,7 @@ def main() -> int:
                     stop_gui()
             else:
                 assert "Operation not permitted" in gui_launch_process.stderr or "PermissionError" in gui_launch_process.stderr
+        progress("YouTrack connection management, import, planning, and GUI mutation flows")
 
         overview = list_workspaces()
         assert overview["workspace_count"] >= 1
@@ -3037,22 +3342,22 @@ def main() -> int:
         snapshot = dashboard_snapshot(workspace)
         assert snapshot["schema_version"] == 2
         assert snapshot["starter_runs"]["run_count"] >= len(starter_presets)
-        assert snapshot["workspace_detail"]["current_design_handoff"]["status"] == "ready"
-        assert snapshot["workspace_detail"]["verification_runs"]["latest_run"]["run_id"] == suite_run["run_id"]
-        assert snapshot["workspace_detail"]["latest_verification_run"]["run_id"] == suite_run["run_id"]
-        assert snapshot["workspace_detail"]["verification_selection"]["requested_mode_source"] == "workstream_closeout_policy"
-        assert snapshot["workspace_detail"]["verification_selection"]["selected_suite"]["id"] == "full"
-        assert snapshot["workspace_detail"]["recent_verification_events"]["events"]
-        assert snapshot["workspace_detail"]["workstreams"]["items"]
-        assert snapshot["workspace_detail"]["tasks"]["items"]
+        assert snapshot["workspace_cockpit"]["state_kind"] == "initialized"
+        assert snapshot["overview"]["preferred_workspace_path"] == str(workspace.resolve())
+        assert snapshot["workspace_cockpit"]["plan"]["design_state"]["current_handoff_status"] == "ready"
+        assert snapshot["workspace_cockpit"]["quality"]["latest_run"]["run_id"] == suite_run["run_id"]
+        assert snapshot["workspace_cockpit"]["quality"]["selection"]["selected_suite"] == "full"
+        assert snapshot["workspace_cockpit"]["quality"]["events"]
+        assert snapshot["workspace_cockpit"]["plan"]["workstreams"]
+        assert snapshot["workspace_cockpit"]["plan"]["task_buckets"]
 
         legacy_workspace = temp_root / "legacy-dashboard-workspace"
         legacy_workspace.mkdir()
         legacy_fixture = _make_legacy_workspace_fixture(legacy_workspace)
         legacy_snapshot = dashboard_snapshot(legacy_workspace)
         assert legacy_snapshot["schema_version"] == 2
-        assert legacy_snapshot["workspace_detail"]["summary"]["workspace_path"] == str(legacy_workspace.resolve())
-        assert legacy_snapshot["workspace_detail"]["stage_register"]["workstream_id"] == legacy_fixture["workstream_id"]
+        assert legacy_snapshot["workspace_cockpit"]["workspace_path"] == str(legacy_workspace.resolve())
+        assert legacy_snapshot["workspace_cockpit"]["plan"]["current_workstream"]["workstream_id"] == legacy_fixture["workstream_id"]
         assert Path(legacy_fixture["paths"]["workspace_state"]).exists()
         assert Path(legacy_fixture["paths"]["workstreams_index"]).exists()
 
@@ -3180,8 +3485,8 @@ def main() -> int:
             },
         )
         assert response["result"]["isError"] is False
-        assert response["result"]["structuredContent"]["workspace_detail"]["summary"]["workspace_path"] == str(workspace.resolve())
-        assert response["result"]["structuredContent"]["workspace_detail"]["verification_runs"]["latest_run"]["run_id"] == suite_run["run_id"]
+        assert response["result"]["structuredContent"]["workspace_cockpit"]["workspace_path"] == str(workspace.resolve())
+        assert response["result"]["structuredContent"]["workspace_cockpit"]["quality"]["latest_run"]["run_id"] == suite_run["run_id"]
 
         response = _call_mcp(
             plugin_root / "scripts" / "agentiux_dev_mcp.py",
@@ -3405,19 +3710,31 @@ def main() -> int:
                 assert "/app.js" in dashboard_html
                 with urllib.request.urlopen(f"{gui_launch['url']}/api/dashboard", timeout=20) as response_handle:
                     overview_payload = json.loads(response_handle.read().decode("utf-8"))
-                assert overview_payload["workspace_detail"] is None
+                assert overview_payload["overview"]["workspace_count"] >= 1
                 assert overview_payload["stats"]["active_verification_runs"] == 0
                 with urllib.request.urlopen(f"{gui_launch['url']}/api/workspace-detail?workspace={encoded_workspace}", timeout=20) as response_handle:
                     detail_payload = json.loads(response_handle.read().decode("utf-8"))
-                assert detail_payload["summary"]["workspace_label"] == "demo-workspace"
-                assert detail_payload["verification_runs"]["latest_run"]["run_id"] == suite_run["run_id"]
-                assert detail_payload["workstreams"]["items"]
+                assert detail_payload["workspace_label"] == "demo-workspace"
+                assert detail_payload["quality"]["latest_run"]["run_id"] == suite_run["run_id"]
+                assert detail_payload["plan"]["workstreams"]
+                uninitialized_workspace = temp_root / "uninitialized-cockpit"
+                uninitialized_workspace.mkdir()
+                encoded_uninitialized = urllib.parse.quote(str(uninitialized_workspace.resolve()), safe="")
+                with urllib.request.urlopen(
+                    f"{gui_launch['url']}/api/workspace-cockpit?workspace={encoded_uninitialized}",
+                    timeout=20,
+                ) as response_handle:
+                    uninitialized_payload = json.loads(response_handle.read().decode("utf-8"))
+                assert uninitialized_payload["state_kind"] == "uninitialized"
+                assert uninitialized_payload["diagnostics"]["paths"]
             finally:
                 stop_gui()
         else:
             assert "Operation not permitted" in gui_launch_process.stderr or "PermissionError" in gui_launch_process.stderr
+        progress("dashboard snapshot, installer CLI, MCP handshake, and GUI smoke assertions")
 
-    print("smoke test passed")
+    total_elapsed = time.monotonic() - smoke_started_at
+    print(f"smoke test passed in {total_elapsed:.1f}s", flush=True)
     return 0
 
 

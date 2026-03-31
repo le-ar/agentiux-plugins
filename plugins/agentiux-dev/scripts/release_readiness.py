@@ -2,15 +2,27 @@
 from __future__ import annotations
 
 import argparse
+from contextlib import contextmanager
 import json
 import os
 import subprocess
+import sys
 import tempfile
+import urllib.parse
 import urllib.request
 from pathlib import Path
 from typing import Any
 
-from agentiux_dev_lib import PLUGIN_NAME, preview_workspace_init, python_launcher_string, python_launcher_tokens, python_script_command
+from agentiux_dev_lib import (
+    PLUGIN_NAME,
+    create_workstream,
+    dashboard_snapshot,
+    init_workspace,
+    preview_workspace_init,
+    python_launcher_string,
+    python_launcher_tokens,
+    python_script_command,
+)
 from agentiux_dev_verification import audit_verification_coverage
 from build_context_catalogs import check_catalogs
 
@@ -44,8 +56,32 @@ def resolve_plugin_root(repo_root: Path) -> Path:
     raise FileNotFoundError(f"Unable to resolve plugin root from repo root: {repo_root}")
 
 
-def _completed_process(argv: list[str], cwd: Path | None = None, env: dict[str, str] | None = None) -> subprocess.CompletedProcess[str]:
-    result = subprocess.run(argv, cwd=str(cwd) if cwd else None, env=env, capture_output=True, text=True, check=False)
+def _completed_process(
+    argv: list[str],
+    cwd: Path | None = None,
+    env: dict[str, str] | None = None,
+    *,
+    stream_output: bool = False,
+) -> subprocess.CompletedProcess[str]:
+    if stream_output:
+        process = subprocess.Popen(
+            argv,
+            cwd=str(cwd) if cwd else None,
+            env=env,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+            bufsize=1,
+        )
+        assert process.stdout is not None
+        stdout_chunks: list[str] = []
+        for line in process.stdout:
+            stdout_chunks.append(line)
+            print(line, file=sys.stderr, end="", flush=True)
+        process.wait()
+        result = subprocess.CompletedProcess(argv, process.returncode, "".join(stdout_chunks), "")
+    else:
+        result = subprocess.run(argv, cwd=str(cwd) if cwd else None, env=env, capture_output=True, text=True, check=False)
     if result.returncode != 0:
         message = "\n".join(
             part
@@ -86,6 +122,20 @@ def _call_mcp_session(script_path: Path, messages: list[dict[str, Any]], env: di
     if process.returncode != 0:
         raise RuntimeError(process.stderr.read())
     return responses
+
+
+@contextmanager
+def _temporary_env(overrides: dict[str, str]) -> Any:
+    previous = {key: os.environ.get(key) for key in overrides}
+    os.environ.update(overrides)
+    try:
+        yield
+    finally:
+        for key, value in previous.items():
+            if value is None:
+                os.environ.pop(key, None)
+            else:
+                os.environ[key] = value
 
 
 def _assert_clean_repo_text(repo_root: Path, plugin_root: Path) -> None:
@@ -292,18 +342,61 @@ def dashboard_check(repo_root: Path, plugin_root: Path) -> dict[str, Any]:
         temp_root = Path(temp_dir)
         env["AGENTIUX_DEV_STATE_ROOT"] = str(temp_root / "state")
         env["AGENTIUX_DEV_PLUGIN_ROOT"] = str(plugin_root)
+        with _temporary_env(
+            {
+                "AGENTIUX_DEV_STATE_ROOT": env["AGENTIUX_DEV_STATE_ROOT"],
+                "AGENTIUX_DEV_PLUGIN_ROOT": env["AGENTIUX_DEV_PLUGIN_ROOT"],
+            }
+        ):
+            init_workspace(repo_root)
+            create_workstream(
+                repo_root,
+                "Dashboard Layout Audit Fixture",
+                kind="feature",
+                scope_summary="Exercise cockpit-first dashboard cards and stage state for browser layout auditing.",
+            )
+            fixture_snapshot = dashboard_snapshot(repo_root)
         launch_output = _completed_process(
-            python_script_command(plugin_root / "scripts" / "agentiux_dev_gui.py", ["launch"]),
+            python_script_command(
+                plugin_root / "scripts" / "agentiux_dev_gui.py",
+                ["launch", "--workspace", str(repo_root)],
+            ),
             cwd=repo_root,
             env=env,
         )
         payload = json.loads(launch_output.stdout)
         url = payload["url"]
+        audit_results: list[dict[str, Any]] = []
         try:
             with urllib.request.urlopen(f"{url}/health", timeout=5) as response_handle:
                 health = json.loads(response_handle.read().decode("utf-8"))
             with urllib.request.urlopen(f"{url}/api/dashboard", timeout=5) as response_handle:
                 snapshot = json.loads(response_handle.read().decode("utf-8"))
+            cockpit_url = f"{url}/workspaces/{urllib.parse.quote(str(repo_root), safe='')}?panel=now"
+            for label, width, height in (
+                ("cockpit-now-desktop", 1440, 1800),
+                ("cockpit-now-mobile", 390, 2200),
+            ):
+                screenshot_path = temp_root / f"{label}.png"
+                audit_output = _completed_process(
+                    [
+                        "node",
+                        str(plugin_root / "scripts" / "browser_layout_audit.mjs"),
+                        "--url",
+                        cockpit_url,
+                        "--width",
+                        str(width),
+                        "--height",
+                        str(height),
+                        "--screenshot-path",
+                        str(screenshot_path),
+                        "--label",
+                        label,
+                    ],
+                    cwd=repo_root,
+                    env=env,
+                )
+                audit_results.append(json.loads(audit_output.stdout))
         finally:
             _completed_process(
                 python_script_command(plugin_root / "scripts" / "agentiux_dev_gui.py", ["stop"]),
@@ -316,16 +409,32 @@ def dashboard_check(repo_root: Path, plugin_root: Path) -> dict[str, Any]:
         raise AssertionError("Unexpected dashboard schema version")
     if snapshot.get("plugin", {}).get("name") != PLUGIN_NAME:
         raise AssertionError("Unexpected dashboard plugin payload")
+    if fixture_snapshot.get("workspace_cockpit", {}).get("workspace_path") != str(repo_root):
+        raise AssertionError("Dashboard fixture did not initialize the expected workspace cockpit")
+    failing_audits = [item for item in audit_results if not item.get("ok")]
+    if failing_audits:
+        raise AssertionError(
+            "Dashboard layout audit failed: "
+            + "; ".join(
+                f"{item.get('label')}: {item.get('issue_count')} issues ({', '.join(issue.get('type') for issue in item.get('issues', [])[:4])})"
+                for item in failing_audits
+            )
+        )
     return {
         "check": "dashboard-check",
         "url": url,
         "schema_version": snapshot["schema_version"],
         "workspace_count": snapshot["overview"]["workspace_count"],
+        "audits": audit_results,
     }
 
 
 def smoke(plugin_root: Path, repo_root: Path) -> dict[str, Any]:
-    _completed_process(python_script_command(plugin_root / "scripts" / "smoke_test.py"), cwd=repo_root)
+    _completed_process(
+        python_script_command(plugin_root / "scripts" / "smoke_test.py"),
+        cwd=repo_root,
+        stream_output=True,
+    )
     return {
         "check": "smoke",
         "script": str(plugin_root / "scripts" / "smoke_test.py"),

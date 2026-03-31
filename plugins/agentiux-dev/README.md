@@ -32,6 +32,8 @@ The source repo remains the place where you edit and verify the plugin. The inst
 - Keep all Codex-specific workflow state outside project repositories.
 - `workflow-advice` may auto-create or reuse point tasks for narrow fixes in initialized repositories, but workstreams, starter bootstrapping, stage plan changes, and upgrade application stay confirmation-driven.
 - Verification events, stdout, stderr, Android logcat, and artifacts stay in external plugin state so the repo remains clean.
+- Web visual verification must use semantic assertions with the core layout guardrail set: `presence_uniqueness`, `visibility`, `overflow_clipping`, `computed_styles`, `interaction_states`, `scroll_reachability`, and `occlusion`.
+- Web workspaces must also ship at least one live `browser-layout-audit` case so computed overlap, occlusion, clipping, and viewport regressions are checked on a real rendered page.
 - Local Git helpers inspect and write locally only. They do not push branches or publish pull requests.
 
 ## Recommended Flows
@@ -54,6 +56,8 @@ The source repo remains the place where you edit and verify the plugin. The inst
 - verification recipes, runs, progress events, baseline status, and logs outside project repos
 - explicit stage planning where template fragments stay advisory and concrete stage definitions are user-approved
 - deterministic verification guidance for web, mobile, backend, monorepo, and plugin-runtime work
+- coverage audits that flag any Playwright-backed web case missing semantic assertions or core layout checks, and any web workspace missing a live browser layout audit case
+- release-readiness dashboard checks that seed a real cockpit fixture and run live headless browser layout audits at desktop and mobile widths
 - curated greenfield starters as thin wrappers around official CLIs
 - repository audits and upgrade plans for existing repos
 - state repair for stale or profile-inaccurate workspace state
@@ -62,7 +66,7 @@ The source repo remains the place where you edit and verify the plugin. The inst
 - workspace-scoped YouTrack integration with permanent-token connections, persisted search sessions, richer issue context plus linked-issue analysis for planning, idempotent plan apply, and issue-ledger aggregation
 - repo-tracked low-token catalogs for skills, MCP tools, scripts, references, and intent routes
 - global project context indexing and semantic cache under `~/.agentiux/agentiux-dev/cache/context/`
-- a local-only dashboard launched from chat, with dashboard writes limited to YouTrack integration management
+- a cockpit-first local-only dashboard launched from chat, with dashboard writes limited to YouTrack integration management
 
 ## Low-Token Retrieval
 
@@ -263,9 +267,12 @@ The `launch` command returns the local URL, process id, and log file paths. Runt
 
 The dashboard now uses browser routing:
 
-- `/` shows the global overview without forcing a workspace detail panel
-- `/workspaces/<url-encoded-workspace-path>` opens a specific workspace detail view and survives browser refresh or direct open
+- `/workspaces/<url-encoded-workspace-path>` opens a workspace cockpit and survives browser refresh or direct open
+- `?panel=now|plan|quality|integrations|diagnostics` deep-links into a specific cockpit panel
+- `/#overview` keeps the global portfolio overview pinned when you do not want the default workspace cockpit
 - legacy `?workspace=/path/to/repo` links remain accepted and are rewritten to the canonical workspace route after load
+
+The workspace cockpit is the primary operator view. It promotes the next action, blockers, verification health, and YouTrack status above raw diagnostics. The portfolio overview remains available as a secondary route for multi-workspace monitoring.
 
 ## Automatic Routing
 
@@ -371,6 +378,8 @@ Visual cases may also declare optional `semantic_assertions`. The plugin now own
 The semantic spec supports `enabled`, `report_path`, `required_checks`, `targets`, `auto_scan`, `heuristics`, `artifacts`, and `platform_hooks`. Targets are platform-neutral and use locator kinds such as `selector`, `role`, `test_id`, `semantics_tag`, or `text`, plus expected attributes, styles, layout invariants, and clipping or occlusion allowances. At runtime AgentiUX Dev writes the resolved spec into the run root, passes helper and report env vars to the runner, validates helper sync and capability compatibility, and records `semantic_summary` in case and run state.
 
 The shared deterministic check families are `presence_uniqueness`, `visibility`, `scroll_reachability`, `overflow_clipping`, `occlusion`, `interaction_states`, `computed_styles`, `layout_relations`, `text_overflow`, `accessibility_state`, and `screenshot_baseline`. Coverage audits now also warn when semantic cases have no explicit targets, when helper bundles are missing or stale, or when required checks do not match the runner capability matrix.
+
+Web recipes may also declare first-class `browser-layout-audit` cases. These cases can launch a local server with `argv` or `shell_command`, wait on `readiness_probe`, then run the bundled headless browser audit script against a real URL and persist both the JSON report and screenshot under the external artifact root. Coverage audits now warn when a web workspace has no such live browser audit case.
 
 `resolve verification` returns a canonical `VerificationSelection` payload with `selection_status`, `source`, `requested_mode`, `requested_mode_source`, `resolved_mode`, `selected_cases`, `heuristic_suggestions`, `baseline_sources`, and `host_compatibility`. Tasks without explicit selectors remain unresolved and targeted by default; the runtime does not silently fall back to `smoke`.
 

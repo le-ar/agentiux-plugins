@@ -1,50 +1,83 @@
 const appRoot = document.getElementById("app");
 
+const WORKSPACE_PANELS = ["now", "plan", "quality", "integrations", "diagnostics"];
+
 const state = {
-  snapshot: null,
+  overviewPayload: null,
+  cockpitModel: null,
   selectedWorkspace: null,
+  panel: "now",
+  forceOverview: false,
   loading: true,
   error: null,
   editingConnection: null,
+  bootstrapped: false,
 };
 
-function workspaceRoute(workspacePath) {
-  return workspacePath ? `/workspaces/${encodeURIComponent(workspacePath)}` : "/";
+function workspaceRoute(workspacePath, panel = "now") {
+  if (!workspacePath) {
+    return "/#overview";
+  }
+  const query = new URLSearchParams();
+  const normalizedPanel = normalizePanel(panel);
+  if (normalizedPanel !== "now") {
+    query.set("panel", normalizedPanel);
+  }
+  const suffix = query.toString() ? `?${query.toString()}` : "";
+  return `/workspaces/${encodeURIComponent(workspacePath)}${suffix}`;
 }
 
 function parseRoute() {
   const legacyWorkspace = new URLSearchParams(window.location.search).get("workspace");
+  const panel = normalizePanel(new URLSearchParams(window.location.search).get("panel") || "now");
   const match = window.location.pathname.match(/^\/workspaces\/(.+)$/);
   if (match) {
     return {
       workspacePath: decodeURIComponent(match[1]),
+      panel,
+      forceOverview: false,
       source: "path",
     };
   }
   if (legacyWorkspace) {
     return {
       workspacePath: legacyWorkspace,
+      panel,
+      forceOverview: false,
       source: "legacy-query",
     };
   }
   return {
     workspacePath: null,
+    panel: "now",
+    forceOverview: window.location.hash === "#overview",
     source: "overview",
   };
 }
 
-function updateRoute(workspacePath, mode = "push") {
-  const target = workspaceRoute(workspacePath);
-  const current = `${window.location.pathname}${window.location.search}`;
+function updateRoute(workspacePath, options = {}) {
+  const panel = normalizePanel(options.panel || state.panel || "now");
+  const mode = options.mode || "push";
+  const forceOverview = Boolean(options.forceOverview);
+  const target = workspacePath ? workspaceRoute(workspacePath, panel) : forceOverview ? "/#overview" : "/";
+  const current = `${window.location.pathname}${window.location.search}${window.location.hash}`;
   if (current === target) {
     return;
   }
-  const payload = { workspacePath: workspacePath || null };
+  const payload = {
+    workspacePath: workspacePath || null,
+    panel,
+    forceOverview,
+  };
   if (mode === "replace") {
     window.history.replaceState(payload, "", target);
     return;
   }
   window.history.pushState(payload, "", target);
+}
+
+function normalizePanel(panel) {
+  return WORKSPACE_PANELS.includes(panel) ? panel : "now";
 }
 
 function escapeHtml(value) {
@@ -56,10 +89,10 @@ function escapeHtml(value) {
     .replaceAll("'", "&#39;");
 }
 
-function statusChip(status) {
-  if (["completed", "running", "passed", "active", "approved", "updated"].includes(status)) return "ok";
-  if (["failed", "cancelled", "blocked", "hung"].includes(status)) return "bad";
-  if (["ready_for_closeout", "slow", "planned", "queued", "draft"].includes(status)) return "warn";
+function toneClass(tone) {
+  if (tone === "ok") return "ok";
+  if (tone === "warn") return "warn";
+  if (tone === "bad") return "bad";
   return "";
 }
 
@@ -67,126 +100,8 @@ function formatLines(lines, fallback) {
   return escapeHtml((lines || []).join("\n") || fallback);
 }
 
-async function apiJson(url, options = {}) {
-  const response = await fetch(url, {
-    cache: "no-store",
-    headers: {
-      "Content-Type": "application/json",
-      ...(options.headers || {}),
-    },
-    ...options,
-  });
-  const payload = await response.json();
-  if (!response.ok) {
-    throw new Error(payload.detail || payload.error || `Request failed with ${response.status}`);
-  }
-  return payload;
-}
-
-function renderVerificationSummary(run) {
-  if (!run) {
-    return `<pre>No verification run recorded yet.</pre>`;
-  }
-  const summary = run.summary || {};
-  return `
-    <pre>${escapeHtml(
-      [
-        `Run ID: ${run.run_id || "unknown"}`,
-        `Workstream: ${run.workstream_id || "unknown"}`,
-        `Mode: ${run.mode || "unknown"}`,
-        `Target: ${run.target_id || "unknown"}`,
-        `Status: ${run.status || "unknown"}`,
-        `Health: ${run.health || "unknown"}`,
-        `Started: ${run.started_at || "not started"}`,
-        `Completed: ${run.completed_at || "not completed"}`,
-        `Passed cases: ${summary.passed_cases ?? 0}`,
-        `Failed cases: ${summary.failed_cases ?? 0}`,
-        `Message: ${summary.message || "No summary recorded."}`,
-        `Stdout log: ${run.stdout_log_path || "n/a"}`,
-        `Stderr log: ${run.stderr_log_path || "n/a"}`,
-        `Logcat log: ${run.logcat_log_path || "n/a"}`,
-      ].join("\n"),
-    )}</pre>
-  `;
-}
-
-function renderVerificationCases(recipes) {
-  const cases = recipes?.cases || [];
-  const suites = recipes?.suites || [];
-  return `
-    <pre>${escapeHtml(
-      [
-        `Cases: ${cases.length}`,
-        ...cases.map((item) => {
-          const baseline = item.baseline_source || item.baseline?.source_path || "no project baseline";
-          return `${item.id || "case"} [${item.surface_type || "surface"} / ${item.runner || "runner"}] tags=${(item.tags || []).join(", ") || "none"} -> ${baseline}`;
-        }),
-        "",
-        `Suites: ${suites.length}`,
-        ...suites.map(
-          (item) => `${item.id || "suite"} -> ${Array.isArray(item.case_ids) ? item.case_ids.join(", ") : ""}`,
-        ),
-      ]
-        .filter(Boolean)
-        .join("\n") || "No verification recipe recorded.",
-    )}</pre>
-  `;
-}
-
-function renderVerificationSelection(selection) {
-  if (!selection) {
-    return `<pre>No verification selection has been resolved yet.</pre>`;
-  }
-  const selectedSuiteId = selection.selected_suite?.id || "none";
-  const selectedCaseIds = (selection.selected_cases || []).map((item) => item.case_id).join(", ") || "none";
-  const heuristicCaseIds = (selection.heuristic_suggestions || []).map((item) => item.case_id).join(", ") || "none";
-  const blockingRequirements =
-    (selection.host_compatibility?.blocking_requirements || []).join(", ") || "none";
-  return `
-    <pre>${escapeHtml(
-      [
-        `Status: ${selection.selection_status || "unknown"}`,
-        `Source: ${selection.source || "unknown"}`,
-        `Requested mode: ${selection.requested_mode || "unknown"} (${selection.requested_mode_source || "unknown"})`,
-        `Resolved mode: ${selection.resolved_mode || "unknown"}`,
-        `Targeted: ${selection.targeted}`,
-        `Full suite: ${selection.full_suite}`,
-        `Selected suite: ${selectedSuiteId}`,
-        `Selected cases: ${selectedCaseIds}`,
-        `Heuristic suggestions: ${heuristicCaseIds}`,
-        `Baseline sources: ${(selection.baseline_sources || []).join(", ") || "none"}`,
-        `Host compatible: ${selection.host_compatibility?.available !== false}`,
-        `Blocking requirements: ${blockingRequirements}`,
-        `Reason: ${selection.reason || "No reason recorded."}`,
-      ].join("\n"),
-    )}</pre>
-  `;
-}
-
-function renderVerificationEvents(events) {
-  return `
-    <pre>${escapeHtml(
-      (events || [])
-        .map((event) => `${event.timestamp || ""} ${event.event_type || "event"}: ${event.message || ""}`)
-        .join("\n") || "No verification events recorded.",
-    )}</pre>
-  `;
-}
-
-function renderPluginPlatform(pluginPlatform) {
-  if (!pluginPlatform?.enabled) {
-    return `<pre>No plugin-platform detection for this workspace.</pre>`;
-  }
-  return `
-    <pre>${escapeHtml(
-      [
-        `Primary plugin root: ${pluginPlatform.primary_plugin_root || "unknown"}`,
-        `Detected features: ${(pluginPlatform.detected_features || []).join(", ") || "none"}`,
-        `Plugin roots: ${(pluginPlatform.plugin_roots || []).join(", ") || "none"}`,
-        `Release readiness: ${pluginPlatform.release_readiness_command || "not available"}`,
-      ].join("\n"),
-    )}</pre>
-  `;
+function compactText(value, fallback = "n/a") {
+  return escapeHtml(value || fallback);
 }
 
 function issueSummarySourceLabel(source) {
@@ -229,13 +144,13 @@ function renderIssueHoverSummary(item) {
     <div class="issue-popover" role="tooltip">
       <div class="issue-popover-header">
         <strong>${escapeHtml(item.issue_key || "issue")}</strong>
-        ${sourceLabel ? `<span class="chip">${escapeHtml(sourceLabel)}</span>` : ""}
+        ${sourceLabel ? `<span class="pill-chip ${toneClass("warn")}">${escapeHtml(sourceLabel)}</span>` : ""}
       </div>
       <div class="issue-popover-title">${escapeHtml(item.title || "Untitled issue")}</div>
       <p class="issue-popover-text">${escapeHtml(preview.excerpt || "No extra context collected yet.")}</p>
       ${
         stats.length
-          ? `<div class="issue-popover-stats">${stats.map((stat) => `<span class="chip">${escapeHtml(stat)}</span>`).join("")}</div>`
+          ? `<div class="chip-row">${stats.map((stat) => `<span class="pill-chip">${escapeHtml(stat)}</span>`).join("")}</div>`
           : ""
       }
       ${
@@ -252,13 +167,800 @@ function renderIssueHoverSummary(item) {
   `;
 }
 
-function renderYouTrack(detail) {
-  const youtrack = detail.youtrack || {};
-  const connections = youtrack.connections?.items || [];
-  const summary = detail.summary?.youtrack || {};
-  const currentSearch = youtrack.current_search_session || null;
-  const currentPlan = youtrack.current_plan || null;
-  const workstreamIssues = youtrack.current_workstream_issues?.items || [];
+async function apiJson(url, options = {}) {
+  const response = await fetch(url, {
+    cache: "no-store",
+    headers: {
+      "Content-Type": "application/json",
+      ...(options.headers || {}),
+    },
+    ...options,
+  });
+  const payload = await response.json();
+  if (!response.ok) {
+    throw new Error(payload.detail || payload.error || `Request failed with ${response.status}`);
+  }
+  return payload;
+}
+
+async function fetchDashboard(workspacePath, options = {}) {
+  const requestedWorkspace = workspacePath || null;
+  const historyMode = options.historyMode || "skip";
+  const requestedPanel = normalizePanel(options.panel || state.panel || "now");
+  const forceOverview = Boolean(options.forceOverview);
+  state.loading = true;
+  render();
+  try {
+    const overviewPayload = await apiJson("/api/dashboard");
+    const preferredWorkspace = overviewPayload.overview?.preferred_workspace_path || null;
+    if (!requestedWorkspace && !forceOverview && !state.bootstrapped && preferredWorkspace) {
+      state.bootstrapped = true;
+      await fetchDashboard(preferredWorkspace, { historyMode: "replace", panel: "now", forceOverview: false });
+      return;
+    }
+    let cockpitModel = null;
+    let resolvedWorkspace = requestedWorkspace;
+    if (requestedWorkspace) {
+      cockpitModel = await apiJson(`/api/workspace-cockpit?workspace=${encodeURIComponent(requestedWorkspace)}`);
+      resolvedWorkspace = cockpitModel.workspace_path || requestedWorkspace;
+    }
+    state.overviewPayload = overviewPayload;
+    state.cockpitModel = cockpitModel;
+    state.selectedWorkspace = resolvedWorkspace;
+    state.panel = resolvedWorkspace ? requestedPanel : "now";
+    state.forceOverview = !resolvedWorkspace && forceOverview;
+    const connections = cockpitModel?.integrations?.youtrack?.connections?.items || [];
+    if (state.editingConnection) {
+      state.editingConnection =
+        connections.find((item) => item.connection_id === state.editingConnection.connection_id) || null;
+    }
+    if (!resolvedWorkspace) {
+      state.editingConnection = null;
+    }
+    if (historyMode !== "skip") {
+      updateRoute(resolvedWorkspace, {
+        panel: state.panel,
+        forceOverview: state.forceOverview,
+        mode: historyMode,
+      });
+    }
+    state.error = null;
+    state.bootstrapped = true;
+  } catch (error) {
+    state.error = error.message;
+  } finally {
+    state.loading = false;
+    render();
+  }
+}
+
+function setPanel(panel) {
+  if (!state.selectedWorkspace) return;
+  state.panel = normalizePanel(panel);
+  updateRoute(state.selectedWorkspace, { panel: state.panel, mode: "push" });
+  render();
+}
+
+function refresh() {
+  return fetchDashboard(state.selectedWorkspace, {
+    historyMode: "replace",
+    panel: state.panel,
+    forceOverview: !state.selectedWorkspace && state.forceOverview,
+  });
+}
+
+function clearSelection() {
+  return fetchDashboard(null, { historyMode: "push", forceOverview: true });
+}
+
+function selectWorkspace(workspacePath) {
+  return fetchDashboard(workspacePath, { historyMode: "push", panel: "now" });
+}
+
+function renderMetric(metric) {
+  return `
+    <div class="metric-card ${toneClass(metric.tone)}">
+      <span class="metric-label">${escapeHtml(metric.label)}</span>
+      <strong>${escapeHtml(metric.value)}</strong>
+      ${metric.hint ? `<span class="metric-hint">${escapeHtml(metric.hint)}</span>` : ""}
+    </div>
+  `;
+}
+
+function renderMetricGrid(metrics) {
+  if (!metrics?.length) return "";
+  return `<div class="metric-grid">${metrics.map(renderMetric).join("")}</div>`;
+}
+
+function renderAttentionList(items) {
+  if (!items?.length) {
+    return `<div class="empty-note">No immediate attention items.</div>`;
+  }
+  return `
+    <div class="attention-list">
+      ${items
+        .map(
+          (item) => `
+            <article class="attention-card ${toneClass(item.tone)}">
+              <div class="attention-head">
+                <span class="pill-chip ${toneClass(item.tone)}">${escapeHtml(item.section || "note")}</span>
+                <strong>${escapeHtml(item.title)}</strong>
+              </div>
+              <p>${escapeHtml(item.body)}</p>
+            </article>
+          `,
+        )
+        .join("")}
+    </div>
+  `;
+}
+
+function renderSidebar(overviewPayload) {
+  const overview = overviewPayload?.overview || { workspaces: [], stat_cards: [] };
+  const plugin = overviewPayload?.plugin || {};
+  const gui = overviewPayload?.gui || {};
+  const cards = overview.workspaces || [];
+  const selectedInList = cards.some((item) => item.workspace_path === state.selectedWorkspace);
+  const syntheticCard =
+    state.selectedWorkspace && state.cockpitModel && !selectedInList
+      ? {
+          workspace_path: state.selectedWorkspace,
+          workspace_label: state.cockpitModel.workspace_label || "Pending workspace",
+          workspace_slug: null,
+          status_badge: state.cockpitModel.hero?.status_badge || { label: state.cockpitModel.state_kind, tone: "warn" },
+          next_action: state.cockpitModel.hero?.headline,
+          verification_status: { label: "Not indexed", tone: "warn" },
+          youtrack_status: { label: "Unavailable", tone: "warn" },
+          metrics: [],
+        }
+      : null;
+  return `
+    <aside class="sidebar">
+      <div class="brand-block">
+        <p class="brand-kicker">AgentiUX Dev</p>
+        <h1>Dashboard</h1>
+        <p class="brand-path">${escapeHtml(plugin.current_root || "plugin root unavailable")}</p>
+      </div>
+      <div class="sidebar-actions">
+        <button onclick="window.__agentiux.refresh()">Refresh</button>
+        <button class="secondary" onclick="window.__agentiux.clearSelection()">Overview</button>
+      </div>
+      <div class="sidebar-meta">
+        ${renderMetricGrid((overview.stat_cards || []).slice(0, 4))}
+      </div>
+      <div class="sidebar-section">
+        <div class="section-heading">
+          <h2>Portfolio</h2>
+          <span class="pill-chip ${toneClass(overviewPayload?.stats?.gui_status === "running" ? "ok" : "warn")}">${escapeHtml(
+            gui.status || "stopped",
+          )}</span>
+        </div>
+        <div class="workspace-nav">
+          ${syntheticCard ? renderWorkspaceNavCard(syntheticCard, true) : ""}
+          ${cards.map((item) => renderWorkspaceNavCard(item, item.workspace_path === state.selectedWorkspace)).join("")}
+          ${!cards.length && !syntheticCard ? `<div class="empty-note">${escapeHtml(overview.empty_message || "No initialized workspaces yet.")}</div>` : ""}
+        </div>
+      </div>
+    </aside>
+  `;
+}
+
+function renderWorkspaceNavCard(item, active) {
+  const workspaceArg = JSON.stringify(item.workspace_path);
+  return `
+    <a class="workspace-nav-card ${active ? "active" : ""}" href="${escapeHtml(
+      workspaceRoute(item.workspace_path),
+    )}" onclick='window.__agentiux.selectWorkspace(${workspaceArg}); return false;'>
+      <div class="workspace-nav-head">
+        <div>
+          <strong>${escapeHtml(item.workspace_label || item.workspace_path)}</strong>
+          <div class="workspace-nav-path">${escapeHtml(item.workspace_path)}</div>
+        </div>
+        <span class="pill-chip ${toneClass(item.status_badge?.tone)}">${escapeHtml(item.status_badge?.label || "idle")}</span>
+      </div>
+      <p class="workspace-nav-copy">${escapeHtml(item.next_action || "Open workspace cockpit.")}</p>
+      <div class="chip-row">
+        <span class="pill-chip ${toneClass(item.verification_status?.tone)}">${escapeHtml(item.verification_status?.label || "No verification")}</span>
+        <span class="pill-chip ${toneClass(item.youtrack_status?.tone)}">${escapeHtml(item.youtrack_status?.label || "No integration")}</span>
+      </div>
+    </a>
+  `;
+}
+
+function renderOverviewPage(overviewPayload) {
+  const overview = overviewPayload?.overview || {};
+  const workspaces = overview.workspaces || [];
+  const starterRuns = overview.recent_starter_runs || [];
+  const attentionSummary = overview.attention_summary || {};
+  return `
+    <section class="page-shell" data-screen-id="dashboard-overview" data-testid="dashboard-overview">
+      <div class="hero-card overview-hero">
+        <div class="hero-copy">
+          <p class="eyebrow">Global overview</p>
+          <h2>Portfolio state across initialized workspaces</h2>
+          <p class="hero-text">
+            Workspace cockpit is the primary operating view. This overview stays focused on portfolio risk, verification pressure, and fast workspace entry.
+          </p>
+        </div>
+        ${renderMetricGrid(overview.stat_cards || [])}
+      </div>
+      <div class="attention-strip">
+        <div class="attention-summary-card bad">
+          <span>Critical</span>
+          <strong>${escapeHtml(attentionSummary.critical_count || 0)}</strong>
+          <p>Blocked work or failed verification across the portfolio.</p>
+        </div>
+        <div class="attention-summary-card warn">
+          <span>Warnings</span>
+          <strong>${escapeHtml(attentionSummary.warning_count || 0)}</strong>
+          <p>Planned or closeout-ready work that still needs operator attention.</p>
+        </div>
+        <div class="attention-summary-card">
+          <span>Active runs</span>
+          <strong>${escapeHtml(attentionSummary.active_verification_runs || 0)}</strong>
+          <p>Verification currently executing in external state.</p>
+        </div>
+        <div class="attention-summary-card">
+          <span>Failed runs</span>
+          <strong>${escapeHtml(attentionSummary.failed_verification_runs || 0)}</strong>
+          <p>Recent deterministic checks that need review before closeout.</p>
+        </div>
+      </div>
+      <div class="content-grid two-up">
+        <section class="surface-card">
+          <div class="section-heading">
+            <h3>Workspace portfolio</h3>
+            <span class="muted-copy">${escapeHtml(workspaces.length)} initialized</span>
+          </div>
+          <div class="portfolio-grid">
+            ${
+              workspaces.length
+                ? workspaces
+                    .map(
+                      (item) => `
+                        <article class="portfolio-card">
+                          <div class="portfolio-head">
+                            <div>
+                              <h4>${escapeHtml(item.workspace_label)}</h4>
+                              <p>${escapeHtml(item.workspace_path)}</p>
+                            </div>
+                            <span class="pill-chip ${toneClass(item.status_badge?.tone)}">${escapeHtml(item.status_badge?.label || "idle")}</span>
+                          </div>
+                          <p class="portfolio-copy">${escapeHtml(item.next_action || "Open cockpit.")}</p>
+                          ${renderMetricGrid(item.metrics || [])}
+                          <div class="chip-row">
+                            <span class="pill-chip ${toneClass(item.verification_status?.tone)}">${escapeHtml(item.verification_status?.label || "No verification")}</span>
+                            <span class="pill-chip ${toneClass(item.youtrack_status?.tone)}">${escapeHtml(item.youtrack_status?.label || "No integration")}</span>
+                          </div>
+                          <div class="portfolio-actions">
+                            <button onclick='window.__agentiux.selectWorkspace(${JSON.stringify(item.workspace_path)})'>Open cockpit</button>
+                          </div>
+                        </article>
+                      `,
+                    )
+                    .join("")
+                : `<div class="empty-note">${escapeHtml(overview.empty_message || "No initialized workspaces yet.")}</div>`
+            }
+          </div>
+        </section>
+        <section class="surface-card">
+          <div class="section-heading">
+            <h3>Recent starter runs</h3>
+            <span class="muted-copy">${escapeHtml(starterRuns.length)}</span>
+          </div>
+          ${
+            starterRuns.length
+              ? `<div class="stack-list">
+                  ${starterRuns
+                    .map(
+                      (run) => `
+                        <article class="stack-item">
+                          <div class="stack-item-head">
+                            <strong>${escapeHtml(run.run_id || "run")}</strong>
+                            <span class="pill-chip ${toneClass(run.status === "failed" ? "bad" : "neutral")}">${escapeHtml(run.status || "unknown")}</span>
+                          </div>
+                          <p>${escapeHtml(run.project_root || "n/a")}</p>
+                          <div class="chip-row">
+                            <span class="pill-chip">${escapeHtml(run.preset_id || "preset")}</span>
+                          </div>
+                        </article>
+                      `,
+                    )
+                    .join("")}
+                </div>`
+              : `<div class="empty-note">No starter runs recorded.</div>`
+          }
+        </section>
+      </div>
+    </section>
+  `;
+}
+
+function renderHero(cockpit) {
+  return `
+    <section class="hero-card cockpit-hero ${toneClass(cockpit.hero?.status_badge?.tone)}" data-screen-id="workspace-cockpit-hero" data-testid="cockpit-hero">
+      <div class="hero-copy">
+        <p class="eyebrow">${escapeHtml(cockpit.state_kind === "initialized" ? "Workspace cockpit" : "Initialization preview")}</p>
+        <h2>${escapeHtml(cockpit.hero?.title || cockpit.workspace_label || "Workspace")}</h2>
+        <p class="hero-subtitle">${escapeHtml(cockpit.hero?.subtitle || cockpit.workspace_path || "")}</p>
+        <div class="chip-row">
+          <span class="pill-chip ${toneClass(cockpit.hero?.status_badge?.tone)}">${escapeHtml(cockpit.hero?.status_badge?.label || "idle")}</span>
+          ${
+            cockpit.hero?.status_badge?.hint
+              ? `<span class="pill-chip">${escapeHtml(cockpit.hero.status_badge.hint)}</span>`
+              : ""
+          }
+        </div>
+        <p class="hero-text">${escapeHtml(cockpit.hero?.headline || "")}</p>
+        <p class="hero-caption">${escapeHtml(cockpit.hero?.supporting_text || "")}</p>
+      </div>
+      ${renderMetricGrid(cockpit.hero?.metrics || [])}
+    </section>
+  `;
+}
+
+function renderTabs(cockpit) {
+  const panelCounts = {
+    now: (cockpit.attention?.items || []).filter((item) => item.section === "now").length + (cockpit.now?.blockers || []).length,
+    plan: cockpit.plan?.stages?.length || 0,
+    quality: cockpit.quality?.coverage?.warning_count || cockpit.quality?.recent_runs?.length || 0,
+    integrations: cockpit.integrations?.youtrack?.connections?.items?.length || 0,
+    diagnostics: cockpit.diagnostics?.paths?.length || 0,
+  };
+  const labels = {
+    now: "Now",
+    plan: "Plan",
+    quality: "Quality",
+    integrations: "Integrations",
+    diagnostics: "Diagnostics",
+  };
+  return `
+    <nav class="panel-tabs" aria-label="Workspace cockpit panels" data-testid="cockpit-tabs">
+      ${WORKSPACE_PANELS.map(
+        (panelId) => `
+          <button class="tab-button ${state.panel === panelId ? "active" : ""}" data-panel-id="${escapeHtml(panelId)}" aria-pressed="${state.panel === panelId ? "true" : "false"}" onclick='window.__agentiux.setPanel(${JSON.stringify(
+            panelId,
+          )})'>
+            <span>${labels[panelId]}</span>
+            <span class="tab-count">${escapeHtml(panelCounts[panelId] || 0)}</span>
+          </button>
+        `,
+      ).join("")}
+    </nav>
+  `;
+}
+
+function renderFocusSummary(now) {
+  const cards = [];
+  if (now.current_workstream) {
+    cards.push(`
+      <article class="stack-item">
+        <div class="stack-item-head">
+          <strong>${escapeHtml(now.current_workstream.workstream_id || "workstream")}</strong>
+          <span class="pill-chip ${toneClass(now.current_workstream.tone)}">${escapeHtml(now.current_workstream.status || "status")}</span>
+        </div>
+        <p>${escapeHtml(now.current_workstream.title || "Untitled workstream")}</p>
+      </article>
+    `);
+  }
+  if (now.current_task) {
+    cards.push(`
+      <article class="stack-item">
+        <div class="stack-item-head">
+          <strong>${escapeHtml(now.current_task.task_id || "task")}</strong>
+          <span class="pill-chip ${toneClass(now.current_task.tone)}">${escapeHtml(now.current_task.status || "status")}</span>
+        </div>
+        <p>${escapeHtml(now.current_task.title || "Untitled task")}</p>
+      </article>
+    `);
+  }
+  if (!cards.length) {
+    return `<div class="empty-note">No current task or workstream focus recorded.</div>`;
+  }
+  return `<div class="stack-list">${cards.join("")}</div>`;
+}
+
+function renderNowPanel(cockpit) {
+  const now = cockpit.now || {};
+  return `
+    <div class="content-grid" data-screen-id="cockpit-now-panel" data-panel="now" data-testid="cockpit-now-panel">
+      <section class="surface-card emphasis-card">
+        <div class="section-heading">
+          <h3>Current objective</h3>
+          <span class="pill-chip ${toneClass(now.verification_status?.tone)}">${escapeHtml(now.verification_status?.label || "No verification")}</span>
+        </div>
+        <p class="lead-copy">${escapeHtml(now.objective || "No explicit objective recorded.")}</p>
+        ${renderMetricGrid(now.focus_cards || [])}
+        <div class="stack-list">
+          ${(now.guidance || []).map((item) => `<article class="stack-item"><p>${escapeHtml(item)}</p></article>`).join("")}
+        </div>
+      </section>
+      <section class="surface-card">
+        <div class="section-heading">
+          <h3>Immediate attention</h3>
+          <span class="muted-copy">${escapeHtml((cockpit.attention?.items || []).length)}</span>
+        </div>
+        ${renderAttentionList(cockpit.attention?.items || [])}
+      </section>
+      <section class="surface-card">
+        <div class="section-heading">
+          <h3>Active brief</h3>
+          <span class="muted-copy">${escapeHtml((now.brief_preview || []).length)} lines</span>
+        </div>
+        ${
+          now.brief_preview?.length
+            ? `<pre class="code-block">${escapeHtml(now.brief_preview.join("\n"))}</pre>`
+            : `<div class="empty-note">No active brief recorded.</div>`
+        }
+      </section>
+      <section class="surface-card">
+        <div class="section-heading">
+          <h3>Current focus</h3>
+          <span class="pill-chip ${toneClass(now.youtrack_status?.tone)}">${escapeHtml(now.youtrack_status?.label || "No integration")}</span>
+        </div>
+        ${renderFocusSummary(now)}
+        ${
+          now.blockers?.length
+            ? `<div class="stack-list">
+                ${now.blockers
+                  .map(
+                    (blocker) => `
+                      <article class="stack-item danger">
+                        <div class="stack-item-head">
+                          <strong>Blocker</strong>
+                          <span class="pill-chip bad">attention</span>
+                        </div>
+                        <p>${escapeHtml(blocker)}</p>
+                      </article>
+                    `,
+                  )
+                  .join("")}
+              </div>`
+            : `<div class="empty-note">No blockers recorded.</div>`
+        }
+      </section>
+    </div>
+  `;
+}
+
+function renderPlanPanel(cockpit) {
+  const plan = cockpit.plan || {};
+  return `
+    <div class="content-grid" data-screen-id="cockpit-plan-panel" data-panel="plan" data-testid="cockpit-plan-panel">
+      <section class="surface-card">
+        <div class="section-heading">
+          <h3>Plan summary</h3>
+          <span class="muted-copy">${escapeHtml(plan.stages?.length || 0)} stages</span>
+        </div>
+        ${renderMetricGrid(plan.summary_cards || [])}
+        <div class="chip-row">
+          ${Object.entries(plan.stage_summary || {})
+            .map(([key, value]) => `<span class="pill-chip">${escapeHtml(`${key.replaceAll("_", " ")}: ${value}`)}</span>`)
+            .join("")}
+        </div>
+      </section>
+      <section class="surface-card">
+        <div class="section-heading">
+          <h3>Stage timeline</h3>
+          <span class="muted-copy">${escapeHtml(plan.current_workstream?.workstream_id || "no workstream")}</span>
+        </div>
+        ${
+          plan.stages?.length
+            ? `<div class="stack-list">
+                ${plan.stages
+                  .map(
+                    (stage) => `
+                      <article class="stack-item">
+                        <div class="stack-item-head">
+                          <strong>${escapeHtml(stage.id || "stage")}</strong>
+                          <span class="pill-chip ${toneClass(stage.tone)}">${escapeHtml(stage.status || "planned")}</span>
+                        </div>
+                        <p>${escapeHtml(stage.title || "Untitled stage")}</p>
+                        <div class="chip-row">
+                          <span class="pill-chip">${escapeHtml(`${stage.task_count || 0} tasks`)}</span>
+                          <span class="pill-chip">${escapeHtml(stage.completed_at || "not completed")}</span>
+                        </div>
+                      </article>
+                    `,
+                  )
+                  .join("")}
+              </div>`
+            : `<div class="empty-note">No stage register has been confirmed yet.</div>`
+        }
+      </section>
+      <section class="surface-card">
+        <div class="section-heading">
+          <h3>Task buckets</h3>
+          <span class="muted-copy">${escapeHtml(plan.task_buckets?.length || 0)} groups</span>
+        </div>
+        ${
+          plan.task_buckets?.length
+            ? `<div class="stack-list">
+                ${plan.task_buckets
+                  .map(
+                    (bucket) => `
+                      <article class="stack-item">
+                        <div class="stack-item-head">
+                          <strong>${escapeHtml(bucket.label)}</strong>
+                          <span class="pill-chip ${toneClass(bucket.tone)}">${escapeHtml(bucket.count || 0)}</span>
+                        </div>
+                        <div class="sub-list">
+                          ${(bucket.items || [])
+                            .map(
+                              (task) => `
+                                <div class="sub-row">
+                                  <span>${escapeHtml(task.task_id || "task")}</span>
+                                  <span>${escapeHtml(task.stage_id || "no-stage")}</span>
+                                  <span>${escapeHtml(task.external_issue?.issue_key || task.title || "Untitled")}</span>
+                                </div>
+                              `,
+                            )
+                            .join("")}
+                        </div>
+                      </article>
+                    `,
+                  )
+                  .join("")}
+              </div>`
+            : `<div class="empty-note">No tasks recorded for this workspace.</div>`
+        }
+      </section>
+      <section class="surface-card">
+        <div class="section-heading">
+          <h3>Design state</h3>
+          <span class="muted-copy">${escapeHtml(plan.design_state?.brief_status || "not started")}</span>
+        </div>
+        ${renderMetricGrid([
+          { label: "Brief", value: plan.design_state?.brief_status || "not started", tone: "neutral" },
+          { label: "Board candidates", value: plan.design_state?.current_board_candidates || 0, tone: "neutral" },
+          { label: "Handoff", value: plan.design_state?.current_handoff_status || "not started", tone: "neutral" },
+          { label: "Hooks", value: plan.design_state?.verification_hooks || 0, tone: "neutral" },
+        ])}
+      </section>
+    </div>
+  `;
+}
+
+function renderRunCard(title, run) {
+  if (!run) {
+    return `
+      <article class="stack-item">
+        <div class="stack-item-head">
+          <strong>${escapeHtml(title)}</strong>
+          <span class="pill-chip">none</span>
+        </div>
+        <p>No run recorded.</p>
+      </article>
+    `;
+  }
+  return `
+    <article class="stack-item">
+      <div class="stack-item-head">
+        <strong>${escapeHtml(title)}</strong>
+        <span class="pill-chip ${toneClass(run.status === "failed" ? "bad" : run.status === "passed" ? "ok" : "warn")}">${escapeHtml(
+          run.status || "unknown",
+        )}</span>
+      </div>
+      <p>${escapeHtml(run.run_id || "run")} · ${escapeHtml(run.mode || "mode")} · ${escapeHtml(run.target_id || "target")}</p>
+      <div class="chip-row">
+        <span class="pill-chip">${escapeHtml(`health: ${run.health || "unknown"}`)}</span>
+        <span class="pill-chip">${escapeHtml(`passed: ${run.passed_cases ?? 0}`)}</span>
+        <span class="pill-chip">${escapeHtml(`failed: ${run.failed_cases ?? 0}`)}</span>
+      </div>
+      ${run.message ? `<p>${escapeHtml(run.message)}</p>` : ""}
+    </article>
+  `;
+}
+
+function renderQualityPanel(cockpit) {
+  const quality = cockpit.quality || {};
+  const logs = quality.logs || {};
+  const coverage = quality.coverage || {};
+  return `
+    <div class="content-grid" data-screen-id="cockpit-quality-panel" data-panel="quality" data-testid="cockpit-quality-panel">
+      <section class="surface-card emphasis-card">
+        <div class="section-heading">
+          <h3>Verification health</h3>
+          <span class="pill-chip ${toneClass(quality.health?.tone)}">${escapeHtml(quality.health?.label || "Unknown")}</span>
+        </div>
+        ${renderMetricGrid(quality.summary_cards || [])}
+        ${
+          quality.health?.detail
+            ? `<p class="hero-caption">${escapeHtml(quality.health.detail)}</p>`
+            : ""
+        }
+      </section>
+      <section class="surface-card">
+        <div class="section-heading">
+          <h3>Runs</h3>
+          <span class="muted-copy">${escapeHtml(quality.recent_runs?.length || 0)} recent</span>
+        </div>
+        <div class="stack-list">
+          ${renderRunCard("Latest run", quality.latest_run)}
+          ${renderRunCard("Latest completed", quality.latest_completed_run)}
+        </div>
+      </section>
+      <section class="surface-card">
+        <div class="section-heading">
+          <h3>Coverage and helpers</h3>
+          <span class="muted-copy">${escapeHtml(coverage.warning_count || 0)} gaps</span>
+        </div>
+        <div class="stack-list">
+          <article class="stack-item">
+            <div class="stack-item-head">
+              <strong>Coverage</strong>
+              <span class="pill-chip ${toneClass(coverage.status === "clean" ? "ok" : coverage.status === "warning" ? "warn" : "neutral")}">${escapeHtml(
+                coverage.status || "unknown",
+              )}</span>
+            </div>
+            <div class="sub-list">
+              ${(coverage.gaps || [])
+                .map((gap) => `<div class="sub-row"><span>${escapeHtml(gap.gap_id || "gap")}</span><span>${escapeHtml(gap.title || "Untitled gap")}</span></div>`)
+                .join("") || `<div class="empty-note">No coverage warnings.</div>`}
+            </div>
+          </article>
+          <article class="stack-item">
+            <div class="stack-item-head">
+              <strong>Helper sync</strong>
+              <span class="pill-chip ${toneClass(quality.helper_sync?.status === "synced" ? "ok" : quality.helper_sync?.status ? "warn" : "neutral")}">${escapeHtml(
+                quality.helper_sync?.status || "unknown",
+              )}</span>
+            </div>
+            <p>${escapeHtml(quality.helper_sync?.sync_root || "No helper sync root recorded.")}</p>
+            ${
+              quality.helper_sync?.missing_entrypoints?.length
+                ? `<details class="disclosure">
+                    <summary>Missing entrypoints (${escapeHtml(quality.helper_sync.missing_entrypoints.length)})</summary>
+                    <pre class="code-block">${escapeHtml(quality.helper_sync.missing_entrypoints.join("\n"))}</pre>
+                  </details>`
+                : ""
+            }
+          </article>
+        </div>
+      </section>
+      <section class="surface-card">
+        <div class="section-heading">
+          <h3>Selection and events</h3>
+          <span class="muted-copy">${escapeHtml(quality.events?.length || 0)} events</span>
+        </div>
+        <div class="stack-list">
+          <article class="stack-item">
+            <div class="stack-item-head">
+              <strong>Resolved verification plan</strong>
+              <span class="pill-chip ${toneClass(quality.selection?.selection_status === "resolved" ? "ok" : "warn")}">${escapeHtml(
+                quality.selection?.selection_status || "unresolved",
+              )}</span>
+            </div>
+            <div class="chip-row">
+              <span class="pill-chip">${escapeHtml(`requested: ${quality.selection?.requested_mode || "n/a"}`)}</span>
+              <span class="pill-chip">${escapeHtml(`resolved: ${quality.selection?.resolved_mode || "n/a"}`)}</span>
+              <span class="pill-chip">${escapeHtml(`suite: ${quality.selection?.selected_suite || "none"}`)}</span>
+            </div>
+            ${quality.selection?.reason ? `<p>${escapeHtml(quality.selection.reason)}</p>` : ""}
+          </article>
+          <article class="stack-item">
+            <div class="stack-item-head">
+              <strong>Recent events</strong>
+              <span class="pill-chip">${escapeHtml(quality.events?.length || 0)}</span>
+            </div>
+            ${
+              quality.events?.length
+                ? `<pre class="code-block">${escapeHtml(
+                    quality.events.map((event) => `${event.timestamp || ""} ${event.event_type || "event"}: ${event.message || ""}`).join("\n"),
+                  )}</pre>`
+                : `<div class="empty-note">No recent verification events.</div>`
+            }
+          </article>
+        </div>
+      </section>
+      <section class="surface-card">
+        <div class="section-heading">
+          <h3>Log summaries</h3>
+          <span class="muted-copy">debug</span>
+        </div>
+        <details class="disclosure">
+          <summary>Stdout</summary>
+          <pre class="code-block">${formatLines(logs.stdout, "No active stdout stream.")}</pre>
+        </details>
+        <details class="disclosure">
+          <summary>Stderr</summary>
+          <pre class="code-block">${formatLines(logs.stderr, "No active stderr stream.")}</pre>
+        </details>
+        <details class="disclosure">
+          <summary>Logcat</summary>
+          <pre class="code-block">${formatLines(logs.logcat, "No active logcat stream.")}</pre>
+        </details>
+      </section>
+    </div>
+  `;
+}
+
+function renderConnectionList(connections) {
+  if (!connections?.length) {
+    return `<div class="empty-note">No YouTrack connections recorded.</div>`;
+  }
+  return `
+    <div class="stack-list">
+      ${connections
+        .map(
+          (connection) => `
+            <article class="stack-item">
+              <div class="stack-item-head">
+                <strong>${escapeHtml(connection.label)}</strong>
+                <span class="pill-chip ${toneClass(connection.status === "connected" ? "ok" : connection.status === "error" ? "bad" : "warn")}">${escapeHtml(
+                  connection.status || "unknown",
+                )}</span>
+              </div>
+              <p>${escapeHtml(connection.base_url)}</p>
+              <div class="chip-row">
+                <span class="pill-chip">${escapeHtml(connection.connection_id)}</span>
+                <span class="pill-chip">${connection.default ? "default" : "secondary"}</span>
+              </div>
+              <div class="action-row">
+                <button onclick='window.__agentiux.editYouTrackConnection(${JSON.stringify(connection.connection_id)})'>Edit</button>
+                <button class="secondary" onclick='window.__agentiux.testYouTrackConnection(${JSON.stringify(connection.connection_id)})'>Test</button>
+                <button class="secondary" onclick='window.__agentiux.setDefaultYouTrackConnection(${JSON.stringify(connection.connection_id)})'>Make default</button>
+                <button class="secondary" onclick='window.__agentiux.removeYouTrackConnection(${JSON.stringify(connection.connection_id)})'>Remove</button>
+              </div>
+            </article>
+          `,
+        )
+        .join("")}
+    </div>
+  `;
+}
+
+function renderYouTrackIssues(items) {
+  if (!items?.length) {
+    return `<div class="empty-note">No workstream issues recorded for the current workspace.</div>`;
+  }
+  return `
+    <div class="stack-list">
+      ${items
+        .map(
+          (item) => `
+            <article class="stack-item">
+              <div class="stack-item-head">
+                <span class="issue-link-wrap">
+                  <a class="issue-link" href="${escapeHtml(item.issue_url)}" target="_blank" rel="noreferrer">${escapeHtml(item.issue_key)}</a>
+                  ${renderIssueHoverSummary(item)}
+                </span>
+                <span class="pill-chip ${toneClass(item.task_status === "blocked" ? "bad" : item.task_status === "planned" ? "warn" : "neutral")}">${escapeHtml(
+                  item.task_status || "planned",
+                )}</span>
+              </div>
+              <p>${escapeHtml(item.title || "Untitled issue")}</p>
+              <div class="chip-row">
+                <span class="pill-chip">${escapeHtml(item.stage_id || "no-stage")}</span>
+                <span class="pill-chip">${escapeHtml(`YT est ${item.user_estimate_minutes ?? "n/a"}`)}</span>
+                <span class="pill-chip">${escapeHtml(`Codex est ${item.codex_estimate_minutes ?? "n/a"}`)}</span>
+                <span class="pill-chip">${escapeHtml(`YT spent ${item.youtrack_spent_minutes ?? 0}`)}</span>
+              </div>
+              ${
+                item.latest_commit
+                  ? `<pre class="code-block">${escapeHtml(`Latest commit: ${item.latest_commit.commit_hash} ${item.latest_commit.message}`)}</pre>`
+                  : ""
+              }
+            </article>
+          `,
+        )
+        .join("")}
+    </div>
+  `;
+}
+
+function renderYouTrackForm(connections, isEnabled) {
+  if (!isEnabled) {
+    return `
+      <section class="surface-card">
+        <div class="section-heading">
+          <h3>Connection management</h3>
+          <span class="muted-copy">unavailable</span>
+        </div>
+        <div class="empty-note">YouTrack connection management becomes available after workspace initialization.</div>
+      </section>
+    `;
+  }
   const editing = state.editingConnection;
   const editingId = editing?.connection_id || "";
   const editingLabel = editing?.label || "";
@@ -266,612 +968,245 @@ function renderYouTrack(detail) {
   const editingProjectScope = (editing?.project_scope || []).join(", ");
   const submitLabel = editing ? "Update connection" : "Add connection";
   return `
-    <section class="panel">
-      <h3>YouTrack</h3>
-      <div class="section-list">
-        <div class="section-row">
-          <strong>Workspace summary</strong>
-          <pre>${escapeHtml(
-            [
-              `Connections: ${summary.connection_count ?? 0}`,
-              `Default connection: ${summary.default_connection_id || "none"}`,
-              `Last search session: ${summary.last_search_session_id || "none"}`,
-              `Active plan: ${summary.active_plan_id || "none"}`,
-              `Current workstream issues: ${summary.current_workstream_issue_count ?? 0}`,
-            ].join("\n"),
-          )}</pre>
-        </div>
-        <div class="section-row">
-          <strong>Connections</strong>
-          <div class="stage-list">
-            ${connections
-              .map(
-                (connection) => `
-                  <div class="stage-item">
-                    <div><strong>${escapeHtml(connection.label)}</strong></div>
-                    <div class="muted">${escapeHtml(connection.base_url)}</div>
-                    <div class="workspace-meta">
-                      <span class="chip ${statusChip(connection.status)}">${escapeHtml(connection.status)}</span>
-                      <span class="chip">${escapeHtml(connection.connection_id)}</span>
-                      <span class="chip">${connection.default ? "default" : "secondary"}</span>
-                    </div>
-                    <div class="workspace-meta">
-                      <button onclick='window.__agentiux.editYouTrackConnection(${JSON.stringify(connection.connection_id)})'>Edit</button>
-                      <button class="secondary" onclick='window.__agentiux.testYouTrackConnection(${JSON.stringify(connection.connection_id)})'>Test</button>
-                      <button class="secondary" onclick='window.__agentiux.setDefaultYouTrackConnection(${JSON.stringify(connection.connection_id)})'>Make default</button>
-                      <button class="secondary" onclick='window.__agentiux.removeYouTrackConnection(${JSON.stringify(connection.connection_id)})'>Remove</button>
-                    </div>
-                  </div>
-                `,
-              )
-              .join("") || `<pre>No YouTrack connections recorded.</pre>`}
-          </div>
-        </div>
-        <div class="section-row">
-          <strong>${editing ? "Edit connection" : "Add connection"}</strong>
-          <div class="form-grid">
-            <input id="yt-connection-id" type="hidden" value="${escapeHtml(editingId)}" />
-            <label>
-              <span>Label</span>
-              <input id="yt-label" value="${escapeHtml(editingLabel)}" placeholder="Primary tracker" />
-            </label>
-            <label>
-              <span>Base URL</span>
-              <input id="yt-base-url" value="${escapeHtml(editingBaseUrl)}" placeholder="https://tracker.example.com" />
-            </label>
-            <label>
-              <span>Permanent token</span>
-              <input id="yt-token" type="password" placeholder="${editing ? "Leave empty to keep current token" : "perm:xxxx"}" />
-            </label>
-            <label>
-              <span>Project scope</span>
-              <input id="yt-project-scope" value="${escapeHtml(editingProjectScope)}" placeholder="SL, APP" />
-            </label>
-            <label class="checkbox-row">
-              <input id="yt-default" type="checkbox" ${editing?.default ? "checked" : ""} />
-              <span>Use as default connection</span>
-            </label>
-            <div class="workspace-meta">
-              <button onclick="window.__agentiux.submitYouTrackConnection()">${submitLabel}</button>
-              ${editing ? `<button class="secondary" onclick="window.__agentiux.clearYouTrackForm()">Cancel</button>` : ""}
-            </div>
-          </div>
-        </div>
-        <div class="section-row">
-          <strong>Search and plan state</strong>
-          <pre>${escapeHtml(
-            [
-              currentSearch
-                ? `Search ${currentSearch.session_id}: ${currentSearch.resolved_query} -> results ${currentSearch.result_count ?? "unknown"}, shortlist ${(currentSearch.shortlist_count ?? currentSearch.shortlist?.length) || 0}, page ${currentSearch.shortlist_page?.skip || 0}/${currentSearch.shortlist_page?.page_size || 0}`
-                : "No persisted search session.",
-              currentPlan
-                ? `Plan ${currentPlan.plan_id}: ${currentPlan.status} / selected issues ${(currentPlan.selected_issue_count ?? currentPlan.selected_issue_ids?.length) || 0}`
-                : "No persisted YouTrack plan.",
-            ].join("\n"),
-          )}</pre>
-        </div>
-        <div class="section-row">
-          <strong>Current workstream issue cards</strong>
-          <div class="stage-list">
-            ${workstreamIssues
-              .map(
-                (item) => `
-                  <div class="stage-item">
-                    <div>
-                      <strong>
-                        <span class="issue-link-wrap">
-                          <a class="issue-link-trigger" href="${escapeHtml(item.issue_url)}" target="_blank" rel="noreferrer">${escapeHtml(item.issue_key)}</a>
-                          ${renderIssueHoverSummary(item)}
-                        </span>
-                      </strong>
-                    </div>
-                    <div class="muted">${escapeHtml(item.title)}</div>
-                    <div class="workspace-meta">
-                      <span class="chip ${statusChip(item.task_status)}">${escapeHtml(item.task_status || "planned")}</span>
-                      <span class="chip">${escapeHtml(item.stage_id || "no-stage")}</span>
-                      <span class="chip">YT est ${escapeHtml(item.user_estimate_minutes ?? "n/a")}</span>
-                      <span class="chip">Codex est ${escapeHtml(item.codex_estimate_minutes ?? "n/a")}</span>
-                      <span class="chip">YT spent ${escapeHtml(item.youtrack_spent_minutes ?? 0)}</span>
-                      <span class="chip">Codex spent ${escapeHtml(item.codex_spent_minutes ?? 0)}</span>
-                    </div>
-                    <pre>${escapeHtml(
-                      item.latest_commit
-                        ? `Latest commit: ${item.latest_commit.commit_hash} ${item.latest_commit.message}`
-                        : "No linked commit recorded yet.",
-                    )}</pre>
-                  </div>
-                `,
-              )
-              .join("") || `<pre>No YouTrack-linked tasks in the current workstream.</pre>`}
-          </div>
+    <section class="surface-card">
+      <div class="section-heading">
+        <h3>${editing ? "Edit connection" : "Add connection"}</h3>
+        <span class="muted-copy">${escapeHtml(connections?.length || 0)} total</span>
+      </div>
+      <div class="form-grid">
+        <input id="yt-connection-id" type="hidden" value="${escapeHtml(editingId)}" />
+        <label>
+          <span>Label</span>
+          <input id="yt-label" value="${escapeHtml(editingLabel)}" placeholder="Primary tracker" />
+        </label>
+        <label>
+          <span>Base URL</span>
+          <input id="yt-base-url" value="${escapeHtml(editingBaseUrl)}" placeholder="https://tracker.example.com" />
+        </label>
+        <label>
+          <span>Permanent token</span>
+          <input id="yt-token" type="password" placeholder="${editing ? "Leave empty to keep current token" : "perm:xxxx"}" />
+        </label>
+        <label>
+          <span>Project scope</span>
+          <input id="yt-project-scope" value="${escapeHtml(editingProjectScope)}" placeholder="SL, APP" />
+        </label>
+        <label class="checkbox-row">
+          <input id="yt-default" type="checkbox" ${editing?.default ? "checked" : ""} />
+          <span>Use as default connection</span>
+        </label>
+        <div class="action-row">
+          <button onclick="window.__agentiux.submitYouTrackConnection()">${submitLabel}</button>
+          ${editing ? `<button class="secondary" onclick="window.__agentiux.clearYouTrackForm()">Cancel</button>` : ""}
         </div>
       </div>
     </section>
   `;
 }
 
-async function loadVerificationCoverage(workspacePath) {
-  if (!workspacePath) return;
-  try {
-    const response = await fetch(`/api/verification-coverage?workspace=${encodeURIComponent(workspacePath)}`, {
-      cache: "no-store",
-    });
-    if (!response.ok) return;
-    const payload = await response.json();
-    if (!state.snapshot?.workspace_detail || state.selectedWorkspace !== workspacePath) {
-      return;
-    }
-    state.snapshot.workspace_detail.verification_coverage_audit = payload;
-    render();
-  } catch (error) {
-    if (!state.snapshot?.workspace_detail || state.selectedWorkspace !== workspacePath) {
-      return;
-    }
-    state.snapshot.workspace_detail.verification_coverage_audit_error = error.message;
-    render();
-  }
-}
-
-async function fetchSnapshot(workspacePath, options = {}) {
-  const requestedWorkspace = workspacePath || null;
-  const historyMode = options.historyMode || "skip";
-  state.loading = true;
-  render();
-  try {
-    const detailQuery = requestedWorkspace ? `?workspace=${encodeURIComponent(requestedWorkspace)}` : "";
-    const [snapshotResponse, detailResponse] = await Promise.all([
-      fetch("/api/dashboard", { cache: "no-store" }),
-      requestedWorkspace ? fetch(`/api/workspace-detail${detailQuery}`, { cache: "no-store" }) : Promise.resolve(null),
-    ]);
-    if (!snapshotResponse.ok) throw new Error(`Dashboard request failed with ${snapshotResponse.status}`);
-    if (detailResponse && !detailResponse.ok) throw new Error(`Workspace detail request failed with ${detailResponse.status}`);
-    const snapshot = await snapshotResponse.json();
-    snapshot.workspace_detail = detailResponse ? await detailResponse.json() : null;
-    if (snapshot.workspace_detail) {
-      snapshot.workspace_detail.verification_coverage_audit = null;
-      snapshot.workspace_detail.verification_coverage_audit_error = null;
-    }
-    state.snapshot = snapshot;
-    state.selectedWorkspace = requestedWorkspace
-      ? snapshot.workspace_detail?.summary?.workspace_path || requestedWorkspace
-      : null;
-    const knownConnections = state.selectedWorkspace
-      ? snapshot.workspace_detail?.youtrack?.connections?.items || []
-      : [];
-    if (state.editingConnection) {
-      state.editingConnection =
-        knownConnections.find((item) => item.connection_id === state.editingConnection.connection_id) || null;
-    }
-    if (!state.selectedWorkspace) {
-      state.editingConnection = null;
-    }
-    if (historyMode !== "skip") {
-      updateRoute(state.selectedWorkspace, historyMode);
-    }
-    state.error = null;
-  } catch (error) {
-    state.error = error.message;
-  } finally {
-    state.loading = false;
-    render();
-    if (requestedWorkspace && state.selectedWorkspace) {
-      loadVerificationCoverage(state.selectedWorkspace);
-    }
-  }
-}
-
-function selectWorkspace(workspacePath) {
-  state.selectedWorkspace = workspacePath;
-  fetchSnapshot(workspacePath, { historyMode: "push" });
-}
-
-function clearSelection() {
-  state.selectedWorkspace = null;
-  fetchSnapshot(null, { historyMode: "push" });
-}
-
-function renderSidebar(snapshot) {
-  const overview = snapshot.overview || { workspaces: [] };
-  const workspaces = overview.workspaces || [];
+function renderIntegrationsPanel(cockpit) {
+  const integrations = cockpit.integrations || {};
+  const youtrack = integrations.youtrack || {};
+  const summary = youtrack.summary || {};
+  const currentSearch = youtrack.current_search_session || null;
+  const currentPlan = youtrack.current_plan || null;
+  const connections = youtrack.connections?.items || [];
   return `
-    <aside class="sidebar">
-      <div class="brand">
-        <p class="muted">AgentiUX Dev</p>
-        <h1>Plugin Dashboard</h1>
-        <p>${escapeHtml(snapshot.plugin.current_root)}</p>
-      </div>
-      <div class="stat-strip">
-        <div class="pill">
-          <strong>${escapeHtml(snapshot.stats.workspace_count)}</strong>
-          <span>Workspaces</span>
+    <div class="content-grid" data-screen-id="cockpit-integrations-panel" data-panel="integrations" data-testid="cockpit-integrations-panel">
+      <section class="surface-card emphasis-card">
+        <div class="section-heading">
+          <h3>Integration state</h3>
+          <span class="pill-chip ${toneClass(connections.length ? "ok" : "warn")}">${escapeHtml(connections.length ? "connected" : "needs setup")}</span>
         </div>
-        <div class="pill">
-          <strong>${escapeHtml(snapshot.stats.starter_runs)}</strong>
-          <span>Starter runs</span>
+        ${renderMetricGrid(integrations.summary_cards || [])}
+        <div class="chip-row">
+          <span class="pill-chip">${escapeHtml(`workstream issues: ${summary.current_workstream_issue_count || 0}`)}</span>
+          <span class="pill-chip">${escapeHtml(`default: ${summary.default_connection_id || "none"}`)}</span>
         </div>
-        <div class="pill">
-          <strong>${escapeHtml(snapshot.stats.reference_boards)}</strong>
-          <span>Boards</span>
+      </section>
+      <section class="surface-card">
+        <div class="section-heading">
+          <h3>Connections</h3>
+          <span class="muted-copy">${escapeHtml(connections.length)}</span>
         </div>
-        <div class="pill">
-          <strong>${escapeHtml(snapshot.stats.design_handoffs)}</strong>
-          <span>Handoffs</span>
+        ${renderConnectionList(connections)}
+      </section>
+      ${renderYouTrackForm(connections, cockpit.state_kind === "initialized")}
+      <section class="surface-card">
+        <div class="section-heading">
+          <h3>Search and plan state</h3>
+          <span class="muted-copy">YouTrack</span>
         </div>
-        <div class="pill">
-          <strong>${escapeHtml(snapshot.stats.active_verification_runs)}</strong>
-          <span>Active runs</span>
+        <div class="stack-list">
+          <article class="stack-item">
+            <div class="stack-item-head">
+              <strong>Current search session</strong>
+              <span class="pill-chip">${escapeHtml(currentSearch?.session_id || "none")}</span>
+            </div>
+            <p>${escapeHtml(currentSearch?.resolved_query || "No persisted search session.")}</p>
+            <div class="chip-row">
+              <span class="pill-chip">${escapeHtml(`results ${currentSearch?.result_count ?? 0}`)}</span>
+              <span class="pill-chip">${escapeHtml(`shortlist ${currentSearch?.shortlist_count ?? 0}`)}</span>
+            </div>
+          </article>
+          <article class="stack-item">
+            <div class="stack-item-head">
+              <strong>Current plan</strong>
+              <span class="pill-chip ${toneClass(currentPlan?.status === "applied" ? "ok" : "warn")}">${escapeHtml(
+                currentPlan?.status || "none",
+              )}</span>
+            </div>
+            <p>${escapeHtml(currentPlan?.plan_id || "No persisted YouTrack plan.")}</p>
+            <div class="chip-row">
+              <span class="pill-chip">${escapeHtml(`issues ${currentPlan?.selected_issue_count ?? 0}`)}</span>
+              <span class="pill-chip">${escapeHtml(`stages ${currentPlan?.stage_count ?? 0}`)}</span>
+            </div>
+          </article>
         </div>
-        <div class="pill">
-          <strong>${escapeHtml(snapshot.stats.failed_verification_runs)}</strong>
-          <span>Failed runs</span>
+      </section>
+      <section class="surface-card">
+        <div class="section-heading">
+          <h3>Current workstream issue cards</h3>
+          <span class="muted-copy">${escapeHtml(youtrack.current_workstream_issues?.items?.length || 0)}</span>
         </div>
-        <div class="pill">
-          <strong>${escapeHtml(snapshot.stats.plugin_platform_workspaces)}</strong>
-          <span>Plugin workspaces</span>
-        </div>
-        <div class="pill">
-          <strong>${escapeHtml(snapshot.stats.gui_status)}</strong>
-          <span>GUI</span>
-        </div>
-      </div>
-      <div class="sidebar-actions">
-        <button onclick="window.__agentiux.refresh()">Refresh</button>
-        <button class="secondary" onclick="window.__agentiux.clearSelection()">Overview</button>
-      </div>
-      <div class="workspace-list">
-        ${workspaces
-          .map((workspace) => {
-            const active = workspace.workspace_path === state.selectedWorkspace ? "active" : "";
-            const workspaceArg = JSON.stringify(workspace.workspace_path);
-            const href = workspaceRoute(workspace.workspace_path);
-            return `
-              <a class="workspace-card ${active}" href="${escapeHtml(href)}" onclick='window.__agentiux.selectWorkspace(${workspaceArg}); return false;'>
-                <h3>${escapeHtml(workspace.workspace_label)}</h3>
-                <div class="muted">${escapeHtml(workspace.workspace_path)}</div>
-                <div class="workspace-meta">
-                  <span class="chip ${statusChip(workspace.stage_status)}">${escapeHtml(workspace.stage_status)}</span>
-                  <span class="chip">${escapeHtml(workspace.current_workstream_id || "default")}</span>
-                  <span class="chip">${escapeHtml(workspace.summary_counts.workstreams)} workstreams</span>
-                  <span class="chip">${escapeHtml(workspace.summary_counts.tasks)} tasks</span>
-                </div>
-              </a>
-            `;
-          })
-          .join("")}
-      </div>
-    </aside>
+        ${renderYouTrackIssues(youtrack.current_workstream_issues?.items || [])}
+      </section>
+    </div>
   `;
 }
 
-function renderOverview(snapshot) {
-  const starterRuns = snapshot.starter_runs?.runs || [];
+function renderDiagnosticsPanel(cockpit) {
+  const diagnostics = cockpit.diagnostics || {};
+  const audit = diagnostics.audit;
+  const upgradePlan = diagnostics.upgrade_plan;
+  const design = diagnostics.design || {};
   return `
-    <div class="hero-card">
-      <p class="muted">Overview</p>
-      <h2>Global plugin state</h2>
-      <div class="summary-grid">
-        <div class="metric"><strong>${escapeHtml(snapshot.stats.workspace_count)}</strong><span>Initialized workspaces</span></div>
-        <div class="metric"><strong>${escapeHtml(snapshot.stats.blocked_workspaces)}</strong><span>Blocked workspaces</span></div>
-        <div class="metric"><strong>${escapeHtml(snapshot.stats.artifact_files)}</strong><span>Artifact files</span></div>
-        <div class="metric"><strong>${escapeHtml(snapshot.stats.active_verification_runs)}</strong><span>Active verification runs</span></div>
-        <div class="metric"><strong>${escapeHtml(snapshot.stats.failed_verification_runs)}</strong><span>Failed verification runs</span></div>
-        <div class="metric"><strong>${escapeHtml(snapshot.stats.starter_runs)}</strong><span>Starter runs</span></div>
-        <div class="metric"><strong>${escapeHtml(snapshot.stats.plugin_platform_workspaces)}</strong><span>Plugin-platform workspaces</span></div>
-        <div class="metric"><strong>${escapeHtml(snapshot.stats.gui_status)}</strong><span>GUI status</span></div>
-      </div>
-      <div class="section-list">
-        <div class="section-row">
-          <strong>Recent starter runs</strong>
-          <pre>${escapeHtml(
-            starterRuns
-              .map((run) => `${run.run_id || "run"} [${run.preset_id || "preset"}] ${run.status || "status"} -> ${run.project_root || "n/a"}`)
-              .join("\n") || "No starter runs recorded.",
+    <div class="content-grid" data-screen-id="cockpit-diagnostics-panel" data-panel="diagnostics" data-testid="cockpit-diagnostics-panel">
+      <section class="surface-card">
+        <div class="section-heading">
+          <h3>Workspace detection</h3>
+          <span class="muted-copy">${escapeHtml(diagnostics.host_support?.host_os || "unknown")}</span>
+        </div>
+        ${renderMetricGrid([
+          { label: "Host OS", value: diagnostics.host_support?.host_os || "unknown" },
+          { label: "Infra mode", value: diagnostics.host_support?.infra_mode || "unknown" },
+          { label: "Orchestration", value: diagnostics.host_support?.orchestration || "n/a" },
+          { label: "Plugin platform", value: diagnostics.plugin_platform?.enabled ? "enabled" : "disabled", tone: diagnostics.plugin_platform?.enabled ? "ok" : "neutral" },
+        ])}
+        <details class="disclosure">
+          <summary>Detected stacks</summary>
+          <pre class="code-block">${escapeHtml((diagnostics.detected_stacks || []).join("\n") || "No stack signals recorded.")}</pre>
+        </details>
+        <details class="disclosure">
+          <summary>Selected profiles</summary>
+          <pre class="code-block">${escapeHtml((diagnostics.selected_profiles || []).join("\n") || "No selected profiles recorded.")}</pre>
+        </details>
+      </section>
+      <section class="surface-card">
+        <div class="section-heading">
+          <h3>Audit and upgrade</h3>
+          <span class="muted-copy">secondary</span>
+        </div>
+        <div class="stack-list">
+          <article class="stack-item">
+            <div class="stack-item-head">
+              <strong>Current audit</strong>
+              <span class="pill-chip ${toneClass(audit?.gaps?.length ? "warn" : "neutral")}">${escapeHtml(audit?.audit_id || "none")}</span>
+            </div>
+            ${
+              audit
+                ? `<pre class="code-block">${escapeHtml(
+                    [`Initialized: ${audit.initialized}`, `Gaps: ${(audit.gaps || []).length}`, ...(audit.gaps || []).map((gap) => `${gap.gap_id}: ${gap.title}`)].join(
+                      "\n",
+                    ),
+                  )}</pre>`
+                : `<div class="empty-note">No audit recorded.</div>`
+            }
+          </article>
+          <article class="stack-item">
+            <div class="stack-item-head">
+              <strong>Upgrade plan</strong>
+              <span class="pill-chip ${toneClass(upgradePlan?.status === "applied" ? "ok" : "neutral")}">${escapeHtml(
+                upgradePlan?.status || "none",
+              )}</span>
+            </div>
+            ${
+              upgradePlan
+                ? `<pre class="code-block">${escapeHtml(
+                    [
+                      `Plan ID: ${upgradePlan.plan_id || "n/a"}`,
+                      `Created workstream: ${upgradePlan.created_workstream_id || "none"}`,
+                      `Tasks: ${(upgradePlan.created_task_ids || []).join(", ") || "none"}`,
+                    ].join("\n"),
+                  )}</pre>`
+                : `<div class="empty-note">No upgrade plan recorded.</div>`
+            }
+          </article>
+        </div>
+      </section>
+      <section class="surface-card">
+        <div class="section-heading">
+          <h3>Design traces</h3>
+          <span class="muted-copy">debug</span>
+        </div>
+        <details class="disclosure">
+          <summary>Brief</summary>
+          <pre class="code-block">${escapeHtml(JSON.stringify(design.brief || {}, null, 2) || "{}")}</pre>
+        </details>
+        <details class="disclosure">
+          <summary>Reference board</summary>
+          <pre class="code-block">${escapeHtml(JSON.stringify(design.reference_board || {}, null, 2) || "{}")}</pre>
+        </details>
+        <details class="disclosure">
+          <summary>Handoff</summary>
+          <pre class="code-block">${escapeHtml(JSON.stringify(design.handoff || {}, null, 2) || "{}")}</pre>
+        </details>
+      </section>
+      <section class="surface-card">
+        <div class="section-heading">
+          <h3>State paths</h3>
+          <span class="muted-copy">${escapeHtml(diagnostics.paths?.length || 0)}</span>
+        </div>
+        <details class="disclosure" open>
+          <summary>External paths</summary>
+          <pre class="code-block">${escapeHtml(
+            (diagnostics.paths || []).map((item) => `${item.key}: ${item.value}`).join("\n") || "No paths recorded.",
           )}</pre>
-        </div>
-      </div>
+        </details>
+      </section>
     </div>
   `;
 }
 
-function renderDetail(detail) {
-  if (!detail) {
-    return `
-      <div class="panel">
-        <h2>No workspace selected</h2>
-        <p class="muted">Choose a workspace from the left rail to inspect workstreams, tasks, verification state, design state, audits, and paths.</p>
-      </div>
-    `;
+function renderActivePanel(cockpit) {
+  switch (state.panel) {
+    case "plan":
+      return renderPlanPanel(cockpit);
+    case "quality":
+      return renderQualityPanel(cockpit);
+    case "integrations":
+      return renderIntegrationsPanel(cockpit);
+    case "diagnostics":
+      return renderDiagnosticsPanel(cockpit);
+    case "now":
+    default:
+      return renderNowPanel(cockpit);
   }
+}
 
-  const summary = detail.summary;
-  const register = detail.stage_register || {};
-  const board = detail.current_reference_board || {};
-  const handoff = detail.current_design_handoff || {};
-  const designBrief = detail.design_brief || {};
-  const verificationRunSummary = detail.verification_runs || {};
-  const verificationRecipes = detail.verification_recipes || {};
-  const verificationRuns = verificationRunSummary.recent_runs || verificationRunSummary.runs || [];
-  const latestVerificationRun = detail.latest_verification_run || verificationRunSummary.latest_run || null;
-  const latestCompletedRun = detail.latest_completed_verification_run || verificationRunSummary.latest_completed_run || null;
-  const recentVerificationEvents = detail.recent_verification_events?.events || [];
-  const pluginPlatform = detail.workspace_state?.plugin_platform || summary.plugin_platform || { enabled: false };
-  const activeBriefLines = (summary.active_brief_preview || []).join("\n");
-  const workstreams = detail.workstreams?.items || [];
-  const tasks = detail.tasks?.items || [];
-  const currentTask = detail.current_task || null;
-  const currentAudit = detail.current_audit || null;
-  const currentUpgradePlan = detail.current_upgrade_plan || null;
-  const recentStarterRuns = detail.recent_starter_runs || [];
-  const coverageAudit = detail.verification_coverage_audit;
-  const coverageAuditError = detail.verification_coverage_audit_error;
-
+function renderCockpit(cockpit) {
   return `
-    <div class="hero-card">
-      <p class="muted">${escapeHtml(summary.workspace_path)}</p>
-      <h2>${escapeHtml(summary.workspace_label)}</h2>
-      <div class="hero-grid">
-        <div class="metric"><strong>${escapeHtml(summary.workspace_mode)}</strong><span>Workspace mode</span></div>
-        <div class="metric"><strong>${escapeHtml(summary.current_workstream_id || "default")}</strong><span>Current workstream</span></div>
-        <div class="metric"><strong>${escapeHtml(summary.current_task_id || "none")}</strong><span>Current task</span></div>
-        <div class="metric"><strong>${escapeHtml(summary.summary_counts.workstreams)}</strong><span>Total workstreams</span></div>
-        <div class="metric"><strong>${escapeHtml(summary.summary_counts.tasks)}</strong><span>Total tasks</span></div>
-        <div class="metric"><strong>${escapeHtml(summary.summary_counts.active_verification_runs)}</strong><span>Active verification runs</span></div>
-        <div class="metric"><strong>${escapeHtml(summary.summary_counts.verification_runs)}</strong><span>Total verification runs</span></div>
-      </div>
-    </div>
-    <div class="detail-grid">
-      <section class="panel">
-        <h3>Execution state</h3>
-        <div class="section-list">
-          <div class="section-row">
-            <strong>Next objective</strong>
-            <pre>${escapeHtml(summary.next_task || "No next task recorded.")}</pre>
-          </div>
-          <div class="section-row">
-            <strong>Active brief preview</strong>
-            <pre>${escapeHtml(activeBriefLines || "No brief recorded.")}</pre>
-          </div>
-          <div class="section-row">
-            <strong>Blockers</strong>
-            <pre>${escapeHtml((summary.blockers || []).join("\n") || "No blockers recorded.")}</pre>
-          </div>
-        </div>
-      </section>
-      <section class="panel">
-        <h3>Workstreams</h3>
-        <div class="stage-list">
-          ${workstreams
-            .map(
-              (item) => `
-                <div class="stage-item">
-                  <div><strong>${escapeHtml(item.workstream_id)}</strong></div>
-                  <div class="muted">${escapeHtml(item.title || "Untitled workstream")}</div>
-                  <div class="workspace-meta">
-                    <span class="chip ${statusChip(item.status)}">${escapeHtml(item.status)}</span>
-                    <span class="chip">${escapeHtml(item.current_stage || "no-stage")}</span>
-                    <span class="chip">${escapeHtml(item.branch_hint || "no-branch")}</span>
-                  </div>
-                </div>
-              `,
-            )
-            .join("") || `<pre>No workstreams recorded.</pre>`}
-        </div>
-      </section>
-      <section class="panel">
-        <h3>Tasks</h3>
-        <div class="section-list">
-          <div class="section-row">
-            <strong>Current task</strong>
-            <pre>${escapeHtml(
-              currentTask
-                ? `${currentTask.task_id}\n${currentTask.title}\n${currentTask.status}\nLinked workstream: ${currentTask.linked_workstream_id || "none"}`
-                : "No current task selected.",
-            )}</pre>
-          </div>
-          <div class="section-row">
-            <strong>Task list</strong>
-            <pre>${escapeHtml(
-              tasks
-                .map((task) => `${task.task_id} [${task.status}] ${task.title}`)
-                .join("\n") || "No tasks recorded.",
-            )}</pre>
-          </div>
-        </div>
-      </section>
-      <section class="panel">
-        <h3>Workspace detection</h3>
-        <div class="section-list">
-          <div class="section-row">
-            <strong>Host support</strong>
-            <pre>${escapeHtml(
-              [
-                `Host OS: ${summary.host_os || "unknown"}`,
-                `Infra mode: ${summary.local_dev_policy?.infra_mode || "unknown"}`,
-                `Orchestration: ${summary.local_dev_policy?.orchestration || "n/a"}`,
-                `Repair status: ${summary.state_repair_status?.status || "unknown"}`,
-                ...(summary.support_warnings || []),
-              ].join("\n") || "No host support state recorded.",
-            )}</pre>
-          </div>
-          <div class="section-row">
-            <strong>Detected stacks</strong>
-            <pre>${escapeHtml((summary.detected_stacks || []).join("\n") || "No stack signals recorded.")}</pre>
-          </div>
-          <div class="section-row">
-            <strong>Selected profiles</strong>
-            <pre>${escapeHtml((summary.selected_profiles || []).join("\n") || "No profiles selected.")}</pre>
-          </div>
-          <div class="section-row">
-            <strong>Plugin platform</strong>
-            ${renderPluginPlatform(pluginPlatform)}
-          </div>
-        </div>
-      </section>
-      ${renderYouTrack(detail)}
-      <section class="panel">
-        <h3>Verification state</h3>
-        <div class="section-list">
-          <div class="section-row">
-            <strong>Current or latest run</strong>
-            ${renderVerificationSummary(latestVerificationRun)}
-          </div>
-          <div class="section-row">
-            <strong>Latest completed run</strong>
-            ${renderVerificationSummary(latestCompletedRun)}
-          </div>
-          <div class="section-row">
-            <strong>Recipes, runners, baselines</strong>
-            ${renderVerificationCases(verificationRecipes)}
-          </div>
-          <div class="section-row">
-            <strong>Resolved verification plan</strong>
-            ${renderVerificationSelection(detail.verification_selection || summary.verification?.selection)}
-          </div>
-          <div class="section-row">
-            <strong>Recent events</strong>
-            ${renderVerificationEvents(recentVerificationEvents)}
-          </div>
-        </div>
-      </section>
-      <section class="panel">
-        <h3>Stage timeline</h3>
-        <div class="stage-list">
-          ${(register.stages || [])
-            .map(
-              (stage) => `
-                <div class="stage-item">
-                  <div><strong>${escapeHtml(stage.id)}</strong></div>
-                  <div class="muted">${escapeHtml(stage.title)}</div>
-                  <div class="workspace-meta">
-                    <span class="chip ${statusChip(stage.status)}">${escapeHtml(stage.status)}</span>
-                    <span class="chip">${escapeHtml(stage.completed_at || "not completed")}</span>
-                  </div>
-                </div>
-              `,
-            )
-            .join("")}
-        </div>
-      </section>
-      <section class="panel">
-        <h3>Boards and handoffs</h3>
-        <div class="section-list">
-          <div class="section-row">
-            <strong>Design brief</strong>
-            <pre>${escapeHtml(`${designBrief.status || "not_started"}\nPlatform: ${designBrief.platform || "n/a"}\nSurface: ${designBrief.surface || "n/a"}`)}</pre>
-          </div>
-          <div class="section-row">
-            <strong>Reference candidates</strong>
-            <pre>${escapeHtml(
-              (board.candidates || [])
-                .map((candidate) => `${candidate.id || "candidate"}: ${candidate.title || candidate.url || "untitled"}`)
-                .join("\n") || "No persisted candidates yet.",
-            )}</pre>
-          </div>
-          <div class="section-row">
-            <strong>Verification hooks</strong>
-            <pre>${escapeHtml((handoff.verification_hooks || []).join("\n") || "No verification hooks recorded.")}</pre>
-          </div>
-        </div>
-      </section>
-      <section class="panel">
-        <h3>Audit and upgrade</h3>
-        <div class="section-list">
-          <div class="section-row">
-            <strong>Current audit</strong>
-            <pre>${escapeHtml(
-              currentAudit
-                ? [
-                    `Audit ID: ${currentAudit.audit_id || "n/a"}`,
-                    `Initialized: ${currentAudit.initialized}`,
-                    `Gaps: ${(currentAudit.gaps || []).length}`,
-                    ...(currentAudit.gaps || []).map((gap) => `${gap.gap_id}: ${gap.title}`),
-                  ].join("\n")
-                : "No audit recorded.",
-            )}</pre>
-          </div>
-          <div class="section-row">
-            <strong>Current upgrade plan</strong>
-            <pre>${escapeHtml(
-              currentUpgradePlan
-                ? [
-                    `Plan ID: ${currentUpgradePlan.plan_id || "n/a"}`,
-                    `Status: ${currentUpgradePlan.status || "draft"}`,
-                    `Created workstream: ${currentUpgradePlan.created_workstream_id || "none"}`,
-                    `Tasks: ${(currentUpgradePlan.created_task_ids || []).join(", ") || "none"}`,
-                  ].join("\n")
-                : "No upgrade plan recorded.",
-            )}</pre>
-          </div>
-        </div>
-      </section>
-      <section class="panel">
-        <h3>Starter history</h3>
-        <div class="section-list">
-          <div class="section-row">
-            <strong>Recent starter runs for this workspace</strong>
-            <pre>${escapeHtml(
-              recentStarterRuns
-                .map((run) => `${run.run_id || "run"} [${run.preset_id || "preset"}] ${run.status || "status"}`)
-                .join("\n") || "No starter runs recorded for this workspace.",
-            )}</pre>
-          </div>
-        </div>
-      </section>
-      <section class="panel">
-        <h3>Verification logs</h3>
-        <div class="section-list">
-          <div class="section-row">
-            <strong>Stdout tail</strong>
-            <pre>${formatLines(detail.active_verification_stdout?.lines, "No active stdout stream.")}</pre>
-          </div>
-          <div class="section-row">
-            <strong>Stderr tail</strong>
-            <pre>${formatLines(detail.active_verification_stderr?.lines, "No active stderr stream.")}</pre>
-          </div>
-          <div class="section-row">
-            <strong>Logcat tail</strong>
-            <pre>${formatLines(detail.active_verification_logcat?.lines, "No active logcat stream.")}</pre>
-          </div>
-          <div class="section-row">
-            <strong>Coverage audit</strong>
-            <pre>${escapeHtml(
-              coverageAuditError
-                ? `Coverage audit failed: ${coverageAuditError}`
-                : coverageAudit === null
-                  ? "Coverage audit is loading..."
-                  : (coverageAudit?.gaps || [])
-                      .map((gap) => `${gap.gap_id}: ${gap.title}`)
-                      .join("\n") || "No verification coverage warnings.",
-            )}</pre>
-          </div>
-          <div class="section-row">
-            <strong>Recent runs</strong>
-            <pre>${escapeHtml(
-              verificationRuns
-                .map(
-                  (run) =>
-                    `${run.run_id || "run"} [${run.mode || "mode"}:${run.target_id || "target"}] ${run.status || "status"} / ${run.health || "health"}`,
-                )
-                .join("\n") || "No verification runs recorded.",
-            )}</pre>
-          </div>
-        </div>
-      </section>
-      <section class="panel">
-        <h3>State paths</h3>
-        <div class="path-block">${escapeHtml(
-          Object.entries(detail.paths || {})
-            .map(([key, value]) => `${key}: ${value}`)
-            .join("\n"),
-        )}</div>
-      </section>
-    </div>
+    <section class="page-shell" data-screen-id="workspace-cockpit" data-testid="workspace-cockpit">
+      ${renderHero(cockpit)}
+      ${renderTabs(cockpit)}
+      ${renderActivePanel(cockpit)}
+    </section>
   `;
 }
 
 async function submitYouTrackConnection() {
   const workspacePath = state.selectedWorkspace;
-  if (!workspacePath) return;
+  if (!workspacePath || state.cockpitModel?.state_kind !== "initialized") return;
   const connectionId = document.getElementById("yt-connection-id")?.value || "";
   const label = document.getElementById("yt-label")?.value || "";
   const baseUrl = document.getElementById("yt-base-url")?.value || "";
@@ -896,7 +1231,7 @@ async function submitYouTrackConnection() {
     await apiJson("/api/youtrack/connections", { method: "POST", body: JSON.stringify(body) });
   }
   state.editingConnection = null;
-  await fetchSnapshot(workspacePath);
+  await fetchDashboard(workspacePath, { historyMode: "replace", panel: "integrations" });
 }
 
 function clearYouTrackForm() {
@@ -905,16 +1240,16 @@ function clearYouTrackForm() {
 }
 
 async function testYouTrackConnection(connectionId) {
-  if (!state.selectedWorkspace) return;
+  if (!state.selectedWorkspace || state.cockpitModel?.state_kind !== "initialized") return;
   await apiJson(`/api/youtrack/connections/${encodeURIComponent(connectionId)}/test`, {
     method: "POST",
     body: JSON.stringify({ workspacePath: state.selectedWorkspace }),
   });
-  await fetchSnapshot(state.selectedWorkspace);
+  await fetchDashboard(state.selectedWorkspace, { historyMode: "replace", panel: "integrations" });
 }
 
 async function removeYouTrackConnection(connectionId) {
-  if (!state.selectedWorkspace) return;
+  if (!state.selectedWorkspace || state.cockpitModel?.state_kind !== "initialized") return;
   await apiJson("/api/youtrack/connections", {
     method: "DELETE",
     body: JSON.stringify({ workspacePath: state.selectedWorkspace, connectionId }),
@@ -922,21 +1257,22 @@ async function removeYouTrackConnection(connectionId) {
   if (state.editingConnection?.connection_id === connectionId) {
     state.editingConnection = null;
   }
-  await fetchSnapshot(state.selectedWorkspace);
+  await fetchDashboard(state.selectedWorkspace, { historyMode: "replace", panel: "integrations" });
 }
 
 async function setDefaultYouTrackConnection(connectionId) {
-  if (!state.selectedWorkspace) return;
+  if (!state.selectedWorkspace || state.cockpitModel?.state_kind !== "initialized") return;
   await apiJson("/api/youtrack/connections", {
     method: "PATCH",
     body: JSON.stringify({ workspacePath: state.selectedWorkspace, connectionId, default: true, testConnection: false }),
   });
-  await fetchSnapshot(state.selectedWorkspace);
+  await fetchDashboard(state.selectedWorkspace, { historyMode: "replace", panel: "integrations" });
 }
 
 function editYouTrackConnection(connectionId) {
-  const connections = state.snapshot?.workspace_detail?.youtrack?.connections?.items || [];
+  const connections = state.cockpitModel?.integrations?.youtrack?.connections?.items || [];
   state.editingConnection = connections.find((item) => item.connection_id === connectionId) || null;
+  state.panel = "integrations";
   render();
 }
 
@@ -949,27 +1285,24 @@ function render() {
     appRoot.innerHTML = `<div class="error-state">${escapeHtml(state.error)}</div>`;
     return;
   }
-  const snapshot = state.snapshot;
-  if (!snapshot) {
+  if (!state.overviewPayload) {
     appRoot.innerHTML = `<div class="empty-state">No dashboard snapshot available.</div>`;
     return;
   }
-
+  const mainContent = state.selectedWorkspace && state.cockpitModel ? renderCockpit(state.cockpitModel) : renderOverviewPage(state.overviewPayload);
   appRoot.innerHTML = `
-    <div class="shell">
-      ${renderSidebar(snapshot)}
-      <main class="main">
-        ${renderOverview(snapshot)}
-        ${renderDetail(state.selectedWorkspace ? snapshot.workspace_detail : null)}
-      </main>
+    <div class="shell" data-screen-id="dashboard-shell" data-testid="dashboard-shell">
+      ${renderSidebar(state.overviewPayload)}
+      <main class="main" role="main">${mainContent}</main>
     </div>
   `;
 }
 
 window.__agentiux = {
-  refresh: () => fetchSnapshot(state.selectedWorkspace, { historyMode: "replace" }),
+  refresh,
   clearSelection,
   selectWorkspace,
+  setPanel,
   submitYouTrackConnection,
   clearYouTrackForm,
   testYouTrackConnection,
@@ -980,10 +1313,16 @@ window.__agentiux = {
 
 window.addEventListener("popstate", () => {
   const route = parseRoute();
-  fetchSnapshot(route.workspacePath, { historyMode: "skip" });
+  fetchDashboard(route.workspacePath, {
+    historyMode: "skip",
+    panel: route.panel,
+    forceOverview: route.forceOverview,
+  });
 });
 
 const initialRoute = parseRoute();
-fetchSnapshot(initialRoute.workspacePath, {
+fetchDashboard(initialRoute.workspacePath, {
   historyMode: initialRoute.source === "legacy-query" ? "replace" : "skip",
+  panel: initialRoute.panel,
+  forceOverview: initialRoute.forceOverview,
 });

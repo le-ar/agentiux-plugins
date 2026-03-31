@@ -11,6 +11,7 @@ Deterministic verification is the default closeout path for AgentiUX Dev.
 - Long-running verification must emit structured progress events and keep stdout, stderr, and Android logcat when configured under the external verification run root.
 - Coverage audits should report warning-level gaps when a detected surface has no deterministic verification case yet.
 - Web workspaces should ship at least one visual web case.
+- Web workspaces should also ship at least one live `browser-layout-audit` case so computed overlap, occlusion, clipping, and viewport regressions are exercised against a real rendered page.
 - Android-capable workspaces should ship at least one Android-targeted visual case.
 - Canonical baselines should stay project-owned for reproducible CI checks.
 - Transient screenshots, diffs, traces, videos, and plugin packets should stay outside the repo.
@@ -18,6 +19,7 @@ Deterministic verification is the default closeout path for AgentiUX Dev.
 ## Runner Adapters
 
 - `playwright-visual`
+- `browser-layout-audit`
 - `detox-visual`
 - `android-compose-screenshot`
 - `ios-simulator-capture`
@@ -41,10 +43,12 @@ Deterministic verification is the default closeout path for AgentiUX Dev.
 - `baseline`
 - `android_logcat`
 - `semantic_assertions`
+- `browser_layout_audit`
 
 ## Optional Semantic Assertions
 
-- `semantic_assertions` is optional per case.
+- `semantic_assertions` is optional for non-visual and non-web cases, but web visual cases should always enable it.
+- `browser_layout_audit` is the live browser DOM audit config for cases that must verify a rendered page directly instead of relying only on runner-emitted semantic JSON.
 - Projects should materialize the plugin-owned helper bundle into `.verification/helpers/` before importing runner helpers.
 - The helper catalog is read-only and reports bundle version, runner entrypoints, required host tools, and current materialization status.
 - When enabled, the runner must emit a JSON report into the verification artifact root.
@@ -52,12 +56,13 @@ Deterministic verification is the default closeout path for AgentiUX Dev.
 - The semantic spec shape is `enabled`, `report_path`, `required_checks`, `targets`, `auto_scan`, `heuristics`, `artifacts`, and `platform_hooks`.
 - Each target uses `target_id`, `locator`, `container_locator`, `scroll_container_locator`, `interactions`, `expected_attributes`, `expected_styles`, `expected_layout`, `allow_clipping`, `allow_occlusion`, and `allow_text_truncation`.
 - Shared check families are `presence_uniqueness`, `visibility`, `scroll_reachability`, `overflow_clipping`, `occlusion`, `interaction_states`, `computed_styles`, `layout_relations`, `text_overflow`, `accessibility_state`, and `screenshot_baseline`.
-- Recommended checks for web: `visibility`, `overflow_clipping`, `computed_styles`, `interaction_states`, `scroll_reachability`, `occlusion`.
+- Required checks for web visual cases: `presence_uniqueness`, `visibility`, `overflow_clipping`, `computed_styles`, `interaction_states`, `scroll_reachability`, `occlusion`.
 - Recommended checks for Android: `visibility`, `overflow_clipping`, `interaction_states`, `scroll_reachability`, `occlusion`.
 
 ## Web
 
 - Prefer Playwright.
+- Add at least one `browser-layout-audit` case per web workspace.
 - Use fixed viewport matrix.
 - Disable animations.
 - Hide carets when taking screenshots.
@@ -65,6 +70,7 @@ Deterministic verification is the default closeout path for AgentiUX Dev.
 - Persist route IDs and expected states in the design handoff.
 - Prefer one route or state per verification case and group them into suites for broader closeout runs.
 - If semantic assertions are enabled, make Playwright emit a JSON report for the declared checks alongside screenshots and diffs.
+- `browser-layout-audit` cases may start a local server via `argv` or `shell_command`, wait on `readiness_probe`, and then record a JSON audit report plus screenshot under the external artifact root.
 
 ## React Native / Expo
 

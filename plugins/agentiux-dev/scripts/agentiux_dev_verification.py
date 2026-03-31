@@ -10,6 +10,7 @@ import re
 import shutil
 import subprocess
 import time
+import urllib.parse
 import urllib.request
 import uuid
 from datetime import datetime
@@ -38,6 +39,7 @@ from agentiux_dev_lib import (
 
 TERMINAL_RUN_STATUSES = {"passed", "failed", "cancelled"}
 RUNNER_TYPES = {
+    "browser-layout-audit",
     "playwright-visual",
     "detox-visual",
     "android-compose-screenshot",
@@ -90,7 +92,17 @@ DEFAULT_SEMANTIC_HEURISTICS = [
     "interactive_overflow_scan",
     "interactive_occlusion_scan",
 ]
+MANDATORY_WEB_VISUAL_SEMANTIC_CHECKS = [
+    "presence_uniqueness",
+    "visibility",
+    "overflow_clipping",
+    "computed_styles",
+    "interaction_states",
+    "scroll_reachability",
+    "occlusion",
+]
 RUNNER_CHECK_SUPPORT = {
+    "browser-layout-audit": set(),
     "playwright-visual": set(SEMANTIC_ASSERTION_CHECKS),
     "detox-visual": set(SEMANTIC_ASSERTION_CHECKS),
     "android-compose-screenshot": set(SEMANTIC_ASSERTION_CHECKS),
@@ -98,6 +110,7 @@ RUNNER_CHECK_SUPPORT = {
     "shell-contract": set(),
 }
 RUNNER_LOCATOR_SUPPORT = {
+    "browser-layout-audit": set(),
     "playwright-visual": {"selector", "role", "test_id", "text"},
     "detox-visual": {"test_id", "text"},
     "android-compose-screenshot": {"test_id", "semantics_tag", "text"},
@@ -105,6 +118,7 @@ RUNNER_LOCATOR_SUPPORT = {
     "shell-contract": set(),
 }
 RUNNER_REQUIRED_HOST_TOOLS = {
+    "browser-layout-audit": ["node", "browser-runtime"],
     "playwright-visual": ["node", "browser-runtime"],
     "detox-visual": ["node", "detox"],
     "android-compose-screenshot": ["android", "gradle"],
@@ -478,6 +492,8 @@ def sync_verification_helpers(workspace: str | Path, force: bool = False) -> dic
 
 def _runner_from_legacy(value: str | None) -> str | None:
     mapping = {
+        "browser-audit": "browser-layout-audit",
+        "browser-layout": "browser-layout-audit",
         "playwright": "playwright-visual",
         "detox": "detox-visual",
         "compose-screenshot": "android-compose-screenshot",
@@ -491,6 +507,28 @@ def _runner_from_legacy(value: str | None) -> str | None:
     if value is None:
         return None
     return mapping.get(value, value)
+
+
+def _normalize_browser_layout_audit(payload: Any, case: dict[str, Any]) -> dict[str, Any]:
+    config = dict(payload or {})
+    return {
+        "url": str(config.get("url") or "").strip() or None,
+        "base_url": str(config.get("base_url") or "").strip() or None,
+        "wait_for": str(config.get("wait_for") or "").strip() or None,
+        "settle_ms": int(config.get("settle_ms", 1200)),
+        "wait_timeout_ms": int(config.get("wait_timeout_ms", 15000)),
+        "selector": [str(item) for item in config.get("selector") or [] if str(item or "").strip()],
+        "container_selector": [
+            str(item)
+            for item in config.get("container_selector") or []
+            if str(item or "").strip()
+        ],
+        "text_selector": [str(item) for item in config.get("text_selector") or [] if str(item or "").strip()],
+        "allow_selector": [str(item) for item in config.get("allow_selector") or [] if str(item or "").strip()],
+        "chrome_path": str(config.get("chrome_path") or "").strip() or None,
+        "report_path": str(config.get("report_path") or f"{case['id']}-browser-layout-audit.json"),
+        "screenshot_path": str(config.get("screenshot_path") or f"{case['id']}-browser-layout-audit.png"),
+    }
 
 
 def _normalize_android_logcat(payload: dict[str, Any] | None) -> dict[str, Any]:
@@ -725,6 +763,10 @@ def _normalize_case(case: dict[str, Any]) -> dict[str, Any]:
         "android_logcat": _normalize_android_logcat(payload.get("android_logcat")),
     }
     normalized["semantic_assertions"] = _normalize_semantic_assertions(payload.get("semantic_assertions"), normalized)
+    normalized["browser_layout_audit"] = _normalize_browser_layout_audit(
+        payload.get("browser_layout_audit") or payload.get("browser_audit"),
+        normalized,
+    )
     if runner not in RUNNER_TYPES:
         raise ValueError(f"Unsupported verification runner: {runner}")
     return normalized
@@ -1045,6 +1087,10 @@ def _host_requirement_status(state: dict[str, Any], requirement: str) -> dict[st
         "python": state.get("toolchain_capabilities", {}).get("python", {"supported": True, "available": True, "reason": None}),
         "docker": state.get("toolchain_capabilities", {}).get("docker", {"supported": True, "available": True, "reason": None}),
         "web": state.get("toolchain_capabilities", {}).get("web_verification", {"supported": True, "available": True, "reason": None}),
+        "browser-runtime": state.get(
+            "toolchain_capabilities",
+            {},
+        ).get("browser_runtime", {"supported": True, "available": True, "reason": None}),
         "android": state.get("toolchain_capabilities", {}).get("mobile_verification_android", {"supported": True, "available": True, "reason": None}),
         "ios": state.get("toolchain_capabilities", {}).get("mobile_verification_ios", {"supported": True, "available": True, "reason": None}),
     }
@@ -1055,6 +1101,7 @@ def _host_requirement_status(state: dict[str, Any], requirement: str) -> dict[st
 def _case_selection_summary(workspace: str | Path, case: dict[str, Any], state: dict[str, Any]) -> dict[str, Any]:
     requirements = [_host_requirement_status(state, requirement) for requirement in case.get("host_requirements") or []]
     semantic_assertions = case.get("semantic_assertions") or {}
+    browser_layout_audit = case.get("browser_layout_audit") or {}
     return {
         "case_id": case["id"],
         "title": case.get("title"),
@@ -1071,6 +1118,8 @@ def _case_selection_summary(workspace: str | Path, case: dict[str, Any], state: 
         "semantic_assertions_enabled": bool(semantic_assertions.get("enabled")),
         "semantic_target_count": len(semantic_assertions.get("targets") or []),
         "semantic_auto_scan": bool(semantic_assertions.get("auto_scan", False)),
+        "browser_layout_audit_enabled": case.get("runner") == "browser-layout-audit",
+        "browser_layout_audit_report_path": browser_layout_audit.get("report_path"),
     }
 
 
@@ -1470,7 +1519,126 @@ def _resolve_case_cwd(workspace: str | Path, case: dict[str, Any]) -> str:
     return str((Path(workspace).expanduser().resolve() / candidate).resolve())
 
 
-def _wait_for_readiness_probe(workspace: str | Path, case: dict[str, Any]) -> None:
+def _resolve_browser_layout_audit_report_path(run_paths: dict[str, Path], case: dict[str, Any]) -> Path:
+    config = case.get("browser_layout_audit") or {}
+    candidate = config.get("report_path") or f"{case['id']}-browser-layout-audit.json"
+    path = Path(str(candidate))
+    if path.is_absolute():
+        return path
+    return run_paths["artifacts_dir"] / path
+
+
+def _resolve_browser_layout_audit_screenshot_path(run_paths: dict[str, Path], case: dict[str, Any]) -> Path:
+    config = case.get("browser_layout_audit") or {}
+    candidate = config.get("screenshot_path") or f"{case['id']}-browser-layout-audit.png"
+    path = Path(str(candidate))
+    if path.is_absolute():
+        return path
+    return run_paths["artifacts_dir"] / path
+
+
+def _browser_layout_audit_script() -> Path:
+    return plugin_root() / "scripts" / "browser_layout_audit.mjs"
+
+
+def _browser_layout_audit_viewport(case: dict[str, Any]) -> tuple[int, int]:
+    config = case.get("device_or_viewport") or {}
+    viewport = config.get("viewport")
+    if isinstance(viewport, str):
+        match = re.fullmatch(r"\s*(\d+)\s*x\s*(\d+)\s*", viewport)
+        if match:
+            return int(match.group(1)), int(match.group(2))
+    if isinstance(viewport, dict):
+        width = int(viewport.get("width") or 0)
+        height = int(viewport.get("height") or 0)
+        if width > 0 and height > 0:
+            return width, height
+    device = str(config.get("device") or "").lower()
+    if any(signal in device for signal in {"iphone", "android", "mobile"}):
+        return 390, 844
+    if "tablet" in device or "ipad" in device:
+        return 820, 1180
+    return 1440, 1600
+
+
+def _browser_layout_audit_url(case: dict[str, Any]) -> str:
+    config = case.get("browser_layout_audit") or {}
+    explicit_url = str(config.get("url") or "").strip()
+    if explicit_url:
+        return explicit_url
+    route = str((case.get("target") or {}).get("route") or "").strip()
+    base_url = str(config.get("base_url") or "").strip()
+    if base_url:
+        if route:
+            return urllib.parse.urljoin(base_url.rstrip("/") + "/", route.lstrip("/"))
+        return base_url
+    probe = case.get("readiness_probe") or {}
+    if probe.get("type") == "http":
+        probe_url = str(probe.get("url") or "").strip()
+        if probe_url:
+            if route:
+                parsed = urllib.parse.urlsplit(probe_url)
+                return urllib.parse.urlunsplit((parsed.scheme, parsed.netloc, route, "", ""))
+            return probe_url
+    raise ValueError(
+        f"Browser layout audit case `{case['id']}` requires `browser_layout_audit.url`, "
+        "`browser_layout_audit.base_url`, or an HTTP readiness probe."
+    )
+
+
+def _browser_layout_audit_command(case: dict[str, Any], run_paths: dict[str, Path]) -> list[str]:
+    width, height = _browser_layout_audit_viewport(case)
+    config = case.get("browser_layout_audit") or {}
+    argv = [
+        "node",
+        str(_browser_layout_audit_script()),
+        "--url",
+        _browser_layout_audit_url(case),
+        "--width",
+        str(width),
+        "--height",
+        str(height),
+        "--settle-ms",
+        str(int(config.get("settle_ms") or 1200)),
+        "--wait-timeout-ms",
+        str(int(config.get("wait_timeout_ms") or 15000)),
+        "--screenshot-path",
+        str(_resolve_browser_layout_audit_screenshot_path(run_paths, case)),
+        "--label",
+        case["id"],
+    ]
+    if config.get("wait_for"):
+        argv.extend(["--wait-for", str(config["wait_for"])])
+    if config.get("chrome_path"):
+        argv.extend(["--chrome-path", str(config["chrome_path"])])
+    for field, flag in (
+        ("selector", "--selector"),
+        ("container_selector", "--container-selector"),
+        ("text_selector", "--text-selector"),
+        ("allow_selector", "--allow-selector"),
+    ):
+        for value in config.get(field) or []:
+            argv.extend([flag, str(value)])
+    return argv
+
+
+def _stop_managed_case_process(process: subprocess.Popen[str] | None) -> None:
+    if process is None or process.poll() is not None:
+        return
+    process.terminate()
+    try:
+        process.wait(timeout=5)
+    except subprocess.TimeoutExpired:
+        process.kill()
+        process.wait(timeout=5)
+
+
+def _wait_for_readiness_probe(
+    workspace: str | Path,
+    case: dict[str, Any],
+    *,
+    startup_process: subprocess.Popen[str] | None = None,
+) -> None:
     probe = case.get("readiness_probe")
     if not probe:
         return
@@ -1481,6 +1649,8 @@ def _wait_for_readiness_probe(workspace: str | Path, case: dict[str, Any]) -> No
         url = probe["url"]
         expected_status = int(probe.get("status", 200))
         while time.time() < deadline:
+            if startup_process is not None and startup_process.poll() is not None:
+                raise RuntimeError(f"Startup command for case `{case['id']}` exited before readiness probe succeeded.")
             try:
                 with urllib.request.urlopen(url, timeout=0.5) as response:
                     if response.status == expected_status:
@@ -1493,6 +1663,8 @@ def _wait_for_readiness_probe(workspace: str | Path, case: dict[str, Any]) -> No
         if not candidate.is_absolute():
             candidate = Path(workspace).expanduser().resolve() / candidate
         while time.time() < deadline:
+            if startup_process is not None and startup_process.poll() is not None:
+                raise RuntimeError(f"Startup command for case `{case['id']}` exited before readiness probe succeeded.")
             if candidate.exists():
                 return
             time.sleep(0.2)
@@ -1502,6 +1674,8 @@ def _wait_for_readiness_probe(workspace: str | Path, case: dict[str, Any]) -> No
         if not argv:
             raise ValueError("shell_command readiness probe requires argv")
         while time.time() < deadline:
+            if startup_process is not None and startup_process.poll() is not None:
+                raise RuntimeError(f"Startup command for case `{case['id']}` exited before readiness probe succeeded.")
             result = subprocess.run(argv, cwd=str(Path(workspace).expanduser().resolve()), capture_output=True, text=True, check=False)  # noqa: S603
             if result.returncode == 0:
                 return
@@ -1520,6 +1694,91 @@ def _effective_command(case: dict[str, Any]) -> tuple[list[str] | None, str | No
     if runner in RUNNER_TYPES:
         raise ValueError(f"Verification case requires argv or shell_command: {case['id']}")
     raise ValueError(f"Unsupported verification runner: {runner}")
+
+
+def _run_browser_layout_audit_case(
+    workspace: str | Path,
+    run: dict[str, Any],
+    case: dict[str, Any],
+    cwd: str,
+    env: dict[str, str],
+) -> int:
+    run_paths = _verification_run_paths(workspace, run["run_id"], workstream_id=run.get("workstream_id"))
+    startup_process: subprocess.Popen[str] | None = None
+    startup_label = None
+    if case.get("shell_command"):
+        startup_label = case["shell_command"]
+        startup_process = start_logged_process(
+            case["shell_command"],
+            run_paths["stdout_log"],
+            run_paths["stderr_log"],
+            cwd=cwd,
+            env=env,
+            shell=True,
+        )
+    elif isinstance(case.get("argv"), list) and case.get("argv"):
+        startup_label = " ".join(str(part) for part in case["argv"])
+        startup_process = start_logged_process(
+            [str(part) for part in case["argv"]],
+            run_paths["stdout_log"],
+            run_paths["stderr_log"],
+            cwd=cwd,
+            env=env,
+            shell=False,
+        )
+    try:
+        if startup_process is not None:
+            _append_event(
+                workspace,
+                run["run_id"],
+                "browser_layout_audit_startup",
+                f"Started browser layout audit server command for {case['id']}.",
+                workstream_id=run.get("workstream_id"),
+                case_id=case["id"],
+                pid=startup_process.pid,
+                command=startup_label,
+            )
+        _wait_for_readiness_probe(workspace, case, startup_process=startup_process)
+        audit_command = _browser_layout_audit_command(case, run_paths)
+        completed = subprocess.run(  # noqa: S603
+            audit_command,
+            cwd=cwd,
+            env=env,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        with run_paths["stdout_log"].open("a") as stdout_handle:
+            if completed.stdout:
+                stdout_handle.write(completed.stdout)
+                if not completed.stdout.endswith("\n"):
+                    stdout_handle.write("\n")
+        with run_paths["stderr_log"].open("a") as stderr_handle:
+            if completed.stderr:
+                stderr_handle.write(completed.stderr)
+                if not completed.stderr.endswith("\n"):
+                    stderr_handle.write("\n")
+        if completed.returncode != 0:
+            return int(completed.returncode)
+        report_path = _resolve_browser_layout_audit_report_path(run_paths, case)
+        try:
+            payload = json.loads(completed.stdout or "{}")
+        except json.JSONDecodeError as exc:
+            raise ValueError(f"Browser layout audit produced invalid JSON for case `{case['id']}`: {exc}") from exc
+        _write_json(report_path, payload)
+        return 0 if payload.get("ok") else 1
+    finally:
+        if startup_process is not None:
+            _stop_managed_case_process(startup_process)
+            _append_event(
+                workspace,
+                run["run_id"],
+                "browser_layout_audit_startup_stopped",
+                f"Stopped browser layout audit server command for {case['id']}.",
+                workstream_id=run.get("workstream_id"),
+                case_id=case["id"],
+                pid=startup_process.pid,
+            )
 
 
 def _run_case_attempt(
@@ -1545,6 +1804,8 @@ def _run_case_attempt(
     if semantic_spec_path is not None:
         env["VERIFICATION_SEMANTIC_SPEC_PATH"] = str(semantic_spec_path)
     cwd = _resolve_case_cwd(workspace, case)
+    if case.get("runner") == "browser-layout-audit":
+        return _run_browser_layout_audit_case(workspace, run, case, cwd, env)
     argv, shell_command = _effective_command(case)
 
     _wait_for_readiness_probe(workspace, case)
@@ -2139,6 +2400,66 @@ def _validate_semantic_assertions(run_paths: dict[str, Path], case: dict[str, An
     }
 
 
+def _validate_browser_layout_audit(run_paths: dict[str, Path], case: dict[str, Any]) -> dict[str, Any]:
+    if case.get("runner") != "browser-layout-audit":
+        return {
+            "enabled": False,
+            "status": "not_enabled",
+            "report_path": None,
+        }
+    report_path = _resolve_browser_layout_audit_report_path(run_paths, case)
+    if not report_path.exists():
+        return {
+            "enabled": True,
+            "status": "failed",
+            "report_path": str(report_path),
+            "reason": "missing_report",
+            "message": f"Browser layout audit report is missing for case {case['id']}.",
+            "issue_count": None,
+            "issues": [],
+            "screenshot_path": None,
+        }
+    try:
+        payload = _load_json(report_path, strict=True, purpose="browser layout audit report")
+    except ValueError as exc:
+        return {
+            "enabled": True,
+            "status": "failed",
+            "report_path": str(report_path),
+            "reason": "invalid_report",
+            "message": str(exc),
+            "issue_count": None,
+            "issues": [],
+            "screenshot_path": None,
+        }
+    if not isinstance(payload, dict):
+        return {
+            "enabled": True,
+            "status": "failed",
+            "report_path": str(report_path),
+            "reason": "invalid_report",
+            "message": f"Browser layout audit report is invalid for case {case['id']}.",
+            "issue_count": None,
+            "issues": [],
+            "screenshot_path": None,
+        }
+    issues = payload.get("issues") if isinstance(payload.get("issues"), list) else []
+    status = "passed" if bool(payload.get("ok")) else "failed"
+    return {
+        "enabled": True,
+        "status": status,
+        "report_path": str(report_path),
+        "reason": None if status == "passed" else "layout_issues_detected",
+        "message": None if status == "passed" else f"Browser layout audit detected {len(issues)} issues for case {case['id']}.",
+        "issue_count": int(payload.get("issue_count") or len(issues)),
+        "issues": issues,
+        "screenshot_path": payload.get("screenshot_path"),
+        "viewport": copy.deepcopy(payload.get("viewport") or {}),
+        "url": payload.get("url"),
+        "label": payload.get("label"),
+    }
+
+
 def _start_run(workspace: str | Path, mode: str, target_id: str, workstream_id: str | None = None) -> dict[str, Any]:
     paths = _ensure_workspace_paths(workspace, workstream_id=workstream_id)
     recipes = read_verification_recipes(workspace, workstream_id=workstream_id)
@@ -2409,6 +2730,31 @@ def _merge_recipe_defaults(default_recipes: dict[str, Any], saved_recipes: dict[
     return merged
 
 
+def _case_targets_dashboard_surface(case: dict[str, Any]) -> bool:
+    signals: list[str] = []
+    signals.extend(str(item or "").lower() for item in case.get("surface_ids", []))
+    signals.extend(str(item or "").lower() for item in case.get("feature_ids", []))
+    signals.extend(str(item or "").lower() for item in case.get("tags", []))
+    signals.extend(str(item or "").lower() for item in case.get("routes_or_screens", []))
+    signals.extend(str(item or "").lower() for item in case.get("changed_path_globs", []))
+    signals.append(str(case.get("id") or "").lower())
+    return any("dashboard" in signal or "gui" in signal for signal in signals)
+
+
+def _case_requires_web_visual_semantics(case: dict[str, Any]) -> bool:
+    runner = str(case.get("runner") or "").lower()
+    surface_type = str(case.get("surface_type") or "").lower()
+    return runner == "playwright-visual" or (surface_type == "web" and runner in VISUAL_RUNNERS)
+
+
+def _case_has_browser_layout_audit(case: dict[str, Any]) -> bool:
+    return str(case.get("runner") or "").lower() == "browser-layout-audit"
+
+
+def _case_counts_as_visual_web_coverage(case: dict[str, Any]) -> bool:
+    return case.get("runner") in VISUAL_RUNNERS or _case_has_browser_layout_audit(case)
+
+
 def audit_verification_coverage(workspace: str | Path, workstream_id: str | None = None) -> dict[str, Any]:
     resolved_workspace = Path(workspace).expanduser().resolve()
     detection = detect_workspace(resolved_workspace)
@@ -2455,8 +2801,12 @@ def audit_verification_coverage(workspace: str | Path, workstream_id: str | None
         )
     coverage = {
         "plugin": False,
+        "dashboard": False,
+        "dashboard_visual": False,
+        "dashboard_browser_layout_audit": False,
         "web": False,
         "web_visual": False,
+        "web_browser_layout_audit": False,
         "mobile": False,
         "android": False,
         "android_visual": False,
@@ -2494,6 +2844,18 @@ def audit_verification_coverage(workspace: str | Path, workstream_id: str | None
                 )
             )
         semantic_assertions = case.get("semantic_assertions") or {}
+        if _case_requires_web_visual_semantics(case) and not semantic_assertions.get("enabled"):
+            gaps.append(
+                _coverage_gap(
+                    f"{case_id}-missing-web-semantic-assertions",
+                    f"Web visual case `{case_id}` does not enable semantic assertions",
+                    (
+                        "Enable `semantic_assertions` for Playwright-backed web coverage so clipping, overlap, "
+                        "visibility, and computed-style regressions are checked deterministically."
+                    ),
+                    category="visual",
+                )
+            )
         if semantic_assertions.get("enabled"):
             semantic_case_ids.append(case_id)
             if not semantic_assertions.get("targets"):
@@ -2527,16 +2889,42 @@ def audit_verification_coverage(workspace: str | Path, workstream_id: str | None
                         category="visual",
                     )
                 )
+            if _case_requires_web_visual_semantics(case):
+                missing_web_checks = [
+                    check_id
+                    for check_id in MANDATORY_WEB_VISUAL_SEMANTIC_CHECKS
+                    if check_id not in set(semantic_assertions.get("required_checks") or [])
+                ]
+                if missing_web_checks:
+                    gaps.append(
+                        _coverage_gap(
+                            f"{case_id}-missing-core-web-semantic-checks",
+                            f"Web visual case `{case_id}` is missing mandatory layout semantic checks",
+                            (
+                                "Require the full web semantic guardrail set for visual checks: "
+                                f"{', '.join(missing_web_checks)}."
+                            ),
+                            category="visual",
+                        )
+                    )
         surface_type = str(case.get("surface_type") or "").lower()
         device = str((case.get("device_or_viewport") or {}).get("device") or "").lower()
         tags = {str(tag).lower() for tag in case.get("tags", [])}
         feature_ids = {str(tag).lower() for tag in case.get("feature_ids", [])}
         if surface_type == "plugin" or "plugin-runtime" in tags or "plugin-runtime" in feature_ids:
             coverage["plugin"] = True
+        if _case_targets_dashboard_surface(case):
+            coverage["dashboard"] = True
+            if _case_counts_as_visual_web_coverage(case):
+                coverage["dashboard_visual"] = True
+            if _case_has_browser_layout_audit(case):
+                coverage["dashboard_browser_layout_audit"] = True
         if surface_type == "web":
             coverage["web"] = True
-            if case.get("runner") in VISUAL_RUNNERS:
+            if _case_counts_as_visual_web_coverage(case):
                 coverage["web_visual"] = True
+            if _case_has_browser_layout_audit(case):
+                coverage["web_browser_layout_audit"] = True
         if surface_type == "mobile":
             coverage["mobile"] = True
         if case.get("runner") == "android-compose-screenshot" or "android" in device or surface_type == "android":
@@ -2559,6 +2947,24 @@ def audit_verification_coverage(workspace: str | Path, workstream_id: str | None
                 "Add at least one plugin verification case or fragment for self-hosted plugin behavior.",
             )
         )
+    if "local-dashboard" in stacks and not coverage["dashboard_visual"]:
+        gaps.append(
+            _coverage_gap(
+                "missing-dashboard-visual-verification",
+                "Local dashboard surface has no visual verification case",
+                "Add at least one `playwright-visual` or `browser-layout-audit` case for the dashboard so overlap, clipping, and occlusion regressions are checked deterministically.",
+                category="visual",
+            )
+        )
+    if "local-dashboard" in stacks and not coverage["dashboard_browser_layout_audit"]:
+        gaps.append(
+            _coverage_gap(
+                "missing-dashboard-browser-layout-audit",
+                "Local dashboard surface has no live browser layout audit case",
+                "Add at least one `browser-layout-audit` case for the dashboard so DOM-level overlap and occlusion issues are checked on a real rendered page.",
+                category="visual",
+            )
+        )
     if "web-platform" in profiles and not coverage["web"]:
         gaps.append(
             _coverage_gap(
@@ -2572,7 +2978,16 @@ def audit_verification_coverage(workspace: str | Path, workstream_id: str | None
             _coverage_gap(
                 "missing-web-visual-verification",
                 "Web workspace has no visual web verification case",
-                "Add at least one `playwright-visual` web case so deterministic UI regressions are covered.",
+                "Add at least one `playwright-visual` or `browser-layout-audit` web case so deterministic UI regressions are covered.",
+                category="visual",
+            )
+        )
+    if "web-platform" in profiles and not coverage["web_browser_layout_audit"]:
+        gaps.append(
+            _coverage_gap(
+                "missing-web-browser-layout-audit",
+                "Web workspace has no live browser layout audit case",
+                "Add at least one `browser-layout-audit` web case so computed layout regressions are caught on a real rendered page.",
                 category="visual",
             )
         )
@@ -2828,6 +3243,8 @@ def execute_verification_run(workspace: str | Path, run_id: str, workstream_id: 
         )
         case_state["semantic_assertions"] = semantic_assertions
         case_state["semantic_summary"] = semantic_assertions
+        browser_layout_audit = _validate_browser_layout_audit(run_paths, case)
+        case_state["browser_layout_audit"] = browser_layout_audit
         if exit_code == 0 and semantic_assertions.get("enabled") and semantic_assertions.get("status") != "passed":
             exit_code = 1
             message = semantic_assertions.get("message") or (
@@ -2865,6 +3282,23 @@ def execute_verification_run(workspace: str | Path, run_id: str, workstream_id: 
                 optional_failed_checks=semantic_assertions.get("optional_failed_checks"),
                 report_path=semantic_assertions.get("report_path"),
             )
+        if browser_layout_audit.get("enabled") and browser_layout_audit.get("status") != "passed":
+            if exit_code == 0:
+                exit_code = 1
+            message = browser_layout_audit.get("message") or f"Browser layout audit failed for case {case['id']}."
+            with _verification_run_paths(workspace_path, run_id, workstream_id=workstream_id)["stderr_log"].open("a") as handle:
+                handle.write(f"\n[browser-layout-audit] {message}\n")
+            _append_event(
+                workspace_path,
+                run_id,
+                "browser_layout_audit_failed",
+                message,
+                workstream_id=workstream_id,
+                case_id=case["id"],
+                issue_count=browser_layout_audit.get("issue_count"),
+                report_path=browser_layout_audit.get("report_path"),
+                screenshot_path=browser_layout_audit.get("screenshot_path"),
+            )
         case_state["attempts"] = attempts_performed
         case_state["exit_code"] = exit_code
         case_state["completed_at"] = now_iso()
@@ -2901,6 +3335,27 @@ def execute_verification_run(workspace: str | Path, run_id: str, workstream_id: 
                 "failed_checks": semantic_assertions.get("failed_checks", []),
                 "optional_failed_checks": semantic_assertions.get("optional_failed_checks", []),
             }
+        if browser_layout_audit.get("enabled"):
+            _append_event(
+                workspace_path,
+                run_id,
+                "browser_layout_audit_validated",
+                f"Browser layout audit {browser_layout_audit.get('status')} for case {case['id']}.",
+                workstream_id=workstream_id,
+                case_id=case["id"],
+                status=browser_layout_audit.get("status"),
+                issue_count=browser_layout_audit.get("issue_count"),
+                report_path=browser_layout_audit.get("report_path"),
+                screenshot_path=browser_layout_audit.get("screenshot_path"),
+            )
+            run.setdefault("summary", {})
+            run["summary"]["browser_layout_audit"] = {
+                "case_id": case["id"],
+                "status": browser_layout_audit.get("status"),
+                "issue_count": browser_layout_audit.get("issue_count"),
+                "report_path": browser_layout_audit.get("report_path"),
+                "screenshot_path": browser_layout_audit.get("screenshot_path"),
+            }
         _write_run(workspace_path, run, workstream_id=workstream_id)
         _append_event(
             workspace_path,
@@ -2912,6 +3367,7 @@ def execute_verification_run(workspace: str | Path, run_id: str, workstream_id: 
             exit_code=exit_code,
             status=case_state["status"],
             baseline_status=case_state["baseline"]["status"],
+            browser_layout_status=browser_layout_audit.get("status"),
             logcat_signals=(logcat_summary or {}).get("signals"),
         )
         if exit_code != 0:

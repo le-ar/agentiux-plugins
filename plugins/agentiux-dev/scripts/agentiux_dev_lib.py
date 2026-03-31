@@ -1064,6 +1064,40 @@ def _tool_available(command: str) -> bool:
     return shutil.which(command) is not None
 
 
+def _browser_runtime_available(host_os: str | None = None) -> bool:
+    resolved_host = host_os or current_host_os()
+    override = os.environ.get("CHROME_BINARY")
+    if override:
+        candidate = Path(override).expanduser()
+        return candidate.exists() and os.access(candidate, os.X_OK)
+    path_candidates = [
+        "google-chrome",
+        "google-chrome-stable",
+        "chromium",
+        "chromium-browser",
+        "chrome",
+        "msedge",
+    ]
+    if any(_tool_available(candidate) for candidate in path_candidates):
+        return True
+    host_candidates = {
+        "macos": [
+            "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
+            "/Applications/Chromium.app/Contents/MacOS/Chromium",
+            "/Applications/Microsoft Edge.app/Contents/MacOS/Microsoft Edge",
+        ],
+        "linux": [
+            "/usr/bin/google-chrome",
+            "/usr/bin/google-chrome-stable",
+            "/usr/bin/chromium",
+            "/usr/bin/chromium-browser",
+            "/usr/bin/microsoft-edge",
+        ],
+        "windows": [],
+    }
+    return any(Path(candidate).exists() for candidate in host_candidates.get(resolved_host, []))
+
+
 def host_capabilities(host_os: str | None = None) -> dict[str, Any]:
     resolved_host = host_os or current_host_os()
     core_supported = resolved_host in SUPPORTED_HOSTS
@@ -1092,6 +1126,7 @@ def _toolchain_capabilities(detected_stacks: set[str], host_os: str | None = Non
     adb_available = _tool_available("adb")
     xcodebuild_available = resolved_host == "macos" and _tool_available("xcodebuild")
     python_available = bool(python_launcher_tokens(resolved_host))
+    browser_runtime_available = _browser_runtime_available(resolved_host)
     return {
         "python": {
             "supported": True,
@@ -1102,6 +1137,13 @@ def _toolchain_capabilities(detected_stacks: set[str], host_os: str | None = Non
             "supported": True,
             "available": node_available,
             "reason": None if node_available else "Node.js is required for web verification and starter execution.",
+        },
+        "browser_runtime": {
+            "supported": True,
+            "available": browser_runtime_available,
+            "reason": None
+            if browser_runtime_available
+            else "Chrome, Chromium, or a CHROME_BINARY override is required for live browser verification.",
         },
         "mobile_verification_android": {
             "supported": True,
@@ -1139,6 +1181,8 @@ def _support_warnings(detected_stacks: set[str], host_os: str, toolchain: dict[s
         warnings.append("This workspace includes iOS surfaces, but iOS execution is available only on macOS.")
     if any(stack in detected_stacks for stack in {"react", "nextjs", "react-native", "expo", "nestjs"}) and not toolchain["web_verification"]["available"]:
         warnings.append("Node.js tooling is missing, so some starters or verification flows will remain planning-only.")
+    if any(stack in detected_stacks for stack in {"react", "nextjs", "local-dashboard"}) and not toolchain["browser_runtime"]["available"]:
+        warnings.append("A local Chrome or Chromium runtime is missing, so live browser layout audits cannot run deterministically.")
     if any(stack in detected_stacks for stack in {"postgres", "mongodb", "redis", "nats", "docker-compose"}) and not toolchain["docker"]["available"]:
         warnings.append("Docker is not available on this host, so local infra boot paths cannot run here.")
     return warnings
@@ -6688,27 +6732,6 @@ def list_dashboard_workspaces() -> dict[str, Any]:
     }
 
 
-def _dashboard_task_card(task: dict[str, Any] | None) -> dict[str, Any] | None:
-    if not task:
-        return None
-    return {
-        "task_id": task.get("task_id"),
-        "title": task.get("title"),
-        "status": task.get("status"),
-        "linked_workstream_id": task.get("linked_workstream_id"),
-        "stage_id": task.get("stage_id"),
-    }
-
-
-def _dashboard_task_list(workspace: str | Path) -> dict[str, Any]:
-    tasks = list_tasks(workspace)
-    return {
-        "workspace_path": tasks["workspace_path"],
-        "current_task_id": tasks.get("current_task_id"),
-        "items": [card for card in (_dashboard_task_card(item) for item in tasks.get("items", [])) if card],
-    }
-
-
 def _dashboard_starter_runs(workspace: str | Path) -> list[dict[str, Any]]:
     workspace_path = str(Path(workspace).expanduser().resolve())
     return [
@@ -6723,83 +6746,867 @@ def _dashboard_starter_runs(workspace: str | Path) -> list[dict[str, Any]]:
     ]
 
 
+def _dashboard_tone(status: str | None) -> str:
+    normalized = str(status or "").lower()
+    if normalized in {
+        "active",
+        "approved",
+        "clean",
+        "completed",
+        "connected",
+        "healthy",
+        "ok",
+        "passed",
+        "running",
+        "synced",
+    }:
+        return "ok"
+    if normalized in {
+        "blocked",
+        "cancelled",
+        "degraded",
+        "error",
+        "failed",
+        "hung",
+        "missing",
+        "not_initialized",
+        "uninitialized",
+    }:
+        return "bad"
+    if normalized in {
+        "awaiting_user",
+        "draft",
+        "idle",
+        "needs_user_confirmation",
+        "planned",
+        "ready_for_closeout",
+        "unresolved",
+        "warning",
+    }:
+        return "warn"
+    return "neutral"
+
+
+def _dashboard_status_badge(label: str, tone: str | None = None, *, hint: str | None = None) -> dict[str, Any]:
+    return {
+        "label": label,
+        "tone": tone or _dashboard_tone(label),
+        "hint": hint,
+    }
+
+
+def _dashboard_metric(label: str, value: Any, *, tone: str = "neutral", hint: str | None = None) -> dict[str, Any]:
+    return {
+        "label": label,
+        "value": value,
+        "tone": tone,
+        "hint": hint,
+    }
+
+
+def _dashboard_attention_item(
+    item_id: str,
+    tone: str,
+    title: str,
+    body: str,
+    *,
+    section: str,
+) -> dict[str, Any]:
+    return {
+        "id": item_id,
+        "tone": tone,
+        "title": title,
+        "body": body,
+        "section": section,
+    }
+
+
+def _dashboard_compact_run(run: dict[str, Any] | None) -> dict[str, Any] | None:
+    if not run:
+        return None
+    summary = run.get("summary") or {}
+    return {
+        "run_id": run.get("run_id"),
+        "mode": run.get("mode"),
+        "target_id": run.get("target_id"),
+        "status": run.get("status"),
+        "health": run.get("health"),
+        "started_at": run.get("started_at"),
+        "completed_at": run.get("completed_at"),
+        "passed_cases": summary.get("passed_cases"),
+        "failed_cases": summary.get("failed_cases"),
+        "message": summary.get("message"),
+        "stdout_log_path": run.get("stdout_log_path"),
+        "stderr_log_path": run.get("stderr_log_path"),
+        "logcat_log_path": run.get("logcat_log_path"),
+    }
+
+
+def _dashboard_workstream_card(item: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "workstream_id": item.get("workstream_id"),
+        "title": item.get("title"),
+        "status": item.get("status"),
+        "tone": _dashboard_tone(item.get("status")),
+        "current_stage": item.get("current_stage"),
+        "branch_hint": item.get("branch_hint"),
+        "plan_status": item.get("plan_status"),
+        "current_slice": item.get("current_slice"),
+    }
+
+
+def _dashboard_task_card(task: dict[str, Any] | None) -> dict[str, Any] | None:
+    if not task:
+        return None
+    external_issue = copy.deepcopy(task.get("external_issue") or {})
+    latest_commit = copy.deepcopy(task.get("latest_commit") or {})
+    return {
+        "task_id": task.get("task_id"),
+        "title": task.get("title"),
+        "status": task.get("status"),
+        "tone": _dashboard_tone(task.get("status")),
+        "linked_workstream_id": task.get("linked_workstream_id"),
+        "stage_id": task.get("stage_id"),
+        "codex_estimate_minutes": task.get("codex_estimate_minutes"),
+        "external_issue": {
+            "issue_key": external_issue.get("issue_key"),
+            "title": external_issue.get("title") or external_issue.get("summary"),
+            "connection_id": external_issue.get("connection_id"),
+        }
+        if external_issue
+        else None,
+        "latest_commit": {
+            "commit_hash": latest_commit.get("commit_hash"),
+            "message": latest_commit.get("message"),
+            "recorded_at": latest_commit.get("recorded_at"),
+        }
+        if latest_commit
+        else None,
+        "updated_at": task.get("updated_at"),
+    }
+
+
+def _dashboard_task_list(workspace: str | Path) -> dict[str, Any]:
+    tasks = list_tasks(workspace)
+    return {
+        "workspace_path": tasks["workspace_path"],
+        "current_task_id": tasks.get("current_task_id"),
+        "items": [card for card in (_dashboard_task_card(item) for item in tasks.get("items", [])) if card],
+    }
+
+
+def _dashboard_verification_status(
+    verification_runs: dict[str, Any] | None,
+    selection: dict[str, Any] | None,
+    coverage_audit: dict[str, Any] | None,
+) -> dict[str, Any]:
+    active_run = (verification_runs or {}).get("active_run")
+    latest_run = (verification_runs or {}).get("latest_run")
+    coverage_status = (coverage_audit or {}).get("status")
+    selection_status = (selection or {}).get("selection_status")
+    if active_run:
+        return {
+            "label": "Verification running",
+            "tone": "warn",
+            "detail": active_run.get("run_id") or active_run.get("status"),
+        }
+    if latest_run and (latest_run.get("status") == "failed" or latest_run.get("health") in {"failed", "hung"}):
+        return {
+            "label": "Verification failed",
+            "tone": "bad",
+            "detail": latest_run.get("run_id") or latest_run.get("status"),
+        }
+    if coverage_status == "warning":
+        warning_count = int((coverage_audit or {}).get("warning_count") or 0)
+        suffix = f"{warning_count} gaps" if warning_count else "coverage gaps"
+        return {
+            "label": "Coverage warnings",
+            "tone": "warn",
+            "detail": suffix,
+        }
+    if selection_status == "unresolved":
+        return {
+            "label": "Verification not targeted",
+            "tone": "warn",
+            "detail": (selection or {}).get("reason"),
+        }
+    if latest_run and latest_run.get("status") == "passed":
+        return {
+            "label": "Verification healthy",
+            "tone": "ok",
+            "detail": latest_run.get("run_id") or latest_run.get("health"),
+        }
+    return {
+        "label": "No verification run",
+        "tone": "warn",
+        "detail": "No deterministic verification run has been recorded yet.",
+    }
+
+
+def _dashboard_youtrack_status(youtrack_summary: dict[str, Any] | None) -> dict[str, Any]:
+    summary = youtrack_summary or {}
+    connection_count = int(summary.get("connection_count") or 0)
+    if connection_count <= 0:
+        return {
+            "label": "YouTrack disconnected",
+            "tone": "warn",
+            "detail": "No YouTrack connection is configured for this workspace.",
+        }
+    issue_count = int(summary.get("current_workstream_issue_count") or 0)
+    return {
+        "label": "YouTrack connected",
+        "tone": "ok",
+        "detail": f"{connection_count} connections, {issue_count} workstream issues",
+    }
+
+
+def _dashboard_next_action(summary: dict[str, Any]) -> str:
+    blockers = summary.get("blockers") or []
+    if blockers:
+        return "Resolve workspace blockers before continuing execution."
+    if summary.get("plan_status") == "needs_user_confirmation":
+        return "Confirm the stage plan for the current workstream in chat."
+    if summary.get("current_task_id"):
+        return f"Continue task {summary['current_task_id']}."
+    if summary.get("current_stage"):
+        return f"Continue work on {summary['current_stage']}."
+    if summary.get("current_workstream_id"):
+        return "Define the next execution slice for the active workstream."
+    return "Create or switch to a workstream or task."
+
+
+def _dashboard_attention_from_summary(summary: dict[str, Any]) -> list[dict[str, Any]]:
+    attention: list[dict[str, Any]] = []
+    blockers = summary.get("blockers") or []
+    if blockers:
+        attention.append(
+            _dashboard_attention_item(
+                "blockers",
+                "bad",
+                "Workspace has blockers",
+                blockers[0],
+                section="now",
+            )
+        )
+    if summary.get("plan_status") == "needs_user_confirmation":
+        attention.append(
+            _dashboard_attention_item(
+                "plan-confirmation",
+                "warn",
+                "Stage plan needs confirmation",
+                "The current workstream exists, but its stage register is still awaiting confirmation.",
+                section="plan",
+            )
+        )
+    if not summary.get("current_workstream_id") and not summary.get("current_task_id"):
+        attention.append(
+            _dashboard_attention_item(
+                "no-focus",
+                "warn",
+                "No active work target",
+                "This workspace has no current workstream or current task selected.",
+                section="now",
+            )
+        )
+    verification = summary.get("verification") or {}
+    if verification.get("active_run_status") == "failed" or verification.get("active_run_health") in {"failed", "hung"}:
+        attention.append(
+            _dashboard_attention_item(
+                "verification-failed",
+                "bad",
+                "Active verification is unhealthy",
+                "Review the latest verification run before continuing work.",
+                section="quality",
+            )
+        )
+    if (verification.get("selection") or {}).get("selection_status") == "unresolved":
+        attention.append(
+            _dashboard_attention_item(
+                "verification-unresolved",
+                "warn",
+                "Verification plan is unresolved",
+                (verification.get("selection") or {}).get("reason") or "No deterministic verification target has been resolved.",
+                section="quality",
+            )
+        )
+    if int((summary.get("youtrack") or {}).get("connection_count") or 0) == 0:
+        attention.append(
+            _dashboard_attention_item(
+                "youtrack-disconnected",
+                "warn",
+                "YouTrack is not connected",
+                "Integration actions are unavailable until a connection is configured.",
+                section="integrations",
+            )
+        )
+    return attention
+
+
+def _dashboard_stage_summary(stages: list[dict[str, Any]]) -> dict[str, Any]:
+    counts = {
+        "total": len(stages),
+        "planned": 0,
+        "in_progress": 0,
+        "blocked": 0,
+        "ready_for_closeout": 0,
+        "completed": 0,
+    }
+    for stage in stages:
+        status = str(stage.get("status") or "")
+        if status in counts:
+            counts[status] += 1
+    return counts
+
+
+def _dashboard_task_buckets(tasks: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    order = ["active", "blocked", "awaiting_user", "planned", "completed", "cancelled"]
+    grouped: dict[str, list[dict[str, Any]]] = {status: [] for status in order}
+    grouped["other"] = []
+    for task in tasks:
+        status = str(task.get("status") or "planned")
+        grouped.setdefault(status, [])
+        grouped[status].append(task)
+    buckets = []
+    for status in order + [status for status in grouped.keys() if status not in set(order + ["other"])] + ["other"]:
+        items = grouped.get(status) or []
+        if not items:
+            continue
+        buckets.append(
+            {
+                "status": status,
+                "label": status.replace("_", " ").title(),
+                "tone": _dashboard_tone(status),
+                "count": len(items),
+                "items": items[:6],
+            }
+        )
+    return buckets
+
+
+def _dashboard_workspace_card(summary: dict[str, Any]) -> dict[str, Any]:
+    verification_status = _dashboard_verification_status(
+        None,
+        (summary.get("verification") or {}).get("selection"),
+        None,
+    )
+    youtrack_status = _dashboard_youtrack_status(summary.get("youtrack"))
+    attention = _dashboard_attention_from_summary(summary)
+    counts = summary.get("summary_counts") or {}
+    return {
+        "workspace_path": summary.get("workspace_path"),
+        "workspace_label": summary.get("workspace_label"),
+        "workspace_slug": summary.get("workspace_slug"),
+        "workspace_mode": summary.get("workspace_mode"),
+        "updated_at": summary.get("updated_at"),
+        "status_badge": _dashboard_status_badge(
+            summary.get("stage_status") or summary.get("plan_status") or summary.get("workspace_mode") or "idle",
+            hint=summary.get("current_stage") or summary.get("current_workstream_id"),
+        ),
+        "current_focus": {
+            "workstream_id": summary.get("current_workstream_id"),
+            "task_id": summary.get("current_task_id"),
+            "stage_id": summary.get("current_stage"),
+        },
+        "next_action": _dashboard_next_action(summary),
+        "attention": attention[:3],
+        "metrics": [
+            _dashboard_metric("Workstreams", counts.get("workstreams", 0)),
+            _dashboard_metric("Tasks", counts.get("tasks", 0)),
+            _dashboard_metric(
+                "Verification",
+                counts.get("active_verification_runs", 0),
+                tone="warn" if counts.get("active_verification_runs", 0) else "neutral",
+                hint="Active runs",
+            ),
+            _dashboard_metric(
+                "Failed runs",
+                counts.get("failed_verification_runs", 0),
+                tone="bad" if counts.get("failed_verification_runs", 0) else "neutral",
+            ),
+        ],
+        "verification_status": verification_status,
+        "youtrack_status": youtrack_status,
+    }
+
+
+def _dashboard_overview_model(workspaces: list[dict[str, Any]], starter_runs: dict[str, Any], gui_payload: dict[str, Any]) -> dict[str, Any]:
+    blocked_count = sum(1 for workspace in workspaces if workspace.get("stage_status") == "blocked")
+    warning_count = sum(1 for workspace in workspaces if workspace.get("stage_status") in {"planned", "ready_for_closeout"})
+    preferred_workspace = gui_payload.get("default_workspace")
+    if not preferred_workspace and workspaces:
+        preferred_workspace = workspaces[0].get("workspace_path")
+    return {
+        "workspace_count": len(workspaces),
+        "preferred_workspace_path": preferred_workspace,
+        "stat_cards": [
+            _dashboard_metric("Initialized workspaces", len(workspaces)),
+            _dashboard_metric("Blocked", blocked_count, tone="bad" if blocked_count else "neutral"),
+            _dashboard_metric(
+                "Active verification",
+                sum((workspace.get("summary_counts") or {}).get("active_verification_runs", 0) for workspace in workspaces),
+                tone="warn",
+            ),
+            _dashboard_metric(
+                "Failed verification",
+                sum((workspace.get("summary_counts") or {}).get("failed_verification_runs", 0) for workspace in workspaces),
+                tone="bad",
+            ),
+            _dashboard_metric("Reference boards", sum((workspace.get("summary_counts") or {}).get("reference_boards", 0) for workspace in workspaces)),
+            _dashboard_metric("Design handoffs", sum((workspace.get("summary_counts") or {}).get("design_handoffs", 0) for workspace in workspaces)),
+            _dashboard_metric("Starter runs", starter_runs.get("run_count", 0)),
+            _dashboard_metric("GUI", gui_payload.get("status", "stopped"), tone=_dashboard_tone(gui_payload.get("status"))),
+        ],
+        "attention_summary": {
+            "critical_count": blocked_count + sum(
+                (workspace.get("summary_counts") or {}).get("failed_verification_runs", 0) > 0 for workspace in workspaces
+            ),
+            "warning_count": warning_count,
+            "active_verification_runs": sum((workspace.get("summary_counts") or {}).get("active_verification_runs", 0) for workspace in workspaces),
+            "failed_verification_runs": sum((workspace.get("summary_counts") or {}).get("failed_verification_runs", 0) for workspace in workspaces),
+        },
+        "workspaces": [_dashboard_workspace_card(workspace) for workspace in workspaces],
+        "recent_starter_runs": [
+            {
+                "run_id": run.get("run_id"),
+                "preset_id": run.get("preset_id"),
+                "status": run.get("status"),
+                "project_root": run.get("project_root"),
+            }
+            for run in starter_runs.get("runs", [])
+        ],
+        "empty_message": "Initialize a repository in AgentiUX Dev state to populate the portfolio."
+        if not workspaces
+        else None,
+    }
+
+
+def _dashboard_cockpit_from_uninitialized(workspace: str | Path) -> dict[str, Any]:
+    preview = preview_workspace_init(workspace)
+    return {
+        "schema_version": 2,
+        "generated_at": now_iso(),
+        "workspace_path": preview["workspace_path"],
+        "workspace_label": preview["workspace_label"],
+        "state_kind": "uninitialized",
+        "hero": {
+            "title": preview["workspace_label"],
+            "subtitle": preview["workspace_path"],
+            "status_badge": _dashboard_status_badge("Not initialized", "warn"),
+            "headline": "Initialize this workspace from chat to unlock workstreams, verification, and persisted design state.",
+            "supporting_text": "The dashboard can show detection signals and external paths, but it will not create state implicitly.",
+            "metrics": [
+                _dashboard_metric("Detected stacks", len(preview.get("detected_stacks", []))),
+                _dashboard_metric("Selected profiles", len(preview.get("selected_profiles", []))),
+                _dashboard_metric("State root", preview["paths"]["workspace_root"], tone="neutral"),
+            ],
+        },
+        "attention": {
+            "items": [
+                _dashboard_attention_item(
+                    "workspace-not-initialized",
+                    "warn",
+                    "Workspace is not initialized",
+                    "Run workspace initialization from chat when you are ready to create external state for this repository.",
+                    section="now",
+                )
+            ]
+        },
+        "now": {
+            "objective": "Initialize the workspace in chat.",
+            "guidance": [
+                "Review the detected stacks and selected profiles below.",
+                "Confirm workspace initialization in chat when the external paths look correct.",
+                "Return here after initialization to continue with workstreams and verification.",
+            ],
+            "blockers": [],
+            "brief_preview": [],
+            "focus_cards": [
+                _dashboard_metric("Default mode", "workspace"),
+                _dashboard_metric("Plugin platform", "enabled" if preview.get("plugin_platform", {}).get("enabled") else "disabled"),
+            ],
+        },
+        "plan": {
+            "summary_cards": [
+                _dashboard_metric("Workstreams", 0),
+                _dashboard_metric("Tasks", 0),
+            ],
+            "message": "No workstream or task state exists until this workspace is initialized.",
+            "workstreams": [],
+            "stages": [],
+            "task_buckets": [],
+            "design_state": {
+                "brief_status": "unavailable",
+                "current_board_candidates": 0,
+                "current_handoff_status": "unavailable",
+                "verification_hooks": 0,
+            },
+        },
+        "quality": {
+            "summary_cards": [
+                _dashboard_metric("Verification", "Unavailable", tone="warn"),
+                _dashboard_metric("Coverage gaps", "Unknown", tone="warn"),
+            ],
+            "health": _dashboard_status_badge("Unavailable", "warn", hint="Verification becomes available after initialization."),
+            "latest_run": None,
+            "latest_completed_run": None,
+            "selection": None,
+            "coverage": None,
+            "helper_sync": None,
+            "events": [],
+            "logs": {"stdout": [], "stderr": [], "logcat": []},
+            "recent_runs": [],
+        },
+        "integrations": {
+            "summary_cards": [
+                _dashboard_metric("YouTrack", "Unavailable", tone="warn"),
+            ],
+            "youtrack": {
+                "summary": {
+                    "connection_count": 0,
+                    "default_connection_id": None,
+                    "last_search_session_id": None,
+                    "active_plan_id": None,
+                    "current_workstream_issue_count": 0,
+                },
+                "connections": [],
+                "current_search_session": None,
+                "current_plan": None,
+                "current_workstream_issues": {"items": []},
+            },
+        },
+        "diagnostics": {
+            "host_support": {
+                "host_os": preview.get("host_os"),
+                "infra_mode": (preview.get("local_dev_policy") or {}).get("infra_mode"),
+                "orchestration": (preview.get("local_dev_policy") or {}).get("orchestration"),
+                "support_warnings": preview.get("support_warnings", []),
+            },
+            "detected_stacks": preview.get("detected_stacks", []),
+            "selected_profiles": preview.get("selected_profiles", []),
+            "plugin_platform": preview.get("plugin_platform"),
+            "paths": [{"key": key, "value": value} for key, value in preview.get("paths", {}).items()],
+            "will_create": preview.get("will_create", []),
+            "audit": None,
+            "upgrade_plan": None,
+            "recent_starter_runs": [],
+        },
+    }
+
+
+def _dashboard_cockpit_from_detail(detail: dict[str, Any]) -> dict[str, Any]:
+    summary = detail["summary"]
+    register = detail.get("stage_register") or {}
+    tasks = [_dashboard_task_card(item) for item in (detail.get("tasks") or {}).get("items", [])]
+    tasks = [item for item in tasks if item]
+    stages = copy.deepcopy(register.get("stages") or [])
+    task_counts_by_stage: dict[str, int] = {}
+    for task in tasks:
+        stage_id = task.get("stage_id")
+        if stage_id:
+            task_counts_by_stage[stage_id] = task_counts_by_stage.get(stage_id, 0) + 1
+    stage_cards = [
+        {
+            "id": stage.get("id"),
+            "title": stage.get("title"),
+            "status": stage.get("status"),
+            "tone": _dashboard_tone(stage.get("status")),
+            "completed_at": stage.get("completed_at"),
+            "task_count": task_counts_by_stage.get(stage.get("id"), 0),
+        }
+        for stage in stages
+    ]
+    verification_runs = detail.get("verification_runs") or {}
+    verification_selection = detail.get("verification_selection")
+    coverage_audit = detail.get("verification_coverage_audit")
+    verification_status = _dashboard_verification_status(verification_runs, verification_selection, coverage_audit)
+    youtrack_summary = _dashboard_youtrack_status(summary.get("youtrack"))
+    current_task_card = _dashboard_task_card(detail.get("current_task"))
+    current_workstream_payload = detail.get("current_workstream")
+    current_workstream_card = _dashboard_workstream_card(current_workstream_payload) if current_workstream_payload else None
+    helper_materialization = (((verification_selection or {}).get("helper_guidance") or {}).get("materialization") or {})
+    active_brief_markdown = ((detail.get("active_brief") or {}).get("markdown") or "").strip()
+    brief_lines = [line.strip() for line in active_brief_markdown.splitlines() if line.strip()]
+    brief_summary = next((line for line in brief_lines if not line.startswith("#")), None) or "No active execution brief is recorded yet."
+    current_board = detail.get("current_reference_board") or {}
+    current_handoff = detail.get("current_design_handoff") or {}
+    design_brief = detail.get("design_brief") or {}
+    youtrack = detail.get("youtrack") or {}
+    attention = _dashboard_attention_from_summary(summary)
+    if (coverage_audit or {}).get("status") == "warning":
+        gaps = coverage_audit.get("gaps") or []
+        attention.append(
+            _dashboard_attention_item(
+                "coverage-gaps",
+                "warn",
+                "Verification coverage has gaps",
+                gaps[0].get("title") if gaps else "Deterministic verification coverage is incomplete.",
+                section="quality",
+            )
+        )
+    if verification_runs.get("latest_run") and verification_runs["latest_run"].get("status") == "failed":
+        attention.append(
+            _dashboard_attention_item(
+                "latest-run-failed",
+                "bad",
+                "Latest verification run failed",
+                "Inspect the latest run before continuing execution.",
+                section="quality",
+            )
+        )
+    if not int((summary.get("youtrack") or {}).get("connection_count") or 0):
+        attention.append(
+            _dashboard_attention_item(
+                "youtrack-disconnected-detail",
+                "warn",
+                "No YouTrack connections",
+                "Connection management remains available from the Integrations panel.",
+                section="integrations",
+            )
+        )
+    return {
+        "schema_version": 2,
+        "generated_at": now_iso(),
+        "workspace_path": summary["workspace_path"],
+        "workspace_label": summary["workspace_label"],
+        "state_kind": "initialized",
+        "hero": {
+            "title": summary["workspace_label"],
+            "subtitle": summary["workspace_path"],
+            "status_badge": _dashboard_status_badge(
+                summary.get("stage_status") or summary.get("plan_status") or summary.get("workspace_mode") or "idle",
+                hint=summary.get("current_stage") or summary.get("current_workstream_id"),
+            ),
+            "headline": _dashboard_next_action(summary),
+            "supporting_text": brief_summary,
+            "metrics": [
+                _dashboard_metric("Mode", summary.get("workspace_mode") or "workspace"),
+                _dashboard_metric("Current workstream", summary.get("current_workstream_id") or "none"),
+                _dashboard_metric("Current task", summary.get("current_task_id") or "none"),
+                _dashboard_metric("Verification", verification_status["label"], tone=verification_status["tone"], hint=verification_status.get("detail")),
+                _dashboard_metric("YouTrack", youtrack_summary["label"], tone=youtrack_summary["tone"], hint=youtrack_summary.get("detail")),
+                _dashboard_metric("Updated", summary.get("updated_at") or "unknown"),
+            ],
+        },
+        "attention": {
+            "items": attention,
+        },
+        "now": {
+            "objective": summary.get("next_task") or "No explicit next objective is recorded yet.",
+            "guidance": [
+                _dashboard_next_action(summary),
+                "Use the Plan panel to inspect stage progress and task buckets.",
+                "Use Quality for verification health and Diagnostics for raw state paths.",
+            ],
+            "blockers": summary.get("blockers") or [],
+            "brief_preview": active_brief_markdown.splitlines()[:8] if active_brief_markdown else [],
+            "focus_cards": [
+                _dashboard_metric("Current stage", summary.get("current_stage") or "none"),
+                _dashboard_metric("Last completed stage", summary.get("last_completed_stage") or "none"),
+                _dashboard_metric("Current slice", summary.get("current_slice") or "none"),
+                _dashboard_metric("Plan status", summary.get("plan_status") or "n/a", tone=_dashboard_tone(summary.get("plan_status"))),
+            ],
+            "current_workstream": current_workstream_card,
+            "current_task": current_task_card,
+            "verification_status": verification_status,
+            "youtrack_status": youtrack_summary,
+        },
+        "plan": {
+            "summary_cards": [
+                _dashboard_metric("Workstreams", len((detail.get("workstreams") or {}).get("items", []))),
+                _dashboard_metric("Tasks", len(tasks)),
+                _dashboard_metric("Stages", len(stage_cards)),
+                _dashboard_metric("Planned", _dashboard_stage_summary(stages)["planned"], tone="warn"),
+            ],
+            "current_workstream": current_workstream_card,
+            "workstreams": [_dashboard_workstream_card(item) for item in (detail.get("workstreams") or {}).get("items", [])],
+            "stage_summary": _dashboard_stage_summary(stages),
+            "stages": stage_cards,
+            "task_buckets": _dashboard_task_buckets(tasks),
+            "design_state": {
+                "brief_status": design_brief.get("status") or "not_started",
+                "current_board_title": current_board.get("title"),
+                "current_board_candidates": len(current_board.get("candidates") or []),
+                "current_handoff_status": current_handoff.get("status") or "not_started",
+                "verification_hooks": len(current_handoff.get("verification_hooks") or []),
+            },
+        },
+        "quality": {
+            "summary_cards": [
+                _dashboard_metric("Health", verification_status["label"], tone=verification_status["tone"], hint=verification_status.get("detail")),
+                _dashboard_metric("Recent runs", verification_runs.get("run_count", 0)),
+                _dashboard_metric(
+                    "Coverage gaps",
+                    (coverage_audit or {}).get("warning_count", 0),
+                    tone="warn" if (coverage_audit or {}).get("warning_count") else "ok",
+                ),
+                _dashboard_metric(
+                    "Helpers",
+                    helper_materialization.get("status") or "unknown",
+                    tone=_dashboard_tone(helper_materialization.get("status")),
+                ),
+            ],
+            "health": verification_status,
+            "latest_run": _dashboard_compact_run(detail.get("latest_verification_run")),
+            "latest_completed_run": _dashboard_compact_run(detail.get("latest_completed_verification_run")),
+            "selection": {
+                "selection_status": verification_selection.get("selection_status") if verification_selection else None,
+                "requested_mode": verification_selection.get("requested_mode") if verification_selection else None,
+                "resolved_mode": verification_selection.get("resolved_mode") if verification_selection else None,
+                "reason": verification_selection.get("reason") if verification_selection else None,
+                "selected_suite": (verification_selection.get("selected_suite") or {}).get("id") if verification_selection else None,
+                "selected_case_ids": [item.get("case_id") for item in (verification_selection.get("selected_cases") or [])]
+                if verification_selection
+                else [],
+                "heuristic_case_ids": [item.get("case_id") for item in (verification_selection.get("heuristic_suggestions") or [])]
+                if verification_selection
+                else [],
+            }
+            if verification_selection
+            else None,
+            "coverage": {
+                "status": coverage_audit.get("status"),
+                "warning_count": coverage_audit.get("warning_count"),
+                "coverage": coverage_audit.get("coverage"),
+                "gaps": [
+                    {
+                        "gap_id": gap.get("gap_id"),
+                        "title": gap.get("title"),
+                        "surface_type": gap.get("surface_type"),
+                    }
+                    for gap in (coverage_audit.get("gaps") or [])
+                ],
+            }
+            if coverage_audit
+            else None,
+            "helper_sync": {
+                "status": helper_materialization.get("status"),
+                "synced": helper_materialization.get("synced"),
+                "sync_root": helper_materialization.get("sync_root"),
+                "current_marker_version": helper_materialization.get("current_marker_version"),
+                "missing_entrypoints": helper_materialization.get("missing_entrypoints") or [],
+            }
+            if helper_materialization
+            else None,
+            "events": [
+                {
+                    "timestamp": event.get("timestamp"),
+                    "event_type": event.get("event_type"),
+                    "message": event.get("message"),
+                }
+                for event in (detail.get("recent_verification_events") or {}).get("events", [])
+            ],
+            "logs": {
+                "stdout": ((detail.get("active_verification_stdout") or {}).get("lines") or []),
+                "stderr": ((detail.get("active_verification_stderr") or {}).get("lines") or []),
+                "logcat": ((detail.get("active_verification_logcat") or {}).get("lines") or []),
+            },
+            "recent_runs": [_dashboard_compact_run(run) for run in verification_runs.get("runs", [])],
+        },
+        "integrations": {
+            "summary_cards": [
+                _dashboard_metric(
+                    "Connections",
+                    int((summary.get("youtrack") or {}).get("connection_count") or 0),
+                    tone="ok" if int((summary.get("youtrack") or {}).get("connection_count") or 0) else "warn",
+                ),
+                _dashboard_metric("Default connection", (summary.get("youtrack") or {}).get("default_connection_id") or "none"),
+                _dashboard_metric("Search session", (summary.get("youtrack") or {}).get("last_search_session_id") or "none"),
+                _dashboard_metric("Active plan", (summary.get("youtrack") or {}).get("active_plan_id") or "none"),
+            ],
+            "youtrack": {
+                "summary": copy.deepcopy(summary.get("youtrack") or {}),
+                **youtrack,
+            },
+        },
+        "diagnostics": {
+            "host_support": {
+                "host_os": summary.get("host_os"),
+                "infra_mode": (summary.get("local_dev_policy") or {}).get("infra_mode"),
+                "orchestration": (summary.get("local_dev_policy") or {}).get("orchestration"),
+                "support_warnings": summary.get("support_warnings") or [],
+            },
+            "detected_stacks": summary.get("detected_stacks") or [],
+            "selected_profiles": summary.get("selected_profiles") or [],
+            "plugin_platform": detail.get("workspace_state", {}).get("plugin_platform") or summary.get("plugin_platform"),
+            "paths": [{"key": key, "value": value} for key, value in (detail.get("paths") or {}).items()],
+            "audit": {
+                "audit_id": (detail.get("current_audit") or {}).get("audit_id"),
+                "initialized": (detail.get("current_audit") or {}).get("initialized"),
+                "gaps": [
+                    {
+                        "gap_id": gap.get("gap_id"),
+                        "title": gap.get("title"),
+                    }
+                    for gap in ((detail.get("current_audit") or {}).get("gaps") or [])
+                ],
+            }
+            if detail.get("current_audit")
+            else None,
+            "upgrade_plan": {
+                "plan_id": (detail.get("current_upgrade_plan") or {}).get("plan_id"),
+                "status": (detail.get("current_upgrade_plan") or {}).get("status"),
+                "created_workstream_id": (detail.get("current_upgrade_plan") or {}).get("created_workstream_id"),
+                "created_task_ids": (detail.get("current_upgrade_plan") or {}).get("created_task_ids") or [],
+            }
+            if detail.get("current_upgrade_plan")
+            else None,
+            "design": {
+                "brief": design_brief,
+                "reference_board": {
+                    "title": current_board.get("title"),
+                    "candidates": [
+                        {
+                            "id": candidate.get("id"),
+                            "title": candidate.get("title") or candidate.get("url"),
+                        }
+                        for candidate in (current_board.get("candidates") or [])
+                    ],
+                },
+                "handoff": {
+                    "status": current_handoff.get("status"),
+                    "verification_hooks": current_handoff.get("verification_hooks") or [],
+                },
+            },
+            "recent_starter_runs": detail.get("recent_starter_runs") or [],
+        },
+    }
+
+
 def dashboard_overview_snapshot() -> dict[str, Any]:
-    overview = list_dashboard_workspaces()
+    workspace_listing = list_workspaces()
+    gui_payload = read_gui_runtime()
+    starter_runs = list_starter_runs(limit=10)
     return {
         "schema_version": 2,
         "generated_at": now_iso(),
         "plugin": plugin_info(),
-        "stats": _plugin_stats_from_workspaces(overview["workspaces"]),
-        "gui": read_gui_runtime(),
-        "overview": overview,
-        "starter_runs": list_starter_runs(limit=10),
-        "workspace_detail": None,
+        "stats": _plugin_stats_from_workspaces(workspace_listing["workspaces"]),
+        "gui": gui_payload,
+        "overview": _dashboard_overview_model(workspace_listing["workspaces"], starter_runs, gui_payload),
+        "starter_runs": starter_runs,
     }
 
 
 def read_workspace_dashboard_detail(workspace: str | Path | None) -> dict[str, Any] | None:
-    from agentiux_dev_verification import (
-        list_verification_runs,
-        read_verification_log_tail,
-        read_verification_recipes,
-        recent_verification_events,
-        resolve_verification_selection,
-    )
-    from agentiux_dev_youtrack import workspace_youtrack_dashboard_detail
-
     if not workspace:
         return None
-    paths = _ensure_workspace_initialized(workspace)
-    workspace_state = read_workspace_state(workspace)
-    has_workstream = bool(workspace_state.get("current_workstream_id"))
-    current_task_payload = current_task(workspace)
-    verification_runs = list_verification_runs(workspace, limit=10) if has_workstream else _empty_verification_runs_payload(workspace)
-    current_log_run = verification_runs["active_run"] or verification_runs["latest_run"]
-    return {
-        "summary": workspace_summary(workspace),
-        "paths": get_state_paths(workspace)["paths"],
-        "workspace_state": workspace_state,
-        "workstreams": list_workstreams(workspace),
-        "tasks": _dashboard_task_list(workspace),
-        "current_task": _dashboard_task_card(current_task_payload),
-        "stage_register": read_stage_register(workspace) if has_workstream else None,
-        "design_brief": read_design_brief(workspace) if has_workstream else None,
-        "current_reference_board": read_reference_board(workspace) if has_workstream else None,
-        "current_design_handoff": read_design_handoff(workspace) if has_workstream else None,
-        "verification_recipes": read_verification_recipes(workspace) if has_workstream else None,
-        "verification_selection": resolve_verification_selection(workspace) if (has_workstream or current_task_payload) else None,
-        "verification_runs": verification_runs,
-        "latest_verification_run": verification_runs["latest_run"],
-        "latest_completed_verification_run": verification_runs["latest_completed_run"],
-        "recent_verification_events": recent_verification_events(workspace, limit=12) if has_workstream else _empty_recent_verification_events_payload(workspace),
-        "active_verification_stdout": read_verification_log_tail(workspace, current_log_run["run_id"], "stdout", 20) if current_log_run else None,
-        "active_verification_stderr": read_verification_log_tail(workspace, current_log_run["run_id"], "stderr", 20) if current_log_run else None,
-        "active_verification_logcat": read_verification_log_tail(workspace, current_log_run["run_id"], "logcat", 20) if current_log_run else None,
-        "current_audit": read_current_audit(workspace),
-        "current_upgrade_plan": read_upgrade_plan(workspace),
-        "youtrack": workspace_youtrack_dashboard_detail(workspace),
-        "recent_starter_runs": _dashboard_starter_runs(workspace),
-    }
+    try:
+        return _dashboard_cockpit_from_detail(read_workspace_detail(workspace) or {})
+    except FileNotFoundError:
+        return _dashboard_cockpit_from_uninitialized(workspace)
 
 
 def dashboard_snapshot(workspace: str | Path | None = None) -> dict[str, Any]:
-    overview = list_workspaces()
-    selected_workspace = None
-    if workspace:
-        selected_workspace = str(Path(workspace).expanduser().resolve())
-    elif overview["workspaces"]:
-        selected_workspace = overview["workspaces"][0]["workspace_path"]
-
-    detail = read_workspace_detail(selected_workspace) if selected_workspace else None
+    overview_snapshot = dashboard_overview_snapshot()
+    selected_workspace = str(Path(workspace).expanduser().resolve()) if workspace else overview_snapshot["overview"].get("preferred_workspace_path")
+    if selected_workspace:
+        overview_snapshot["overview"] = {
+            **overview_snapshot["overview"],
+            "preferred_workspace_path": selected_workspace,
+        }
     return {
-        "schema_version": 2,
-        "generated_at": now_iso(),
-        "plugin": plugin_info(),
-        "stats": plugin_stats(),
-        "gui": read_gui_runtime(),
-        "overview": overview,
-        "starter_runs": list_starter_runs(limit=10),
-        "workspace_detail": detail,
+        **overview_snapshot,
+        "workspace_cockpit": read_workspace_dashboard_detail(selected_workspace) if selected_workspace else None,
     }
 
 

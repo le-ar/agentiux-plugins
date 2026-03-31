@@ -250,6 +250,10 @@
             "title": "Web home deterministic check",
             "surface_type": "web",
             "runner": "playwright-visual",
+            "host_requirements": [
+              "web",
+              "browser-runtime"
+            ],
             "target": {
               "route": "/"
             },
@@ -315,6 +319,46 @@
               "policy": "project-owned",
               "source_path": "tests/visual/__screenshots__/web-home.png"
             }
+          },
+          {
+            "id": "web-home-browser-layout",
+            "title": "Web home live browser layout audit",
+            "surface_type": "web",
+            "runner": "browser-layout-audit",
+            "host_requirements": [
+              "web",
+              "browser-runtime"
+            ],
+            "target": {
+              "route": "/"
+            },
+            "cwd": ".",
+            "argv": [
+              "npm",
+              "run",
+              "dev"
+            ],
+            "readiness_probe": {
+              "type": "http",
+              "url": "http://127.0.0.1:3000/",
+              "timeout_seconds": 40
+            },
+            "device_or_viewport": {
+              "viewport": "1440x1024"
+            },
+            "browser_layout_audit": {
+              "base_url": "http://127.0.0.1:3000/",
+              "report_path": "web-home-browser-layout.json",
+              "screenshot_path": "web-home-browser-layout.png",
+              "wait_timeout_ms": 20000
+            },
+            "artifact_expectations": [
+              "screenshots",
+              "reports"
+            ],
+            "retry_policy": {
+              "attempts": 1
+            }
           }
         ],
         "suites": [
@@ -322,7 +366,8 @@
             "id": "full",
             "title": "Full Suite",
             "case_ids": [
-              "web-home"
+              "web-home",
+              "web-home-browser-layout"
             ]
           }
         ]
@@ -572,6 +617,10 @@
             "title": "Nx web deterministic smoke",
             "surface_type": "web",
             "runner": "playwright-visual",
+            "host_requirements": [
+              "web",
+              "browser-runtime"
+            ],
             "target": {
               "route": "/"
             },
@@ -639,6 +688,46 @@
             }
           },
           {
+            "id": "nx-web-browser-layout",
+            "title": "Nx web live browser layout audit",
+            "surface_type": "web",
+            "runner": "browser-layout-audit",
+            "host_requirements": [
+              "web",
+              "browser-runtime"
+            ],
+            "target": {
+              "route": "/"
+            },
+            "cwd": ".",
+            "argv": [
+              "npm",
+              "run",
+              "dev"
+            ],
+            "readiness_probe": {
+              "type": "http",
+              "url": "http://127.0.0.1:3000/",
+              "timeout_seconds": 40
+            },
+            "device_or_viewport": {
+              "viewport": "1440x1024"
+            },
+            "browser_layout_audit": {
+              "base_url": "http://127.0.0.1:3000/",
+              "report_path": "nx-web-browser-layout.json",
+              "screenshot_path": "nx-web-browser-layout.png",
+              "wait_timeout_ms": 20000
+            },
+            "artifact_expectations": [
+              "screenshots",
+              "reports"
+            ],
+            "retry_policy": {
+              "attempts": 1
+            }
+          },
+          {
             "id": "nx-api-smoke",
             "title": "Nx API smoke",
             "surface_type": "backend",
@@ -668,6 +757,7 @@
             "title": "Full Suite",
             "case_ids": [
               "nx-web-smoke",
+              "nx-web-browser-layout",
               "nx-api-smoke"
             ]
           }

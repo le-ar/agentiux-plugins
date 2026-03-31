@@ -359,7 +359,7 @@ class DashboardHandler(BaseHTTPRequestHandler):
             if parsed.path == "/api/dashboard":
                 self._send_json(dashboard_overview_snapshot())
                 return
-            if parsed.path == "/api/workspace-detail":
+            if parsed.path in {"/api/workspace-cockpit", "/api/workspace-detail"}:
                 self._send_json(read_workspace_dashboard_detail(workspace))
                 return
             if parsed.path == "/api/verification-coverage":
