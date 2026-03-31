@@ -1,0 +1,4 @@
+interface:
+  display_name: "Stage Closeout"
+  short_description: "Close the current stage and advance external state safely"
+  default_prompt: "Use $stage-closeout to verify exit criteria, update external stage docs and the register, and prepare the next stage without starting it implicitly."

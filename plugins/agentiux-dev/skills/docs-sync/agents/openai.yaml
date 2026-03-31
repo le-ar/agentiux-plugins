@@ -1,0 +1,4 @@
+interface:
+  display_name: "Docs Sync"
+  short_description: "Keep repo docs aligned with approved changes and execution"
+  default_prompt: "Use $docs-sync to identify which real project docs must change and update them in the same work cycle as the approved implementation or workflow change."

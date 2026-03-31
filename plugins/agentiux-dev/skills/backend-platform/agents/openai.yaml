@@ -1,0 +1,4 @@
+interface:
+  display_name: "Backend Platform"
+  short_description: "Guide backend stack routing, contracts, and smoke verification"
+  default_prompt: "Use $backend-platform to handle NestJS, Rust, and service-side workflow decisions inside AgentiUX Dev while keeping contract and smoke verification explicit."

@@ -1,0 +1,4 @@
+interface:
+  display_name: "Stage Execution"
+  short_description: "Execute the active stage with brief-first workflow discipline"
+  default_prompt: "Use $stage-execution to verify explicit execution intent, persist the active stage brief, and carry the active slice through docs sync, verification, and closeout."

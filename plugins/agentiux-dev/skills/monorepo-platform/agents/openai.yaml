@@ -1,0 +1,4 @@
+interface:
+  display_name: "Monorepo Platform"
+  short_description: "Scope Nx and monorepo work to the right surfaces and checks"
+  default_prompt: "Use $monorepo-platform to scope Nx-aware stage work, affected surfaces, and verification coverage inside an AgentiUX Dev workflow."

@@ -1,0 +1,4 @@
+interface:
+  display_name: "Expo Product Designer"
+  short_description: "Create implementation-ready Expo handoffs for Android and iOS"
+  default_prompt: "Use $expo-product-designer to turn the selected design direction into an implementation-ready Expo and React Native handoff with Android and iOS deltas and deterministic capture hooks."

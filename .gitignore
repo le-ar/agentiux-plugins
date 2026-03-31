@@ -1,0 +1,12 @@
+.DS_Store
+__pycache__/
+*.pyc
+*.pyo
+.pytest_cache/
+.venv/
+node_modules/
+dist/
+build/
+*.log
+plugins/agentiux-dev/install-metadata.json
+corrupt-run/

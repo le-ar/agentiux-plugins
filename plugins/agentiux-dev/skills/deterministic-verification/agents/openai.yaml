@@ -1,0 +1,4 @@
+interface:
+  display_name: "Deterministic Verification"
+  short_description: "Drive repeatable checks and local-only verification artifacts"
+  default_prompt: "Use $deterministic-verification to define or review deterministic checks, masked dynamic zones, and local-only verification artifacts before closeout."

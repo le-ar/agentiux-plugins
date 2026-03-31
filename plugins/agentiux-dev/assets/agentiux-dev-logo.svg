@@ -1,0 +1,29 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 320 320" role="img" aria-label="AgentiUX Dev development workstation">
+  <defs>
+    <linearGradient id="bg" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#08111d"/>
+      <stop offset="100%" stop-color="#10223c"/>
+    </linearGradient>
+    <linearGradient id="monitor" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#12253d"/>
+      <stop offset="100%" stop-color="#0b182a"/>
+    </linearGradient>
+    <linearGradient id="code" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#22d3ee"/>
+      <stop offset="100%" stop-color="#38bdf8"/>
+    </linearGradient>
+  </defs>
+  <rect width="320" height="320" rx="44" fill="url(#bg)"/>
+  <circle cx="256" cy="74" r="42" fill="rgba(56,189,248,0.14)"/>
+  <circle cx="72" cy="256" r="38" fill="rgba(16,185,129,0.12)"/>
+  <circle cx="248" cy="248" r="28" fill="rgba(245,158,11,0.10)"/>
+  <rect x="63" y="62" width="194" height="126" rx="22" fill="url(#monitor)" stroke="#334155" stroke-width="4"/>
+  <path d="M103 128l18-16-18-16" fill="none" stroke="url(#code)" stroke-width="7" stroke-linecap="round" stroke-linejoin="round"/>
+  <path d="M141 144h42" stroke="#e2e8f0" stroke-width="7" stroke-linecap="round"/>
+  <path d="M199 94l-6 34" stroke="#22c55e" stroke-width="7" stroke-linecap="round"/>
+  <path d="M215 94l-6 34" stroke="#22c55e" stroke-width="7" stroke-linecap="round"/>
+  <path d="M191 104h30" stroke="#22c55e" stroke-width="7" stroke-linecap="round"/>
+  <path d="M186 118h30" stroke="#22c55e" stroke-width="7" stroke-linecap="round"/>
+  <rect x="137" y="198" width="48" height="12" rx="6" fill="#475569"/>
+  <path d="M101 222h120" stroke="#64748b" stroke-width="10" stroke-linecap="round"/>
+</svg>

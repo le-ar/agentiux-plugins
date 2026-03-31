@@ -1,0 +1,4 @@
+interface:
+  display_name: "Mobile Platform"
+  short_description: "Handle Expo, React Native, Android, and iOS verification flow"
+  default_prompt: "Use $mobile-platform to route Expo, React Native, Android, and iOS work through AgentiUX Dev with deterministic mobile verification and external artifacts."

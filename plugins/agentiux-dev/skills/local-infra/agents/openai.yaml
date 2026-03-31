@@ -1,0 +1,4 @@
+interface:
+  display_name: "Local Infra"
+  short_description: "Enforce Docker-first local supporting services and boot flow"
+  default_prompt: "Use $local-infra to keep databases, brokers, caches, and related local supporting services in Docker while documenting the real boot path."

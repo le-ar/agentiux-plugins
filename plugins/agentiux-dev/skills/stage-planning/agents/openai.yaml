@@ -1,0 +1,4 @@
+interface:
+  display_name: "Stage Planning"
+  short_description: "Propose or apply external stage plan changes safely"
+  default_prompt: "Use $stage-planning to inspect the external stage register, propose safe changes, and apply unfinished stage-plan edits only after explicit confirmation."

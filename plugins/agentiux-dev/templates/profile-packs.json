@@ -1,0 +1,611 @@
+{
+  "schemaVersion": 3,
+  "stageModules": {},
+  "starterFragments": {
+    "next-web-foundation": {
+      "presetIds": [
+        "next-web"
+      ],
+      "post_setup": {
+        "docker_compose": false,
+        "verification_profile": "web",
+        "design_platform": "web",
+        "selected_profiles": [
+          "workspace-kernel",
+          "docs-sync",
+          "deterministic-verification",
+          "web-platform"
+        ]
+      }
+    },
+    "expo-mobile-foundation": {
+      "presetIds": [
+        "expo-mobile"
+      ],
+      "post_setup": {
+        "docker_compose": false,
+        "verification_profile": "mobile",
+        "design_platform": "expo",
+        "selected_profiles": [
+          "workspace-kernel",
+          "docs-sync",
+          "deterministic-verification",
+          "mobile-platform"
+        ]
+      }
+    },
+    "backend-service-foundation": {
+      "presetIds": [
+        "nestjs-api",
+        "rust-service"
+      ],
+      "post_setup": {
+        "docker_compose": true,
+        "verification_profile": "backend",
+        "selected_profiles": [
+          "workspace-kernel",
+          "docs-sync",
+          "deterministic-verification",
+          "backend-platform",
+          "local-infra"
+        ]
+      }
+    },
+    "nx-fullstack-foundation": {
+      "presetIds": [
+        "nx-fullstack"
+      ],
+      "post_setup": {
+        "docker_compose": true,
+        "verification_profile": "monorepo",
+        "design_platform": "web",
+        "selected_profiles": [
+          "workspace-kernel",
+          "docs-sync",
+          "deterministic-verification",
+          "web-platform",
+          "backend-platform",
+          "monorepo-platform",
+          "local-infra"
+        ]
+      }
+    }
+  },
+  "verificationFragments": {
+    "plugin-runtime-release-readiness": {
+      "profiles": [
+        "plugin-platform"
+      ],
+      "verification": {
+        "cases": [
+          {
+            "id": "plugin-python-compile",
+            "title": "Plugin Python compile validation",
+            "surface_type": "plugin",
+            "runner": "shell-contract",
+            "tags": [
+              "plugin-runtime",
+              "python",
+              "compile"
+            ],
+            "feature_ids": [
+              "plugin-runtime"
+            ],
+            "surface_ids": [
+              "python-compile"
+            ],
+            "changed_path_globs": [
+              "plugins/agentiux-dev/scripts/*.py"
+            ],
+            "host_requirements": [
+              "python"
+            ],
+            "command_template": {
+              "kind": "release_readiness",
+              "check": "python-compile"
+            },
+            "artifact_expectations": [
+              "stdout"
+            ],
+            "retry_policy": {
+              "attempts": 1
+            }
+          },
+          {
+            "id": "plugin-mcp-handshake",
+            "title": "Plugin MCP handshake and tool listing",
+            "surface_type": "plugin",
+            "runner": "shell-contract",
+            "tags": [
+              "plugin-runtime",
+              "mcp"
+            ],
+            "feature_ids": [
+              "plugin-runtime"
+            ],
+            "surface_ids": [
+              "mcp"
+            ],
+            "changed_path_globs": [
+              "plugins/agentiux-dev/.mcp.json",
+              "plugins/agentiux-dev/scripts/agentiux_dev_mcp.py"
+            ],
+            "host_requirements": [
+              "python"
+            ],
+            "command_template": {
+              "kind": "release_readiness",
+              "check": "mcp-check"
+            },
+            "artifact_expectations": [
+              "stdout"
+            ],
+            "retry_policy": {
+              "attempts": 1
+            }
+          },
+          {
+            "id": "plugin-dashboard-health",
+            "title": "Plugin dashboard health and API snapshot",
+            "surface_type": "plugin",
+            "runner": "shell-contract",
+            "tags": [
+              "plugin-runtime",
+              "dashboard",
+              "gui"
+            ],
+            "feature_ids": [
+              "plugin-runtime"
+            ],
+            "surface_ids": [
+              "dashboard"
+            ],
+            "routes_or_screens": [
+              "dashboard"
+            ],
+            "changed_path_globs": [
+              "plugins/agentiux-dev/dashboard/**",
+              "plugins/agentiux-dev/scripts/agentiux_dev_gui.py"
+            ],
+            "host_requirements": [
+              "python"
+            ],
+            "command_template": {
+              "kind": "release_readiness",
+              "check": "dashboard-check"
+            },
+            "artifact_expectations": [
+              "stdout"
+            ],
+            "retry_policy": {
+              "attempts": 1
+            }
+          },
+          {
+            "id": "plugin-smoke",
+            "title": "Plugin end-to-end smoke test",
+            "surface_type": "plugin",
+            "runner": "shell-contract",
+            "tags": [
+              "plugin-runtime",
+              "smoke",
+              "full"
+            ],
+            "feature_ids": [
+              "plugin-runtime"
+            ],
+            "surface_ids": [
+              "smoke"
+            ],
+            "changed_path_globs": [
+              "plugins/agentiux-dev/**",
+              ".github/workflows/release-readiness.yml"
+            ],
+            "host_requirements": [
+              "python"
+            ],
+            "command_template": {
+              "kind": "release_readiness",
+              "check": "smoke"
+            },
+            "artifact_expectations": [
+              "stdout"
+            ],
+            "retry_policy": {
+              "attempts": 1
+            }
+          }
+        ],
+        "suites": [
+          {
+            "id": "smoke",
+            "title": "Smoke Suite",
+            "case_ids": [
+              "plugin-python-compile",
+              "plugin-mcp-handshake",
+              "plugin-dashboard-health"
+            ]
+          },
+          {
+            "id": "full",
+            "title": "Full Suite",
+            "case_ids": [
+              "plugin-python-compile",
+              "plugin-mcp-handshake",
+              "plugin-dashboard-health",
+              "plugin-smoke"
+            ]
+          }
+        ]
+      }
+    },
+    "starter-web-defaults": {
+      "verificationProfiles": [
+        "web"
+      ],
+      "verification": {
+        "cases": [
+          {
+            "id": "web-home",
+            "title": "Web home deterministic check",
+            "surface_type": "web",
+            "runner": "playwright-visual",
+            "target": {
+              "route": "/"
+            },
+            "cwd": ".",
+            "argv": [
+              "npm",
+              "run",
+              "test",
+              "--",
+              "--help"
+            ],
+            "device_or_viewport": {
+              "viewport": "1440x1024"
+            },
+            "locale": "en-US",
+            "timezone": "UTC",
+            "color_scheme": "light",
+            "freeze_clock": true,
+            "masks": [],
+            "artifact_expectations": [
+              "screenshots",
+              "diffs"
+            ],
+            "retry_policy": {
+              "attempts": 1
+            },
+            "baseline": {
+              "policy": "project-owned",
+              "source_path": "tests/visual/__screenshots__/web-home.png"
+            }
+          }
+        ],
+        "suites": [
+          {
+            "id": "full",
+            "title": "Full Suite",
+            "case_ids": [
+              "web-home"
+            ]
+          }
+        ]
+      }
+    },
+    "starter-mobile-defaults": {
+      "verificationProfiles": [
+        "mobile"
+      ],
+      "verification": {
+        "cases": [
+          {
+            "id": "expo-home",
+            "title": "Expo home deterministic check",
+            "surface_type": "mobile",
+            "runner": "detox-visual",
+            "target": {
+              "screen_id": "home"
+            },
+            "cwd": ".",
+            "argv": [
+              "npm",
+              "run",
+              "test",
+              "--",
+              "--help"
+            ],
+            "device_or_viewport": {
+              "device": "ios-simulator"
+            },
+            "locale": "en-US",
+            "timezone": "UTC",
+            "color_scheme": "light",
+            "freeze_clock": true,
+            "masks": [],
+            "artifact_expectations": [
+              "screenshots",
+              "diffs"
+            ],
+            "retry_policy": {
+              "attempts": 1
+            },
+            "baseline": {
+              "policy": "project-owned",
+              "source_path": "tests/visual/baselines/expo-home.png"
+            }
+          }
+        ],
+        "suites": [
+          {
+            "id": "full",
+            "title": "Full Suite",
+            "case_ids": [
+              "expo-home"
+            ]
+          }
+        ]
+      }
+    },
+    "starter-backend-defaults": {
+      "verificationProfiles": [
+        "backend"
+      ],
+      "verification": {
+        "cases": [
+          {
+            "id": "service-smoke",
+            "title": "Service smoke",
+            "surface_type": "backend",
+            "runner": "shell-contract",
+            "target": {
+              "service": "backend"
+            },
+            "cwd": ".",
+            "argv": [
+              "pwd"
+            ],
+            "artifact_expectations": [
+              "stdout"
+            ],
+            "retry_policy": {
+              "attempts": 1
+            }
+          }
+        ],
+        "suites": [
+          {
+            "id": "full",
+            "title": "Full Suite",
+            "case_ids": [
+              "service-smoke"
+            ]
+          }
+        ]
+      }
+    },
+    "starter-monorepo-defaults": {
+      "verificationProfiles": [
+        "monorepo"
+      ],
+      "verification": {
+        "cases": [
+          {
+            "id": "nx-web-smoke",
+            "title": "Nx web deterministic smoke",
+            "surface_type": "web",
+            "runner": "playwright-visual",
+            "target": {
+              "route": "/"
+            },
+            "cwd": ".",
+            "argv": [
+              "npm",
+              "run",
+              "test",
+              "--",
+              "--help"
+            ],
+            "device_or_viewport": {
+              "viewport": "1440x1024"
+            },
+            "locale": "en-US",
+            "timezone": "UTC",
+            "color_scheme": "light",
+            "freeze_clock": true,
+            "masks": [],
+            "artifact_expectations": [
+              "screenshots",
+              "diffs"
+            ],
+            "retry_policy": {
+              "attempts": 1
+            },
+            "baseline": {
+              "policy": "project-owned",
+              "source_path": "tests/visual/__screenshots__/nx-web-smoke.png"
+            }
+          },
+          {
+            "id": "nx-api-smoke",
+            "title": "Nx API smoke",
+            "surface_type": "backend",
+            "runner": "shell-contract",
+            "target": {
+              "service": "api"
+            },
+            "cwd": ".",
+            "argv": [
+              "npm",
+              "run",
+              "test",
+              "--",
+              "--help"
+            ],
+            "artifact_expectations": [
+              "stdout"
+            ],
+            "retry_policy": {
+              "attempts": 1
+            }
+          }
+        ],
+        "suites": [
+          {
+            "id": "full",
+            "title": "Full Suite",
+            "case_ids": [
+              "nx-web-smoke",
+              "nx-api-smoke"
+            ]
+          }
+        ]
+      }
+    }
+  },
+  "docsHints": {
+    "docs-sync-global": {
+      "profiles": [
+        "docs-sync"
+      ],
+      "hints": [
+        "Update real project docs whenever runtime behavior, architecture truth, local-dev commands, or verification contracts change."
+      ]
+    },
+    "verification-contracts": {
+      "profiles": [
+        "deterministic-verification"
+      ],
+      "hints": [
+        "Keep deterministic verification recipes, selectors, and baseline ownership aligned with the changed surfaces."
+      ]
+    },
+    "local-infra-contracts": {
+      "profiles": [
+        "local-infra"
+      ],
+      "hints": [
+        "Document the chosen local orchestration path and any required supporting services."
+      ]
+    },
+    "plugin-runtime-docs": {
+      "profiles": [
+        "plugin-platform"
+      ],
+      "hints": [
+        "Keep release-readiness, MCP, dashboard, and launcher/runtime docs in sync with the current host-capability model."
+      ]
+    }
+  },
+  "designHandoffScaffolds": {
+    "web-foundation": {
+      "platforms": [
+        "web"
+      ],
+      "handoff": {
+        "status": "ready",
+        "layout_system": [
+          "responsive-shell",
+          "route-led-surface"
+        ],
+        "motion_rules": [
+          "disable non-deterministic motion in verification mode"
+        ],
+        "accessibility_constraints": [
+          "preserve keyboard navigation",
+          "preserve semantic headings"
+        ],
+        "verification_hooks": [
+          "route:/",
+          "mask:dynamic-zones"
+        ]
+      }
+    },
+    "expo-foundation": {
+      "platforms": [
+        "expo"
+      ],
+      "handoff": {
+        "status": "ready",
+        "layout_system": [
+          "mobile-safe-area-shell"
+        ],
+        "motion_rules": [
+          "disable non-deterministic transitions in verification mode"
+        ],
+        "accessibility_constraints": [
+          "preserve screen-reader labels",
+          "preserve focus order"
+        ],
+        "verification_hooks": [
+          "screen:home",
+          "mask:dynamic-zones"
+        ]
+      }
+    }
+  },
+  "profilePacks": {
+    "workspace-kernel": {
+      "displayName": "Workspace Kernel",
+      "notes": [
+        "Keep Codex-specific workflow state outside the repository.",
+        "Never initialize workspace state silently."
+      ]
+    },
+    "docs-sync": {
+      "displayName": "Docs Sync",
+      "notes": [
+        "Approved decisions that change documented truth must update real project docs in the same work cycle."
+      ]
+    },
+    "local-infra": {
+      "displayName": "Local Infra",
+      "notes": [
+        "Postgres, MongoDB, Redis, NATS, and similar supporting services belong in Docker for local development.",
+        "App runtimes may stay native if that is the reliable local path."
+      ]
+    },
+    "deterministic-verification": {
+      "displayName": "Deterministic Verification",
+      "notes": [
+        "Prefer deterministic checks before model-assisted review.",
+        "Keep screenshots, diffs, and traces under the external artifact root only."
+      ]
+    },
+    "web-platform": {
+      "displayName": "Web Platform",
+      "notes": [
+        "Use Playwright with fixed viewport matrix, disabled animations, hidden default browser mode, and masked dynamic zones.",
+        "Cover React, Next.js, Tailwind, and TypeScript surfaces through route-aware deterministic verification."
+      ]
+    },
+    "mobile-platform": {
+      "displayName": "Mobile Platform",
+      "notes": [
+        "Use Detox as the deterministic runner for React Native and Expo on Android emulator and iOS simulator.",
+        "Use Compose screenshot testing for Compose UI and simulator-first capture for iOS-native surfaces."
+      ]
+    },
+    "backend-platform": {
+      "displayName": "Backend Platform",
+      "notes": [
+        "Treat NestJS and Rust services as first-class backends with contract and smoke-check expectations.",
+        "Verify broker, cache, database, and migration connectivity through deterministic checks."
+      ]
+    },
+    "monorepo-platform": {
+      "displayName": "Monorepo Platform",
+      "notes": [
+        "Use Nx graph and affected-task awareness when scoping changes and verification.",
+        "Keep monorepo orchestration aligned with Docker Compose and local service boundaries."
+      ]
+    },
+    "plugin-platform": {
+      "displayName": "Plugin Platform",
+      "notes": [
+        "Treat Python scripts, MCP tooling, installer flow, and dashboard health as first-class plugin-runtime surfaces.",
+        "For plugin repos, keep release-readiness checks executable through Python compile validation, MCP handshake, dashboard health, and smoke coverage."
+      ]
+    }
+  }
+}

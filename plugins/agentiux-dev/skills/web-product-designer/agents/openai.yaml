@@ -1,0 +1,4 @@
+interface:
+  display_name: "Web Product Designer"
+  short_description: "Create implementation-ready web UI handoffs with verification hooks"
+  default_prompt: "Use $web-product-designer to turn the selected design direction into an implementation-ready web handoff with layout, components, visual system, and deterministic capture hooks."

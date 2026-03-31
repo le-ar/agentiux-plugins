@@ -1,0 +1,4 @@
+interface:
+  display_name: "Web Platform"
+  short_description: "Handle web stack routing and deterministic route verification"
+  default_prompt: "Use $web-platform to route React, Next.js, TypeScript, and Tailwind work through AgentiUX Dev with proper web verification and docs-sync guardrails."

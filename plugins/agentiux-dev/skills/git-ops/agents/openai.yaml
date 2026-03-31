@@ -1,0 +1,4 @@
+interface:
+  display_name: "Git Ops"
+  short_description: "Match repository commit style before suggesting or creating commits"
+  default_prompt: "Use $git-ops to inspect local commit history or commitlint-style rules first, then suggest or create a commit message that matches the repository convention."

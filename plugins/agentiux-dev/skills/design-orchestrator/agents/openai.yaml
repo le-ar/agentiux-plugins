@@ -1,0 +1,4 @@
+interface:
+  display_name: "Design Orchestrator"
+  short_description: "Run brief, references, board persistence, and design handoff routing"
+  default_prompt: "Use $design-orchestrator to brief the user, collect 3 to 5 concrete references, persist the board outside the repo, and route the chosen direction into a web or Expo handoff."

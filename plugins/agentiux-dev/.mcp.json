@@ -1,0 +1,11 @@
+{
+  "mcpServers": {
+    "agentiux-dev-state": {
+      "type": "stdio",
+      "command": "python3",
+      "args": [
+        "scripts/agentiux_dev_mcp.py"
+      ]
+    }
+  }
+}
