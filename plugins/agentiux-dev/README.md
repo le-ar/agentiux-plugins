@@ -333,15 +333,17 @@ When the user asks for a commit, inspect local commit style first:
 
 ```bash
 python3 scripts/agentiux_dev_state.py inspect-git-state --repo-root /path/to/repo
+python3 scripts/agentiux_dev_state.py list-git-worktrees --repo-root /path/to/repo
 python3 scripts/agentiux_dev_state.py plan-git-change --repo-root /path/to/repo
 python3 scripts/agentiux_dev_state.py detect-commit-style --repo-root /path/to/repo
 python3 scripts/agentiux_dev_state.py suggest-commit-message --repo-root /path/to/repo --summary "Improve dashboard log view"
-python3 scripts/agentiux_dev_state.py create-git-branch --repo-root /path/to/repo --branch-name codex/example-change
+python3 scripts/agentiux_dev_state.py create-git-worktree --repo-root /path/to/repo --path ../repo-dashboard-log-view --branch-name feature/dashboard-log-view
+python3 scripts/agentiux_dev_state.py create-git-branch --repo-root /path/to/repo --branch-name task/dashboard-log-view
 python3 scripts/agentiux_dev_state.py stage-git-files --repo-root /path/to/repo --file src/app.ts
 python3 scripts/agentiux_dev_state.py create-git-commit --repo-root /path/to/repo --message "feat: improve dashboard log view"
 ```
 
-If the repository already has a commit convention, the suggested message should follow it. If the repository has no history or rules, the fallback is a clear imperative message. The new local git execution helpers stay local-only and do not push or publish PRs.
+If the repository already has a commit convention, the suggested message should follow it. If history is sparse or there are no explicit rules, the fallback is a conventional-commit style suggestion plus neutral branch prefixes like `task/` and `feature/`. Use linked worktrees for parallel or long-running workstreams; the local git execution helpers stay local-only and do not push or publish PRs.
 
 ## Self-Hosting This Plugin
 

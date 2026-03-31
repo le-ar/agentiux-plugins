@@ -34,6 +34,7 @@ from agentiux_dev_lib import (
     close_task,
     create_git_branch,
     create_git_commit,
+    create_git_worktree,
     create_starter,
     create_task,
     create_workstream,
@@ -44,6 +45,7 @@ from agentiux_dev_lib import (
     get_state_paths,
     init_workspace,
     inspect_git_state,
+    list_git_worktrees,
     list_starter_presets,
     list_starter_runs,
     list_design_handoffs,
@@ -409,10 +411,19 @@ def parse_args() -> argparse.Namespace:
     cmd = subparsers.add_parser("inspect-git-state")
     cmd.add_argument("--repo-root", required=True)
 
+    cmd = subparsers.add_parser("list-git-worktrees")
+    cmd.add_argument("--repo-root", required=True)
+
     cmd = subparsers.add_parser("plan-git-change")
     cmd.add_argument("--repo-root", required=True)
     cmd.add_argument("--summary")
     cmd.add_argument("--file", dest="files", action="append")
+
+    cmd = subparsers.add_parser("create-git-worktree")
+    cmd.add_argument("--repo-root", required=True)
+    cmd.add_argument("--path", required=True)
+    cmd.add_argument("--branch-name", required=True)
+    cmd.add_argument("--start-point", default="HEAD")
 
     cmd = subparsers.add_parser("create-git-branch")
     cmd.add_argument("--repo-root", required=True)
@@ -645,8 +656,12 @@ def main() -> int:
             payload = show_git_workflow_advice(args.repo_root)
         elif args.command == "inspect-git-state":
             payload = inspect_git_state(args.repo_root)
+        elif args.command == "list-git-worktrees":
+            payload = list_git_worktrees(args.repo_root)
         elif args.command == "plan-git-change":
             payload = plan_git_change(args.repo_root, summary=args.summary, files=args.files)
+        elif args.command == "create-git-worktree":
+            payload = create_git_worktree(args.repo_root, args.path, args.branch_name, start_point=args.start_point)
         elif args.command == "create-git-branch":
             payload = create_git_branch(args.repo_root, args.branch_name)
         elif args.command == "stage-git-files":

@@ -33,6 +33,7 @@ from agentiux_dev_lib import (
     command_aliases,
     create_git_branch,
     create_git_commit,
+    create_git_worktree,
     create_starter,
     create_task,
     create_workstream,
@@ -45,6 +46,7 @@ from agentiux_dev_lib import (
     get_state_paths,
     init_workspace,
     inspect_git_state,
+    list_git_worktrees,
     list_design_handoffs,
     list_reference_boards,
     list_stages,
@@ -912,6 +914,23 @@ TOOLS = {
         },
         "handler": lambda args: inspect_git_state(args["repoRoot"]),
     },
+    "list_git_worktrees": {
+        "title": "List Git Worktrees",
+        "description": "Inspect linked git worktrees for a local repository.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "repoRoot": {"type": "string"}
+            },
+            "required": ["repoRoot"],
+            "additionalProperties": False
+        },
+        "annotations": {
+            "readOnlyHint": True,
+            "idempotentHint": True
+        },
+        "handler": lambda args: list_git_worktrees(args["repoRoot"]),
+    },
     "plan_git_change": {
         "title": "Plan Git Change",
         "description": "Plan the next safe local git actions from repository state plus current task or workstream context.",
@@ -930,6 +949,32 @@ TOOLS = {
             "idempotentHint": True,
         },
         "handler": lambda args: plan_git_change(args["repoRoot"], summary=args.get("summary"), files=args.get("files")),
+    },
+    "create_git_worktree": {
+        "title": "Create Git Worktree",
+        "description": "Create a linked git worktree on a new branch after explicit confirmation.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "repoRoot": {"type": "string"},
+                "path": {"type": "string"},
+                "branchName": {"type": "string"},
+                "startPoint": {"type": "string"},
+            },
+            "required": ["repoRoot", "path", "branchName"],
+            "additionalProperties": False,
+        },
+        "annotations": {
+            "readOnlyHint": False,
+            "destructiveHint": False,
+            "idempotentHint": False,
+        },
+        "handler": lambda args: create_git_worktree(
+            args["repoRoot"],
+            args["path"],
+            args["branchName"],
+            start_point=args.get("startPoint", "HEAD"),
+        ),
     },
     "create_git_branch": {
         "title": "Create Git Branch",

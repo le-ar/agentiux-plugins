@@ -21,6 +21,7 @@ from agentiux_dev_lib import (
     command_aliases,
     create_git_branch,
     create_git_commit,
+    create_git_worktree,
     create_starter,
     create_workstream,
     create_task,
@@ -31,6 +32,7 @@ from agentiux_dev_lib import (
     get_active_brief,
     init_workspace,
     inspect_git_state,
+    list_git_worktrees,
     list_reference_boards,
     list_starter_runs,
     list_tasks,
@@ -527,7 +529,7 @@ def main() -> int:
         assert repaired_workstream["title"] == "plugin-production-readiness"
         assert repaired_workstream["kind"] == "feature"
         assert repaired_workstream["scope_summary"] == "Lock plugin runtime convergence, verification, and release-readiness contracts."
-        assert repaired_workstream["branch_hint"] == "codex/plugin-production-readiness"
+        assert repaired_workstream["branch_hint"] == "feature/plugin-production-readiness"
         assert repaired_workstream["plan_status"] == "confirmed"
         _assert_stage_ids(
             repaired_plugin_state["stage_register"],
@@ -1605,14 +1607,18 @@ def main() -> int:
         (commit_repo / "dashboard.txt").write_text("panel\n")
         subprocess.run(["git", "add", "dashboard.txt"], cwd=commit_repo, check=True, capture_output=True, text=True)
         _git_commit(commit_repo, "fix(dashboard): align status badge")
+        (commit_repo / "notes.md").write_text("dashboard notes\n")
+        subprocess.run(["git", "add", "notes.md"], cwd=commit_repo, check=True, capture_output=True, text=True)
+        _git_commit(commit_repo, "test(dashboard): add semantic smoke notes")
         commit_style = detect_commit_style(commit_repo)
         assert commit_style["style"] == "conventional"
+        assert commit_style["source"] == "history"
         assert commit_style["uses_scope"] is True
         assert commit_style["preferred_branch_prefix"]
         git_advice = show_git_workflow_advice(commit_repo)
         assert git_advice["inspection"]["style"] == "conventional"
         assert git_advice["commit_policy"]["recommended_style"] == "conventional"
-        assert git_advice["branch_policy"]["pattern"].startswith("codex/")
+        assert git_advice["branch_policy"]["pattern"].startswith("task/")
         assert "best_practices" not in git_advice
         commit_message = suggest_commit_message(
             commit_repo,
@@ -1622,8 +1628,10 @@ def main() -> int:
         assert commit_message["suggested_message"].startswith("feat(dashboard):")
         assert commit_message["advice"] == git_advice
         branch_name = suggest_branch_name(commit_repo, "Improve dashboard log view", mode="task")
-        assert branch_name["suggested_branch_name"].startswith("codex/")
+        assert branch_name["suggested_branch_name"].startswith("task/")
         assert branch_name["advice"] == git_advice
+        workstream_branch_name = suggest_branch_name(commit_repo, "Improve dashboard log view", mode="workstream")
+        assert workstream_branch_name["suggested_branch_name"].startswith("feature/")
         pr_title = suggest_pr_title(commit_repo, "Improve dashboard log view", files=["plugins/agentiux-dev/dashboard/app.js"])
         assert pr_title["suggested_pr_title"]
         assert pr_title["advice"] == git_advice
@@ -1658,6 +1666,8 @@ def main() -> int:
         ticket_advice = show_git_workflow_advice(ticket_repo)
         assert ticket_advice["ticket_prefix_policy"]["examples"] == ["PROJECT-123"]
         assert ticket_advice["ticket_prefix_policy"]["usage"] == "follow_repo_history"
+        assert ticket_advice["inspection"]["source"] == "limited-history"
+        assert ticket_advice["commit_policy"]["recommended_style"] == "conventional"
 
         empty_repo = temp_root / "empty-repo"
         empty_repo.mkdir()
@@ -1665,6 +1675,31 @@ def main() -> int:
         empty_advice = show_git_workflow_advice(empty_repo)
         assert empty_advice["inspection"]["source"] == "fallback"
         assert empty_advice["commit_policy"]["recommended_style"] == "conventional"
+        assert empty_advice["branch_policy"]["pattern"].startswith("task/")
+
+        sparse_repo = temp_root / "sparse-repo"
+        sparse_repo.mkdir()
+        subprocess.run(["git", "init"], cwd=sparse_repo, check=True, capture_output=True, text=True)
+        (sparse_repo / "README.md").write_text("# Sparse Repo\n")
+        subprocess.run(["git", "add", "README.md"], cwd=sparse_repo, check=True, capture_output=True, text=True)
+        _git_commit(sparse_repo, "Initial sparse repo setup")
+        sparse_style = detect_commit_style(sparse_repo)
+        assert sparse_style["source"] == "limited-history"
+        assert sparse_style["history_sufficient"] is False
+        sparse_advice = show_git_workflow_advice(sparse_repo)
+        assert sparse_advice["commit_policy"]["recommended_style"] == "conventional"
+        assert sparse_advice["branch_policy"]["pattern"].startswith("task/")
+
+        porcelain_repo = temp_root / "porcelain-repo"
+        porcelain_repo.mkdir()
+        subprocess.run(["git", "init"], cwd=porcelain_repo, check=True, capture_output=True, text=True)
+        (porcelain_repo / ".gitignore").write_text("node_modules/\n")
+        subprocess.run(["git", "add", ".gitignore"], cwd=porcelain_repo, check=True, capture_output=True, text=True)
+        _git_commit(porcelain_repo, "Add ignore rules")
+        (porcelain_repo / ".gitignore").write_text("node_modules/\ncoverage/\n")
+        porcelain_state = inspect_git_state(porcelain_repo)
+        assert porcelain_state["changed_files"][0]["path"] == ".gitignore"
+        assert ".gitignore" in porcelain_state["unstaged_files"]
 
         git_flow_repo = temp_root / "git-flow-repo"
         git_flow_repo.mkdir()
@@ -1683,6 +1718,8 @@ def main() -> int:
         assert git_plan["workspace_context"]["context_type"] == "task"
         assert git_plan["resolved_summary"] == "Add an operational note for the repository."
         assert git_plan["branch_action"] == "create_and_switch"
+        assert git_plan["worktree_action"] == "current_checkout_ok"
+        assert git_plan["suggested_branch_name"].startswith("task/")
         branch_result = create_git_branch(git_flow_repo, git_plan["suggested_branch_name"])
         assert branch_result["status"] == "created"
         stage_result = stage_git_files(git_flow_repo, ["notes.md"])
@@ -1690,6 +1727,33 @@ def main() -> int:
         commit_result = create_git_commit(git_flow_repo, git_plan["suggested_commit_message"])
         assert commit_result["commit_hash"]
         assert inspect_git_state(git_flow_repo)["summary_counts"]["changed_files"] == 0
+
+        worktree_repo = temp_root / "worktree-repo"
+        worktree_repo.mkdir()
+        subprocess.run(["git", "init"], cwd=worktree_repo, check=True, capture_output=True, text=True)
+        (worktree_repo / "README.md").write_text("# Worktree Repo\n")
+        subprocess.run(["git", "add", "README.md"], cwd=worktree_repo, check=True, capture_output=True, text=True)
+        _git_commit(worktree_repo, "chore: bootstrap worktree repo")
+        init_workspace(worktree_repo)
+        create_workstream(worktree_repo, title="Dashboard revamp", scope_summary="Ship the dashboard revamp.")
+        worktree_plan = plan_git_change(worktree_repo)
+        assert worktree_plan["workspace_context"]["context_type"] == "workstream"
+        assert worktree_plan["worktree_action"] == "create_linked_worktree"
+        assert worktree_plan["suggested_branch_name"].startswith("feature/")
+        worktree_listing = list_git_worktrees(worktree_repo)
+        assert worktree_listing["worktree_count"] == 1
+        created_worktree = create_git_worktree(
+            worktree_repo,
+            worktree_plan["suggested_worktree_path"],
+            worktree_plan["suggested_branch_name"],
+        )
+        assert created_worktree["branch_name"] == worktree_plan["suggested_branch_name"]
+        assert created_worktree["worktree_path"] == worktree_plan["suggested_worktree_path"]
+        assert created_worktree["worktree_state"]["worktree_count"] == 2
+        linked_state = inspect_git_state(created_worktree["worktree_path"])
+        assert linked_state["worktree"]["is_linked_worktree"] is True
+        assert linked_state["current_branch"] == worktree_plan["suggested_branch_name"]
+        assert linked_state["summary_counts"]["changed_files"] == 0
 
         audit_target = temp_root / "audit-target"
         audit_target.mkdir()
@@ -1922,7 +1986,7 @@ def main() -> int:
                 },
             },
         )
-        assert response["result"]["structuredContent"]["suggested_branch_name"].startswith("codex/")
+        assert response["result"]["structuredContent"]["suggested_branch_name"].startswith("task/")
 
         gui_launch_process = subprocess.run(
             ["python3", str(plugin_root / "scripts" / "agentiux_dev_gui.py"), "launch", "--workspace", str(workspace)],

@@ -1890,6 +1890,10 @@ def workflow_advice(workspace: str | Path, request_text: str | None = None, auto
 CONVENTIONAL_COMMIT_RE = re.compile(
     r"^(feat|fix|docs|style|refactor|perf|test|build|ci|chore|revert)(\([^)]+\))?(!)?: .+"
 )
+MIN_COMMIT_STYLE_HISTORY = 3
+FALLBACK_BRANCH_PREFIX = "task"
+FALLBACK_WORKSTREAM_BRANCH_PREFIX = "feature"
+PROTECTED_BRANCHES = {"main", "master", "develop", "trunk"}
 
 
 def _git_output(repo_root: str | Path, argv: list[str]) -> str:
@@ -1902,7 +1906,7 @@ def _git_output(repo_root: str | Path, argv: list[str]) -> str:
     )
     if result.returncode != 0:
         raise RuntimeError(result.stderr.strip() or result.stdout.strip() or f"Command failed: {' '.join(argv)}")
-    return result.stdout.strip()
+    return result.stdout.rstrip("\n")
 
 
 def _git_repo_exists(repo_root: str | Path) -> bool:
@@ -1946,7 +1950,7 @@ def _infer_branch_prefix(branches: list[str]) -> tuple[str, str]:
     if prefixes:
         prefix = sorted(prefixes.items(), key=lambda item: (-item[1], item[0]))[0][0]
         return prefix, "history"
-    return "codex", "fallback"
+    return FALLBACK_BRANCH_PREFIX, "fallback"
 
 
 def _git_message_bodies(repo_root: str | Path, limit: int) -> list[str]:
@@ -2007,13 +2011,14 @@ def detect_commit_style(repo_root: str | Path, limit: int = 30) -> dict[str, Any
     issue_tokens = _detect_issue_tokens(messages)
     trailers = _detect_trailers(bodies)
 
+    history_sufficient = len(messages) >= MIN_COMMIT_STYLE_HISTORY
     style = style_from_config or "plain-imperative"
-    confidence = 0.3 if not messages else 0.5
+    confidence = 0.3 if not messages else 0.45
     source = "fallback"
     if style_from_config:
         source = "config"
         confidence = 0.9
-    elif messages:
+    elif messages and history_sufficient:
         if conventional_count / len(messages) >= 0.6:
             style = "conventional"
             source = "history"
@@ -2022,6 +2027,10 @@ def detect_commit_style(repo_root: str | Path, limit: int = 30) -> dict[str, Any
             style = "plain-imperative"
             source = "history"
             confidence = 0.65
+    elif messages:
+        style = "conventional" if conventional_count == len(messages) else "plain-imperative"
+        source = "limited-history"
+        confidence = 0.45
 
     subject_case = "sentence" if uppercase_subjects >= max(len(messages) // 2, 1) else "lower"
     return {
@@ -2037,6 +2046,8 @@ def detect_commit_style(repo_root: str | Path, limit: int = 30) -> dict[str, Any
         "config_files": [str(path) for path in config_files],
         "config_rules": config_rules,
         "history_count": len(messages),
+        "history_sufficient": history_sufficient,
+        "history_threshold": MIN_COMMIT_STYLE_HISTORY,
         "branch_examples": branch_names[:5],
         "preferred_branch_prefix": branch_prefix,
         "branch_prefix_source": branch_prefix_source,
@@ -2100,11 +2111,13 @@ def _infer_commit_scope(files: list[str] | None, uses_scope: bool) -> str | None
 def _git_workflow_advice(repo_root: str | Path) -> dict[str, Any]:
     style = detect_commit_style(repo_root)
     recommended_commit_style = style["style"] if style["source"] in {"config", "history"} else "conventional"
-    branch_prefix = style.get("preferred_branch_prefix") or "codex"
+    branch_prefix = style.get("preferred_branch_prefix") or FALLBACK_BRANCH_PREFIX
     branch_pattern = f"{branch_prefix}/<slug>"
+    root = Path(repo_root).expanduser().resolve()
+    worktree_state = list_git_worktrees(root)
     safety_rules = list(dict.fromkeys(style["safety_rules"] + ["Do not force-push or rewrite shared history without explicit approval."]))
     return {
-        "repo_root": str(Path(repo_root).expanduser().resolve()),
+        "repo_root": str(root),
         "resolution_order": [
             "repo_config",
             "repo_history",
@@ -2116,7 +2129,8 @@ def _git_workflow_advice(repo_root: str | Path) -> dict[str, Any]:
             "recommended_prefix": branch_prefix,
             "prefix_source": style.get("branch_prefix_source"),
             "pattern": branch_pattern,
-            "workstream_prefix_override": "feature" if branch_prefix == "codex" else branch_prefix,
+            "workstream_prefix_override": FALLBACK_WORKSTREAM_BRANCH_PREFIX if branch_prefix == FALLBACK_BRANCH_PREFIX else branch_prefix,
+            "protected_branches": sorted(PROTECTED_BRANCHES),
         },
         "commit_policy": {
             "recommended_style": recommended_commit_style,
@@ -2141,6 +2155,14 @@ def _git_workflow_advice(repo_root: str | Path) -> dict[str, Any]:
             "title_style": style["preferred_pr_title_style"],
             "body_sections": ["Summary", "Changed Areas", "Verification", "Notes"],
             "draft_for_long_running_workstreams": True,
+        },
+        "worktree_policy": {
+            "recommended_for_parallel_tasks": True,
+            "recommended_for_long_running_workstreams": True,
+            "current_worktree_count": worktree_state["worktree_count"],
+            "current_checkout_is_linked_worktree": worktree_state["is_linked_worktree"],
+            "path_pattern": str(root.parent / f"{root.name}-<slug>"),
+            "branch_isolation": "prefer_one_branch_per_worktree",
         },
         "safety_rules": safety_rules,
     }
@@ -2188,7 +2210,7 @@ def suggest_branch_name(repo_root: str | Path, summary: str, mode: str = "task")
     advice = _git_workflow_advice(repo_root)
     prefix = advice["branch_policy"]["recommended_prefix"]
     slug = slugify(_suggested_title_from_request(summary, "change"))
-    if mode == "workstream" and prefix == "codex":
+    if mode == "workstream" and prefix == FALLBACK_BRANCH_PREFIX:
         prefix = advice["branch_policy"]["workstream_prefix_override"]
     return {
         "repo_root": str(Path(repo_root).expanduser().resolve()),
@@ -2249,6 +2271,106 @@ def suggest_pr_body(repo_root: str | Path, summary: str, files: list[str] | None
 
 def show_git_workflow_advice(repo_root: str | Path) -> dict[str, Any]:
     return _git_workflow_advice(repo_root)
+
+
+def _current_git_root(repo_root: str | Path) -> Path:
+    return Path(_git_output(repo_root, ["git", "rev-parse", "--show-toplevel"])).expanduser().resolve()
+
+
+def _resolve_worktree_path(repo_root: str | Path, path: str | Path) -> Path:
+    root = _current_git_root(repo_root)
+    candidate = Path(path).expanduser()
+    if not candidate.is_absolute():
+        candidate = (root.parent / candidate).resolve()
+    else:
+        candidate = candidate.resolve()
+    try:
+        candidate.relative_to(root)
+    except ValueError:
+        return candidate
+    raise ValueError("Linked worktree path must be outside the repository root.")
+
+
+def _suggested_worktree_path(repo_root: str | Path, summary: str) -> str:
+    root = _current_git_root(repo_root)
+    slug = slugify(_suggested_title_from_request(summary, root.name))
+    return str(root.parent / f"{root.name}-{slug}")
+
+
+def list_git_worktrees(repo_root: str | Path) -> dict[str, Any]:
+    root = Path(repo_root).expanduser().resolve()
+    if not _git_repo_exists(root):
+        raise FileNotFoundError(f"Not a git repository: {root}")
+    current_root = _current_git_root(root)
+    git_dir_value = _git_output_or_empty(root, ["git", "rev-parse", "--git-dir"]) or None
+    git_common_dir_value = _git_output_or_empty(root, ["git", "rev-parse", "--git-common-dir"]) or git_dir_value
+    git_dir = str((current_root / git_dir_value).resolve()) if git_dir_value and not Path(git_dir_value).is_absolute() else git_dir_value
+    git_common_dir = (
+        str((current_root / git_common_dir_value).resolve())
+        if git_common_dir_value and not Path(git_common_dir_value).is_absolute()
+        else git_common_dir_value
+    )
+    output = _git_output_or_empty(root, ["git", "worktree", "list", "--porcelain"])
+    entries: list[dict[str, Any]] = []
+    current: dict[str, Any] = {}
+
+    def flush() -> None:
+        nonlocal current
+        if not current:
+            return
+        path_value = current.get("path")
+        if not path_value:
+            current = {}
+            return
+        resolved = Path(path_value).expanduser().resolve()
+        entries.append(
+            {
+                "path": str(resolved),
+                "head": current.get("head"),
+                "branch": current.get("branch"),
+                "branch_ref": current.get("branch_ref"),
+                "detached": bool(current.get("detached")),
+                "bare": bool(current.get("bare")),
+                "locked": current.get("locked"),
+                "prunable": current.get("prunable"),
+                "is_current": resolved == current_root,
+            }
+        )
+        current = {}
+
+    for line in output.splitlines():
+        if not line.strip():
+            flush()
+            continue
+        key, _, value = line.partition(" ")
+        if key == "worktree":
+            flush()
+            current["path"] = value
+        elif key == "HEAD":
+            current["head"] = value
+        elif key == "branch":
+            current["branch_ref"] = value
+            current["branch"] = value.rsplit("/", 1)[-1]
+        elif key == "detached":
+            current["detached"] = True
+        elif key == "bare":
+            current["bare"] = True
+        elif key == "locked":
+            current["locked"] = value or True
+        elif key == "prunable":
+            current["prunable"] = value or True
+    flush()
+
+    return {
+        "repo_root": str(current_root),
+        "current_worktree_path": str(current_root),
+        "git_dir": git_dir,
+        "git_common_dir": git_common_dir,
+        "is_linked_worktree": bool(git_dir and git_common_dir and git_dir != git_common_dir),
+        "worktree_count": len(entries),
+        "linked_worktree_count": max(len(entries) - 1, 0),
+        "worktrees": entries,
+    }
 
 
 def _git_branch_exists(repo_root: str | Path, branch_name: str) -> bool:
@@ -2321,6 +2443,7 @@ def inspect_git_state(repo_root: str | Path) -> dict[str, Any]:
     if not _git_repo_exists(root):
         raise FileNotFoundError(f"Not a git repository: {root}")
     advice = _git_workflow_advice(root)
+    worktree_state = list_git_worktrees(root)
     current_branch = _git_output_or_empty(root, ["git", "rev-parse", "--abbrev-ref", "HEAD"]) or None
     detached_head = current_branch == "HEAD"
     upstream_branch = _git_output_or_empty(root, ["git", "rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{upstream}"]) or None
@@ -2349,6 +2472,8 @@ def inspect_git_state(repo_root: str | Path) -> dict[str, Any]:
         warnings.append(f"Current branch is ahead of `{upstream_branch}` by {ahead_count} commit(s).")
     if not entries:
         warnings.append("Working tree is clean.")
+    if worktree_state["linked_worktree_count"] > 0:
+        warnings.append(f"Repository currently has {worktree_state['worktree_count']} linked worktrees.")
     return {
         "repo_root": str(root),
         "head_commit": head_commit,
@@ -2370,6 +2495,7 @@ def inspect_git_state(repo_root: str | Path) -> dict[str, Any]:
             "untracked_files": len(untracked_files),
             "conflicted_files": len(conflicted_files),
         },
+        "worktree": worktree_state,
         "workflow_advice": advice,
         "safety_warnings": list(dict.fromkeys(warnings)),
     }
@@ -2425,15 +2551,23 @@ def plan_git_change(repo_root: str | Path, summary: str | None = None, files: li
     branch_suggestion = suggest_branch_name(repo_root, resolved_summary, mode=mode)
     current_branch = state.get("current_branch")
     suggested_branch_name = branch_suggestion["suggested_branch_name"]
+    suggested_worktree_path = _suggested_worktree_path(repo_root, resolved_summary)
     branch_action = "reuse_current_branch"
-    if state.get("detached_head") or not current_branch or current_branch in {"main", "master", "develop", "trunk"}:
+    if state.get("detached_head") or not current_branch or current_branch in PROTECTED_BRANCHES:
         branch_action = "create_and_switch"
     elif current_branch == suggested_branch_name:
         branch_action = "keep_current_branch"
+    worktree_action = "current_checkout_ok"
+    if mode == "workstream" and not state["dirty"] and current_branch in PROTECTED_BRANCHES:
+        worktree_action = "create_linked_worktree"
+    elif mode == "workstream":
+        worktree_action = "consider_linked_worktree"
     commit_suggestion = suggest_commit_message(repo_root, resolved_summary, files=resolved_files)
     pr_title = suggest_pr_title(repo_root, resolved_summary, files=resolved_files)
     pr_body = suggest_pr_body(repo_root, resolved_summary, files=resolved_files)
     confirmations = []
+    if worktree_action == "create_linked_worktree":
+        confirmations.append(f"Confirm creating linked worktree `{suggested_worktree_path}` for `{suggested_branch_name}`.")
     if branch_action == "create_and_switch":
         confirmations.append(f"Confirm creating and switching to `{suggested_branch_name}` before editing git state.")
     if resolved_files:
@@ -2446,12 +2580,33 @@ def plan_git_change(repo_root: str | Path, summary: str | None = None, files: li
         "resolved_summary": resolved_summary,
         "recommended_staged_files": resolved_files,
         "branch_action": branch_action,
+        "worktree_action": worktree_action,
+        "suggested_worktree_path": suggested_worktree_path,
         "suggested_branch_name": suggested_branch_name,
         "suggested_commit_message": commit_suggestion["suggested_message"],
         "suggested_pr_title": pr_title["suggested_pr_title"],
         "suggested_pr_body": pr_body["suggested_pr_body"],
         "required_confirmations": confirmations,
         "advice": state["workflow_advice"],
+    }
+
+
+def create_git_worktree(repo_root: str | Path, path: str | Path, branch_name: str, start_point: str = "HEAD") -> dict[str, Any]:
+    root = Path(repo_root).expanduser().resolve()
+    if not _git_repo_exists(root):
+        raise FileNotFoundError(f"Not a git repository: {root}")
+    if _git_branch_exists(root, branch_name):
+        raise ValueError(f"Branch already exists: {branch_name}")
+    destination = _resolve_worktree_path(root, path)
+    argv = ["git", "worktree", "add", "-b", branch_name, str(destination), start_point or "HEAD"]
+    _git_output(root, argv)
+    return {
+        "repo_root": str(_current_git_root(root)),
+        "worktree_path": str(destination),
+        "branch_name": branch_name,
+        "start_point": start_point or "HEAD",
+        "git_state": inspect_git_state(destination),
+        "worktree_state": list_git_worktrees(root),
     }
 
 
@@ -3071,7 +3226,7 @@ def _normalize_workstream_record(
         scope_summary = existing_register.get("scope_summary")
     branch_hint = normalized.get("branch_hint") or existing_register.get("branch_hint")
     if not branch_hint:
-        branch_hint = f"codex/{workstream_id}"
+        branch_hint = f"{FALLBACK_WORKSTREAM_BRANCH_PREFIX}/{workstream_id}"
     verification_policy = copy.deepcopy(normalized.get("verification_policy") or existing_register.get("verification_policy") or {})
     verification_policy.setdefault("default_mode", "targeted")
     verification_policy.setdefault("full_suite_requires_explicit_request", True)
