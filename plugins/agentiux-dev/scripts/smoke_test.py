@@ -140,12 +140,24 @@ class _FakeYouTrackHandler(BaseHTTPRequestHandler):
         return self.headers.get("Authorization") == f"Bearer {self.server.token}"  # type: ignore[attr-defined]
 
     def do_GET(self) -> None:  # noqa: N802
-        if not self._authorized():
-            self._unauthorized()
-            return
         parsed = urllib.parse.urlparse(self.path)
         query = urllib.parse.parse_qs(parsed.query)
         fixtures = self.server.fixtures  # type: ignore[attr-defined]
+        if not parsed.path.startswith("/api/"):
+            page = fixtures.get("external_pages", {}).get(parsed.path)
+            if page is None:
+                self._send_json({"error": "not found", "path": parsed.path}, status=404)
+                return
+            body = page["body"].encode("utf-8")
+            self.send_response(page.get("status", 200))
+            self.send_header("Content-Type", page.get("content_type", "text/html; charset=utf-8"))
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+            return
+        if not self._authorized():
+            self._unauthorized()
+            return
         if parsed.path == "/api/users/me":
             self._send_json({"id": "1-1", "login": "alex", "name": "Alex"})
             return
@@ -159,6 +171,10 @@ class _FakeYouTrackHandler(BaseHTTPRequestHandler):
             raw_query = " ".join(query.get("query", []))
             items = list(fixtures["issues"])
             lowered = raw_query.lower()
+            id_match = re.search(r"\bid:\s*([A-Z0-9-]+)", raw_query, re.IGNORECASE)
+            if id_match:
+                expected = id_match.group(1).upper()
+                items = [item for item in items if item["idReadable"].upper() == expected or item["id"].upper() == expected]
             project_match = re.search(r"project:\s*([a-z0-9,\s-]+?)(?=\s+[a-z-]+:|$)", lowered)
             if project_match:
                 allowed = {part.strip().upper() for part in project_match.group(1).split(",") if part.strip()}
@@ -168,6 +184,15 @@ class _FakeYouTrackHandler(BaseHTTPRequestHandler):
             skip = int(query.get("$skip", ["0"])[0])
             top = int(query.get("$top", ["42"])[0])
             self._send_json(items[skip : skip + top])
+            return
+        issue_match = re.fullmatch(r"/api/issues/([^/]+)", parsed.path)
+        if issue_match:
+            issue_reference = urllib.parse.unquote(issue_match.group(1)).upper()
+            for item in fixtures["issues"]:
+                if item["id"].upper() == issue_reference or item["idReadable"].upper() == issue_reference:
+                    self._send_json(item)
+                    return
+            self._send_json({"error": "not found", "path": parsed.path}, status=404)
             return
         if parsed.path == "/api/workItems":
             raw_query = " ".join(query.get("query", []))
@@ -463,6 +488,20 @@ class _FakeYouTrackServer:
                 ],
                 "2-4": [],
             },
+            "external_pages": {
+                "/docs/payment-retry": {
+                    "content_type": "text/html; charset=utf-8",
+                    "body": "<html><head><title>Payment Retry Guide</title></head><body><main><h1>Payment Retry Guide</h1><p>Retry succeeds after the backend confirms settlement and the banner must stay hidden.</p></main></body></html>",
+                },
+                "/docs/tax-mismatch": {
+                    "content_type": "text/html; charset=utf-8",
+                    "body": "<html><head><title>Tax Mismatch Notes</title></head><body><article><p>Mismatch usually comes from stale tax cache and frontend rounding drift.</p></article></body></html>",
+                },
+                "/admin/payment-retry": {
+                    "content_type": "text/html; charset=utf-8",
+                    "body": "<html><head><title>Admin Login</title></head><body><form><input type='text' name='user'><input type='password' name='password'></form></body></html>",
+                },
+            },
         }
         self.httpd: ThreadingHTTPServer | None = None
         self.thread: threading.Thread | None = None
@@ -474,6 +513,20 @@ class _FakeYouTrackServer:
         self.httpd.fixtures = self.fixtures  # type: ignore[attr-defined]
         host, port = self.httpd.server_address
         self.base_url = f"http://{host}:{port}"
+        for issue in self.fixtures["issues"]:
+            if issue["idReadable"] == "SL-4591":
+                issue["description"] = (
+                    f"Short UI fix. Public note: {self.base_url}/docs/payment-retry "
+                    f"Admin note: {self.base_url}/admin/payment-retry "
+                    f"Related issue mention: {self.base_url}/issue/SL-4592"
+                )
+            elif issue["idReadable"] == "SL-4592":
+                issue["description"] = (
+                    f"Large backend bug. Supporting note: {self.base_url}/docs/tax-mismatch "
+                    f"Cross-reference: {self.base_url}/issue/SL-4591"
+                )
+            elif issue["idReadable"] == "SL-4593":
+                issue["description"] = f"Short UI polish. Duplicate discussion: {self.base_url}/issue/SL-4591"
         self.thread = threading.Thread(target=self.httpd.serve_forever, daemon=True)
         self.thread.start()
         return self
@@ -2612,7 +2665,17 @@ def main() -> int:
             assert isinstance(search_session["shortlist"][0]["recent_activities"], list)
             assert isinstance(search_session["shortlist"][0]["issue_links"], list)
             assert search_session["shortlist"][0]["link_summary"]["linked_issue_count"] >= 1
-            assert search_session["shortlist"][0]["ticket_overview"]["comment_count"] >= 0
+            rich_context_issue = next(item for item in search_session["shortlist"] if item["issue_key"] == "SL-4591")
+            assert isinstance(rich_context_issue["external_references"], list)
+            assert rich_context_issue["external_reference_overview"]["link_count"] >= 2
+            assert any(item["classification"] == "openable_text" for item in rich_context_issue["external_references"])
+            assert any(item["classification"] == "admin_or_auth_like" for item in rich_context_issue["external_references"])
+            assert any(item.get("tracker_issue_key") == "SL-4592" for item in rich_context_issue["external_references"])
+            assert isinstance(rich_context_issue["related_issue_summaries"], list)
+            assert any(item.get("issue_key") == "SL-4592" for item in rich_context_issue["related_issue_summaries"])
+            assert rich_context_issue["ticket_overview"]["external_reference_count"] >= 2
+            assert rich_context_issue["ticket_overview"]["related_issue_count"] >= 1
+            assert rich_context_issue["ticket_overview"]["comment_count"] >= 0
             queue = show_youtrack_issue_queue(youtrack_workspace, search_session_id=search_session["session_id"])
             assert queue["search_session"]["session_id"] == search_session["session_id"]
             assert queue["connection"]["connection_id"] == "primary-tracker"
@@ -2651,6 +2714,10 @@ def main() -> int:
             assert isinstance(proposed_plan["task_proposals"][0]["recent_activities"], list)
             assert isinstance(proposed_plan["task_proposals"][0]["issue_links"], list)
             assert isinstance(proposed_plan["task_proposals"][0]["link_summary"], dict)
+            assert isinstance(proposed_plan["task_proposals"][0]["external_references"], list)
+            assert isinstance(proposed_plan["task_proposals"][0]["external_reference_overview"], dict)
+            assert isinstance(proposed_plan["task_proposals"][0]["related_issue_summaries"], list)
+            assert isinstance(proposed_plan["task_proposals"][0]["related_issue_overview"], dict)
             assert isinstance(proposed_plan["task_proposals"][0]["plan_link_analysis"], dict)
             assert proposed_plan["task_proposals"][0]["ticket_overview"]["work_item_count"] >= 0
             assert proposed_plan["task_proposals"][0]["external_issue"]["description"]
@@ -2658,6 +2725,10 @@ def main() -> int:
             assert isinstance(proposed_plan["task_proposals"][0]["external_issue"]["comments"], list)
             assert isinstance(proposed_plan["task_proposals"][0]["external_issue"]["recent_activities"], list)
             assert isinstance(proposed_plan["task_proposals"][0]["external_issue"]["issue_links"], list)
+            assert isinstance(proposed_plan["task_proposals"][0]["external_issue"]["external_references"], list)
+            assert isinstance(proposed_plan["task_proposals"][0]["external_issue"]["external_reference_overview"], dict)
+            assert isinstance(proposed_plan["task_proposals"][0]["external_issue"]["related_issue_summaries"], list)
+            assert isinstance(proposed_plan["task_proposals"][0]["external_issue"]["related_issue_overview"], dict)
             assert isinstance(proposed_plan["task_proposals"][0]["external_issue"]["plan_link_analysis"], dict)
             assert proposed_plan["stages"][0]["planning_signals"]["selected_dependency_issue_ids"] == []
             assert proposed_plan["stages"][1]["planning_signals"]["selected_dependency_issue_ids"] == ["SL-4591"]
@@ -2787,6 +2858,8 @@ def main() -> int:
             assert isinstance(refreshed_tasks[0]["external_issue"]["comments"], list)
             assert isinstance(refreshed_tasks[0]["external_issue"]["recent_activities"], list)
             assert isinstance(refreshed_tasks[0]["external_issue"]["issue_links"], list)
+            assert isinstance(refreshed_tasks[0]["external_issue"]["external_references"], list)
+            assert isinstance(refreshed_tasks[0]["external_issue"]["related_issue_summaries"], list)
             assert isinstance(refreshed_tasks[0]["external_issue"]["plan_link_analysis"], dict)
 
             yt_snapshot = dashboard_snapshot(youtrack_workspace)
@@ -2803,6 +2876,8 @@ def main() -> int:
             assert isinstance(imported_tasks[0]["external_issue"]["comments"], list)
             assert isinstance(imported_tasks[0]["external_issue"]["recent_activities"], list)
             assert isinstance(imported_tasks[0]["external_issue"]["issue_links"], list)
+            assert isinstance(imported_tasks[0]["external_issue"]["external_references"], list)
+            assert isinstance(imported_tasks[0]["external_issue"]["related_issue_summaries"], list)
             assert isinstance(imported_tasks[0]["external_issue"]["plan_link_analysis"], dict)
             activated_task = switch_task(youtrack_workspace, imported_tasks[0]["task_id"])
             assert activated_task["status"] == "active"

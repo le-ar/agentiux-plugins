@@ -2,6 +2,8 @@
 from __future__ import annotations
 
 import copy
+import hashlib
+import html
 import json
 import os
 import re
@@ -42,12 +44,23 @@ YOUTRACK_CONNECTION_SCHEMA_VERSION = 1
 YOUTRACK_SEARCH_SCHEMA_VERSION = 1
 YOUTRACK_PLAN_SCHEMA_VERSION = 1
 YOUTRACK_ISSUE_LEDGER_SCHEMA_VERSION = 1
+YOUTRACK_URL_CACHE_SCHEMA_VERSION = 1
 
 DEFAULT_SEARCH_PAGE_SIZE = 25
 DEFAULT_SHORTLIST_SIZE = 8
 DEFAULT_STAGE_TARGET_MINUTES = 240
 DEFAULT_STAGE_MAX_ISSUES = 4
 DEFAULT_RESULT_SCAN_LIMIT = 1000
+ISSUE_DEEP_CONTEXT_VERSION = 1
+MAX_EXTERNAL_REFERENCES_PER_ISSUE = 4
+MAX_EXTERNAL_REFERENCE_TEXT_BYTES = 12288
+MAX_EXTERNAL_REFERENCE_SUMMARY_CHARS = 480
+MAX_RELATED_ISSUES_PER_ISSUE = 6
+MAX_RELATED_ISSUE_DEPTH = 2
+MAX_TOTAL_RELATED_ISSUES = 12
+MAX_COMMENT_LINK_SOURCES = 2
+EXTERNAL_REFERENCE_TIMEOUT_SECONDS = 5
+URL_PATTERN = re.compile(r"https?://[^\s<>\"]+", re.IGNORECASE)
 
 ISSUE_FIELDS = ",".join(
     [
@@ -101,6 +114,7 @@ def _youtrack_paths(workspace: str | Path) -> dict[str, Any]:
         "plans_dir": Path(base_paths["youtrack_plans_dir"]),
         "current_plan": Path(base_paths["youtrack_plans_dir"]) / "current.json",
         "issues_dir": Path(base_paths["youtrack_issues_dir"]),
+        "url_cache_dir": root / "url-cache",
     }
 
 
@@ -113,6 +127,7 @@ def _ensure_youtrack_dirs(paths: dict[str, Any]) -> None:
         "searches_dir",
         "plans_dir",
         "issues_dir",
+        "url_cache_dir",
     ):
         Path(paths[key]).mkdir(parents=True, exist_ok=True)
     try:
@@ -144,6 +159,11 @@ def _plan_draft_path(paths: dict[str, Any], plan_id: str) -> Path:
 def _issue_ledger_path(paths: dict[str, Any], connection_id: str, issue_id: str) -> Path:
     key = sanitize_identifier(f"{connection_id}-{issue_id}", "issue")
     return Path(paths["issues_dir"]) / f"{key}.json"
+
+
+def _url_cache_path(paths: dict[str, Any], url: str) -> Path:
+    key = hashlib.sha256(url.encode("utf-8")).hexdigest()[:24]
+    return Path(paths["url_cache_dir"]) / f"{key}.json"
 
 
 def _default_connections_index() -> dict[str, Any]:
@@ -584,6 +604,273 @@ def _normalize_issue(connection: dict[str, Any], issue: dict[str, Any], field_ma
     return normalized
 
 
+def _issue_context_runtime(runtime: dict[str, Any] | None = None) -> dict[str, Any]:
+    payload = runtime if runtime is not None else {}
+    payload.setdefault("issue_cache", {})
+    payload.setdefault("url_cache", {})
+    payload.setdefault("related_issue_count", 0)
+    return payload
+
+
+def _tracker_issue_key_from_url(connection: dict[str, Any], url: str) -> str | None:
+    base = connection["base_url"].rstrip("/")
+    if not url.startswith(f"{base}/issue/"):
+        return None
+    parsed = urllib.parse.urlparse(url)
+    marker = "/issue/"
+    if marker not in parsed.path:
+        return None
+    issue_key = parsed.path.split(marker, 1)[1].split("/", 1)[0].strip()
+    return issue_key or None
+
+
+def _read_url_cache(paths: dict[str, Any], url: str) -> dict[str, Any] | None:
+    return _load_json(_url_cache_path(paths, url), default=None, strict=False)
+
+
+def _write_url_cache(paths: dict[str, Any], url: str, payload: dict[str, Any]) -> dict[str, Any]:
+    cached = copy.deepcopy(payload)
+    cached["schema_version"] = YOUTRACK_URL_CACHE_SCHEMA_VERSION
+    cached["updated_at"] = now_iso()
+    _write_json(_url_cache_path(paths, url), cached)
+    return cached
+
+
+def _extract_urls_from_text(text: str | None) -> list[str]:
+    if not text:
+        return []
+    urls: list[str] = []
+    for match in URL_PATTERN.findall(text):
+        candidate = match.rstrip("),.;]>'\"")
+        parsed = urllib.parse.urlparse(candidate)
+        if parsed.scheme.lower() not in {"http", "https"} or not parsed.netloc:
+            continue
+        normalized = urllib.parse.urlunparse((parsed.scheme, parsed.netloc, parsed.path, parsed.params, parsed.query, ""))
+        urls.append(normalized)
+    return list(dict.fromkeys(urls))
+
+
+def _strip_html_preview(text: str) -> tuple[str | None, str]:
+    title_match = re.search(r"<title[^>]*>(.*?)</title>", text, flags=re.IGNORECASE | re.DOTALL)
+    title = html.unescape(re.sub(r"\s+", " ", title_match.group(1)).strip()) if title_match else None
+    stripped = re.sub(r"(?is)<script.*?</script>", " ", text)
+    stripped = re.sub(r"(?is)<style.*?</style>", " ", stripped)
+    stripped = re.sub(r"(?s)<[^>]+>", " ", stripped)
+    preview = html.unescape(re.sub(r"\s+", " ", stripped).strip())
+    return title, preview
+
+
+def _excerpt_text(text: str | None, limit: int = MAX_EXTERNAL_REFERENCE_SUMMARY_CHARS) -> str | None:
+    normalized = re.sub(r"\s+", " ", str(text or "")).strip()
+    if not normalized:
+        return None
+    if len(normalized) <= limit:
+        return normalized
+    shortened = normalized[:limit].rsplit(" ", 1)[0].strip()
+    return (shortened or normalized[:limit]).rstrip(",;:") + "..."
+
+
+def _text_like_content_type(content_type: str) -> bool:
+    lowered = (content_type or "").split(";", 1)[0].strip().lower()
+    return not lowered or lowered.startswith("text/") or "json" in lowered or "xml" in lowered
+
+
+def _classify_external_reference(
+    url: str,
+    final_url: str,
+    *,
+    content_type: str,
+    title: str | None,
+    preview: str | None,
+    raw_text: str,
+) -> tuple[str, bool, str | None, list[str]]:
+    lowered_path = urllib.parse.urlparse(final_url or url).path.lower()
+    lowered_preview = f"{title or ''} {preview or ''}".lower()
+    lowered_raw = raw_text.lower()
+    signals: list[str] = []
+    if not _text_like_content_type(content_type):
+        return "binary_or_download", False, "Content is not text-like.", ["non_text_content_type"]
+    if re.search(r"type\s*=\s*[\"']?password", lowered_raw):
+        signals.append("password_field")
+    if re.search(r"\b(sign in|log in|login|authenticate|authorization|forgot password|two-factor|verify code)\b", lowered_preview):
+        signals.append("auth_terms")
+    if re.search(r"\b(admin|administration|backoffice|control panel|manage users|permissions)\b", lowered_preview):
+        signals.append("admin_terms")
+    if re.search(r"/(login|signin|auth|admin|backoffice)(/|$)", lowered_path):
+        signals.append("auth_or_admin_path")
+    if lowered_raw.count("<form") >= 1 and len(preview or "") < 160:
+        signals.append("form_shell")
+    if ("password_field" in signals and ("auth_terms" in signals or "auth_or_admin_path" in signals)) or (
+        "admin_terms" in signals and ("form_shell" in signals or "auth_or_admin_path" in signals)
+    ):
+        return "admin_or_auth_like", False, "Page looks like an authenticated or administrative surface.", signals
+    return "openable_text", True, None, signals
+
+
+def _fetch_external_reference(connection: dict[str, Any], url: str) -> dict[str, Any]:
+    request = urllib.request.Request(
+        url,
+        headers={
+            "Accept": "text/html,text/plain,application/json,application/xml;q=0.9,*/*;q=0.1",
+            "User-Agent": "AgentiUX-Dev-YouTrack-LinkFetcher/1.0",
+        },
+        method="GET",
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=EXTERNAL_REFERENCE_TIMEOUT_SECONDS) as response:
+            raw = response.read(MAX_EXTERNAL_REFERENCE_TEXT_BYTES + 1)
+            truncated = len(raw) > MAX_EXTERNAL_REFERENCE_TEXT_BYTES
+            if truncated:
+                raw = raw[:MAX_EXTERNAL_REFERENCE_TEXT_BYTES]
+            content_type = response.headers.get("Content-Type", "")
+            final_url = response.geturl()
+            status = getattr(response, "status", 200)
+            if _text_like_content_type(content_type):
+                charset = response.headers.get_content_charset() if hasattr(response.headers, "get_content_charset") else None
+                decoded = raw.decode(charset or "utf-8", errors="ignore")
+                if "<html" in decoded.lower():
+                    title, preview = _strip_html_preview(decoded)
+                else:
+                    title = None
+                    preview = decoded
+                preview = _excerpt_text(preview)
+                classification, openable, skip_reason, signals = _classify_external_reference(
+                    url,
+                    final_url,
+                    content_type=content_type,
+                    title=title,
+                    preview=preview,
+                    raw_text=decoded,
+                )
+            else:
+                title = None
+                preview = None
+                classification, openable, skip_reason, signals = _classify_external_reference(
+                    url,
+                    final_url,
+                    content_type=content_type,
+                    title=None,
+                    preview=None,
+                    raw_text="",
+                )
+            return {
+                "url": url,
+                "final_url": final_url,
+                "http_status": status,
+                "content_type": content_type.split(";", 1)[0].strip().lower(),
+                "classification": classification,
+                "openable": openable,
+                "skip_reason": skip_reason,
+                "title": title,
+                "summary": preview if openable else None,
+                "signals": signals,
+                "truncated": truncated,
+                "tracker_issue_key": _tracker_issue_key_from_url(connection, final_url),
+                "fetch_error": None,
+            }
+    except Exception as exc:  # noqa: BLE001
+        return {
+            "url": url,
+            "final_url": url,
+            "http_status": None,
+            "content_type": None,
+            "classification": "fetch_error",
+            "openable": False,
+            "skip_reason": "Unable to fetch external reference.",
+            "title": None,
+            "summary": None,
+            "signals": [],
+            "truncated": False,
+            "tracker_issue_key": _tracker_issue_key_from_url(connection, url),
+            "fetch_error": str(exc),
+        }
+
+
+def _load_or_fetch_external_reference(
+    paths: dict[str, Any],
+    connection: dict[str, Any],
+    url: str,
+    runtime: dict[str, Any],
+) -> dict[str, Any]:
+    state = _issue_context_runtime(runtime)
+    if url in state["url_cache"]:
+        cached = copy.deepcopy(state["url_cache"][url])
+        cached["cache_status"] = "runtime"
+        return cached
+    cached = _read_url_cache(paths, url)
+    if cached:
+        state["url_cache"][url] = copy.deepcopy(cached)
+        materialized = copy.deepcopy(cached)
+        materialized["cache_status"] = "disk"
+        return materialized
+    fetched = _write_url_cache(paths, url, _fetch_external_reference(connection, url))
+    state["url_cache"][url] = copy.deepcopy(fetched)
+    materialized = copy.deepcopy(fetched)
+    materialized["cache_status"] = "miss"
+    return materialized
+
+
+def _external_reference_sources(issue_payload: dict[str, Any]) -> list[dict[str, Any]]:
+    sources: list[dict[str, Any]] = []
+    description = issue_payload.get("description")
+    if description and _extract_urls_from_text(description):
+        sources.append({"source": "description", "source_id": "description", "text": description})
+    comment_sources = 0
+    for comment in issue_payload.get("comments") or []:
+        if comment_sources >= MAX_COMMENT_LINK_SOURCES:
+            break
+        text = comment.get("text") or comment.get("textPreview")
+        if text and _extract_urls_from_text(text):
+            sources.append({"source": "comment", "source_id": comment.get("id"), "text": text})
+            comment_sources += 1
+    return sources
+
+
+def _external_reference_overview(references: list[dict[str, Any]], warnings: list[str] | None = None) -> dict[str, Any]:
+    return {
+        "link_count": len(references),
+        "openable_count": sum(1 for item in references if item.get("openable")),
+        "skipped_admin_count": sum(1 for item in references if item.get("classification") == "admin_or_auth_like"),
+        "skipped_binary_count": sum(1 for item in references if item.get("classification") == "binary_or_download"),
+        "error_count": sum(1 for item in references if item.get("classification") == "fetch_error"),
+        "tracker_issue_reference_count": sum(1 for item in references if item.get("tracker_issue_key")),
+        "warnings": list(dict.fromkeys(warnings or [])),
+    }
+
+
+def _fetch_issue_by_reference(
+    connection: dict[str, Any],
+    token: str,
+    issue_reference: str,
+    field_mapping: dict[str, list[str]],
+) -> dict[str, Any] | None:
+    raw_issue = None
+    try:
+        raw_issue = _request_json(
+            connection,
+            token,
+            "GET",
+            f"/api/issues/{urllib.parse.quote(issue_reference, safe='')}",
+            params={"fields": ISSUE_FIELDS},
+        )
+    except Exception:
+        matches = _request_json(
+            connection,
+            token,
+            "GET",
+            "/api/issues",
+            params={
+                "query": f"id: {issue_reference}",
+                "$top": 1,
+                "fields": ISSUE_FIELDS,
+            },
+        ) or []
+        raw_issue = matches[0] if matches else None
+    if not raw_issue:
+        return None
+    return _normalize_issue(connection, raw_issue, field_mapping)
+
+
 def _issue_resource_id(issue_payload: dict[str, Any]) -> str | None:
     for key in ("issue_entity_id", "entity_id", "issue_id"):
         value = issue_payload.get(key)
@@ -847,7 +1134,23 @@ def _attach_issue_links(connection: dict[str, Any], token: str, issue_payload: d
 
 
 def _issue_context_complete(issue_payload: dict[str, Any]) -> bool:
-    return all(key in issue_payload for key in ("work_items", "comments", "recent_activities", "issue_links", "link_summary"))
+    return (
+        all(
+            key in issue_payload
+            for key in (
+                "work_items",
+                "comments",
+                "recent_activities",
+                "issue_links",
+                "link_summary",
+                "external_references",
+                "external_reference_overview",
+                "related_issue_summaries",
+                "related_issue_overview",
+            )
+        )
+        and issue_payload.get("deep_context_version") == ISSUE_DEEP_CONTEXT_VERSION
+    )
 
 
 def _ticket_overview(issue_payload: dict[str, Any], *, warnings: list[str] | None = None) -> dict[str, Any]:
@@ -855,6 +1158,11 @@ def _ticket_overview(issue_payload: dict[str, Any], *, warnings: list[str] | Non
     work_items = issue_payload.get("work_items") or []
     recent_activities = issue_payload.get("recent_activities") or []
     link_summary = copy.deepcopy(issue_payload.get("link_summary") or _issue_link_summary(issue_payload.get("issue_links") or []))
+    external_reference_overview = copy.deepcopy(issue_payload.get("external_reference_overview") or {})
+    related_issue_overview = copy.deepcopy(issue_payload.get("related_issue_overview") or {})
+    aggregated_warnings = list(warnings or [])
+    aggregated_warnings.extend(external_reference_overview.get("warnings") or [])
+    aggregated_warnings.extend(related_issue_overview.get("warnings") or [])
     return {
         "has_description": bool(issue_payload.get("description")),
         "comment_count": len(comments),
@@ -864,12 +1172,219 @@ def _ticket_overview(issue_payload: dict[str, Any], *, warnings: list[str] | Non
         "blocking_link_count": link_summary.get("blocking_link_count", 0),
         "duplicate_link_count": link_summary.get("duplicate_count", 0),
         "hierarchy_link_count": link_summary.get("hierarchy_count", 0),
+        "external_reference_count": external_reference_overview.get("link_count", 0),
+        "openable_external_reference_count": external_reference_overview.get("openable_count", 0),
+        "related_issue_count": related_issue_overview.get("fetched_issue_count", 0),
+        "related_issue_cycle_count": related_issue_overview.get("cycle_count", 0),
         "spent_minutes": issue_payload.get("youtrack_spent_minutes") or 0,
-        "warnings": copy.deepcopy(warnings or []),
+        "warnings": list(dict.fromkeys(aggregated_warnings)),
     }
 
 
-def _attach_ticket_context(connection: dict[str, Any], token: str, issue_payload: dict[str, Any]) -> dict[str, Any]:
+def _related_issue_summary(
+    link: dict[str, Any],
+    payload: dict[str, Any] | None,
+    *,
+    depth: int,
+    fetch_status: str,
+    cycle_detected: bool = False,
+    skip_reason: str | None = None,
+) -> dict[str, Any]:
+    issue_payload = payload or {}
+    return {
+        "issue_entity_id": issue_payload.get("issue_entity_id") or link.get("issue_entity_id"),
+        "issue_id": issue_payload.get("issue_id") or link.get("issue_id"),
+        "issue_key": issue_payload.get("issue_key") or link.get("issue_key") or link.get("issue_id"),
+        "issue_url": issue_payload.get("issue_url") or link.get("issue_url"),
+        "summary": issue_payload.get("summary") or link.get("summary") or link.get("issue_id"),
+        "resolved": issue_payload.get("resolved", link.get("resolved")),
+        "depth": depth,
+        "relation_kind": link.get("relation_kind"),
+        "planning_role": link.get("planning_role"),
+        "relation_label": link.get("relation_label"),
+        "fetch_status": fetch_status,
+        "cycle_detected": cycle_detected,
+        "skip_reason": skip_reason,
+        "description_excerpt": _excerpt_text(issue_payload.get("description"), limit=240),
+        "ticket_overview": copy.deepcopy(issue_payload.get("ticket_overview") or {}),
+        "external_reference_overview": copy.deepcopy(issue_payload.get("external_reference_overview") or {}),
+        "related_issue_overview": copy.deepcopy(issue_payload.get("related_issue_overview") or {}),
+    }
+
+
+def _related_issue_overview(summaries: list[dict[str, Any]], warnings: list[str] | None = None) -> dict[str, Any]:
+    relation_counts: dict[str, int] = {}
+    for summary in summaries:
+        relation = str(summary.get("planning_role") or summary.get("relation_kind") or "other")
+        relation_counts[relation] = relation_counts.get(relation, 0) + 1
+    return {
+        "direct_issue_count": len(summaries),
+        "fetched_issue_count": sum(1 for item in summaries if item.get("fetch_status") in {"fetched", "cached"}),
+        "cycle_count": sum(1 for item in summaries if item.get("cycle_detected")),
+        "failed_count": sum(1 for item in summaries if item.get("fetch_status") == "failed"),
+        "relation_counts": relation_counts,
+        "warnings": list(dict.fromkeys(warnings or [])),
+    }
+
+
+def _attach_external_references(
+    connection: dict[str, Any],
+    issue_payload: dict[str, Any],
+    *,
+    paths: dict[str, Any],
+    runtime: dict[str, Any],
+) -> dict[str, Any]:
+    references: list[dict[str, Any]] = []
+    warnings: list[str] = []
+    seen_urls: set[str] = set()
+    for source in _external_reference_sources(issue_payload):
+        for url in _extract_urls_from_text(source.get("text")):
+            if url in seen_urls:
+                continue
+            if len(references) >= MAX_EXTERNAL_REFERENCES_PER_ISSUE:
+                warnings.append("External reference limit reached for this issue.")
+                break
+            seen_urls.add(url)
+            analysis = _load_or_fetch_external_reference(paths, connection, url, runtime)
+            references.append(
+                {
+                    **analysis,
+                    "source": source["source"],
+                    "source_id": source.get("source_id"),
+                }
+            )
+    enriched = copy.deepcopy(issue_payload)
+    enriched["external_references"] = references
+    enriched["external_reference_overview"] = _external_reference_overview(references, warnings=warnings)
+    return enriched
+
+
+def _attach_related_issue_context(
+    connection: dict[str, Any],
+    token: str,
+    issue_payload: dict[str, Any],
+    *,
+    paths: dict[str, Any],
+    field_mapping: dict[str, list[str]],
+    runtime: dict[str, Any],
+    depth: int,
+    ancestry: tuple[str, ...],
+) -> dict[str, Any]:
+    state = _issue_context_runtime(runtime)
+    issue_id = str(issue_payload.get("issue_id") or "")
+    candidate_links = list(issue_payload.get("issue_links") or [])
+    for reference in issue_payload.get("external_references") or []:
+        tracker_issue_key = reference.get("tracker_issue_key")
+        if not tracker_issue_key or any(item.get("issue_id") == tracker_issue_key for item in candidate_links):
+            continue
+        candidate_links.append(
+            {
+                "issue_entity_id": tracker_issue_key,
+                "issue_id": tracker_issue_key,
+                "issue_key": tracker_issue_key,
+                "issue_url": reference.get("final_url") or reference.get("url"),
+                "summary": tracker_issue_key,
+                "resolved": None,
+                "relation_kind": "text_reference",
+                "planning_role": "mentioned_in_description",
+                "relation_label": "mentioned in description",
+            }
+        )
+    summaries: list[dict[str, Any]] = []
+    warnings: list[str] = []
+    if depth >= MAX_RELATED_ISSUE_DEPTH:
+        warnings.append("Related issue depth limit reached.")
+    else:
+        for link in candidate_links[:MAX_RELATED_ISSUES_PER_ISSUE]:
+            related_issue_id = str(link.get("issue_id") or "")
+            related_reference = str(link.get("issue_entity_id") or related_issue_id)
+            if not related_issue_id:
+                continue
+            if related_issue_id == issue_id or related_issue_id in ancestry:
+                summaries.append(
+                    _related_issue_summary(
+                        link,
+                        None,
+                        depth=depth + 1,
+                        fetch_status="cycle",
+                        cycle_detected=True,
+                        skip_reason="Cycle detected in related issue traversal.",
+                    )
+                )
+                continue
+            cache_key = (connection["connection_id"], related_issue_id)
+            cached_payload = state["issue_cache"].get(cache_key)
+            if cached_payload is not None and _issue_context_complete(cached_payload):
+                summaries.append(_related_issue_summary(link, cached_payload, depth=depth + 1, fetch_status="cached"))
+                continue
+            if state["related_issue_count"] >= MAX_TOTAL_RELATED_ISSUES:
+                warnings.append("Global related issue fetch limit reached.")
+                summaries.append(
+                    _related_issue_summary(
+                        link,
+                        None,
+                        depth=depth + 1,
+                        fetch_status="skipped",
+                        skip_reason="Related issue fetch budget was exhausted.",
+                    )
+                )
+                continue
+            if cached_payload is not None:
+                related_payload = _attach_ticket_context(
+                    connection,
+                    token,
+                    cached_payload,
+                    paths=paths,
+                    field_mapping=field_mapping,
+                    runtime=state,
+                    depth=depth + 1,
+                    ancestry=(*ancestry, issue_id),
+                )
+            else:
+                related_payload = _fetch_issue_by_reference(connection, token, related_reference, field_mapping)
+                if related_payload:
+                    related_payload = _attach_ticket_context(
+                        connection,
+                        token,
+                        related_payload,
+                        paths=paths,
+                        field_mapping=field_mapping,
+                        runtime=state,
+                        depth=depth + 1,
+                        ancestry=(*ancestry, issue_id),
+                    )
+            if not related_payload:
+                summaries.append(
+                    _related_issue_summary(
+                        link,
+                        None,
+                        depth=depth + 1,
+                        fetch_status="failed",
+                        skip_reason="Unable to resolve related issue payload.",
+                    )
+                )
+                continue
+            state["related_issue_count"] += 1
+            state["issue_cache"][cache_key] = copy.deepcopy(related_payload)
+            update_issue_snapshot(paths["workspace_path"], related_payload, connection_id=connection["connection_id"])
+            summaries.append(_related_issue_summary(link, related_payload, depth=depth + 1, fetch_status="fetched"))
+    enriched = copy.deepcopy(issue_payload)
+    enriched["related_issue_summaries"] = summaries
+    enriched["related_issue_overview"] = _related_issue_overview(summaries, warnings=warnings)
+    return enriched
+
+
+def _attach_ticket_context(
+    connection: dict[str, Any],
+    token: str,
+    issue_payload: dict[str, Any],
+    *,
+    paths: dict[str, Any] | None = None,
+    field_mapping: dict[str, list[str]] | None = None,
+    runtime: dict[str, Any] | None = None,
+    depth: int = 0,
+    ancestry: tuple[str, ...] = (),
+) -> dict[str, Any]:
     if _issue_context_complete(issue_payload) and issue_payload.get("ticket_overview"):
         return copy.deepcopy(issue_payload)
     enriched = _attach_spent_minutes(connection, token, issue_payload)
@@ -886,8 +1401,27 @@ def _attach_ticket_context(connection: dict[str, Any], token: str, issue_payload
         enriched = _attach_issue_links(connection, token, enriched)
     except Exception as exc:
         warnings.append(f"links: {exc}")
+    if paths is not None:
+        enriched = _attach_external_references(connection, enriched, paths=paths, runtime=_issue_context_runtime(runtime))
+        if field_mapping is not None:
+            enriched = _attach_related_issue_context(
+                connection,
+                token,
+                enriched,
+                paths=paths,
+                field_mapping=field_mapping,
+                runtime=_issue_context_runtime(runtime),
+                depth=depth,
+                ancestry=ancestry,
+            )
+    else:
+        enriched["external_references"] = []
+        enriched["external_reference_overview"] = _external_reference_overview([])
+        enriched["related_issue_summaries"] = []
+        enriched["related_issue_overview"] = _related_issue_overview([])
     if warnings:
         enriched["context_fetch_warnings"] = warnings
+    enriched["deep_context_version"] = ISSUE_DEEP_CONTEXT_VERSION
     enriched["ticket_overview"] = _ticket_overview(enriched, warnings=warnings)
     return enriched
 
@@ -1420,6 +1954,9 @@ def search_youtrack_issues(
     ranked_matches.sort(key=lambda item: (-item["score"], item.get("youtrack_estimate_minutes") or 99999, item["issue_key"]))
     for issue_payload in ranked_matches:
         update_issue_snapshot(workspace, issue_payload, connection_id=resolved_connection_id)
+    runtime = _issue_context_runtime()
+    for issue_payload in ranked_matches:
+        runtime["issue_cache"][(resolved_connection_id, issue_payload["issue_id"])] = copy.deepcopy(issue_payload)
     safe_skip = max(skip, 0)
     safe_page_size = max(page_size, 1)
     safe_shortlist_size = max(shortlist_size, 1)
@@ -1428,8 +1965,16 @@ def search_youtrack_issues(
     shortlist_ids = {item["issue_id"] for item in page_items[:safe_shortlist_size]}
     for issue_payload in page_items:
         if issue_payload["issue_id"] in shortlist_ids:
-            enriched = _attach_ticket_context(connection, secret["token"], issue_payload)
+            enriched = _attach_ticket_context(
+                connection,
+                secret["token"],
+                issue_payload,
+                paths=paths,
+                field_mapping=field_catalog.get("field_mapping") or {},
+                runtime=runtime,
+            )
             shortlist.append(enriched)
+            runtime["issue_cache"][(resolved_connection_id, issue_payload["issue_id"])] = copy.deepcopy(enriched)
             update_issue_snapshot(workspace, enriched, connection_id=resolved_connection_id)
     page_payloads = []
     shortlist_by_id = {item["issue_id"]: item for item in shortlist}
@@ -1703,9 +2248,14 @@ def _proposal_from_issue(issue: dict[str, Any], stage_id: str) -> dict[str, Any]
         "recent_activity_page": copy.deepcopy(issue.get("recent_activity_page") or {}),
         "issue_links": copy.deepcopy(issue.get("issue_links") or []),
         "link_summary": copy.deepcopy(issue.get("link_summary") or _issue_link_summary(issue.get("issue_links") or [])),
+        "external_references": copy.deepcopy(issue.get("external_references") or []),
+        "external_reference_overview": copy.deepcopy(issue.get("external_reference_overview") or _external_reference_overview([])),
+        "related_issue_summaries": copy.deepcopy(issue.get("related_issue_summaries") or []),
+        "related_issue_overview": copy.deepcopy(issue.get("related_issue_overview") or _related_issue_overview([])),
         "plan_link_analysis": copy.deepcopy(issue.get("plan_link_analysis") or {}),
         "ticket_overview": copy.deepcopy(issue.get("ticket_overview") or _ticket_overview(issue)),
         "context_fetch_warnings": copy.deepcopy(issue.get("context_fetch_warnings") or []),
+        "deep_context_version": issue.get("deep_context_version"),
         "branch_hint": f"task/{slugify(issue_key)}-{slugify(issue['summary'])[:32]}",
         "external_issue": {
             "connection_id": None,
@@ -1724,9 +2274,14 @@ def _proposal_from_issue(issue: dict[str, Any], stage_id: str) -> dict[str, Any]
             "recent_activity_page": copy.deepcopy(issue.get("recent_activity_page") or {}),
             "issue_links": copy.deepcopy(issue.get("issue_links") or []),
             "link_summary": copy.deepcopy(issue.get("link_summary") or _issue_link_summary(issue.get("issue_links") or [])),
+            "external_references": copy.deepcopy(issue.get("external_references") or []),
+            "external_reference_overview": copy.deepcopy(issue.get("external_reference_overview") or _external_reference_overview([])),
+            "related_issue_summaries": copy.deepcopy(issue.get("related_issue_summaries") or []),
+            "related_issue_overview": copy.deepcopy(issue.get("related_issue_overview") or _related_issue_overview([])),
             "plan_link_analysis": copy.deepcopy(issue.get("plan_link_analysis") or {}),
             "ticket_overview": copy.deepcopy(issue.get("ticket_overview") or _ticket_overview(issue)),
             "context_fetch_warnings": copy.deepcopy(issue.get("context_fetch_warnings") or []),
+            "deep_context_version": issue.get("deep_context_version"),
         },
     }
 
