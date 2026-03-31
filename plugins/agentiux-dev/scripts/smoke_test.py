@@ -3,13 +3,17 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 import urllib.parse
 import urllib.request
+from datetime import datetime, timedelta, timezone
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
 from agentiux_dev_gui import stop as stop_gui
@@ -63,6 +67,7 @@ from agentiux_dev_lib import (
     show_host_support,
     show_upgrade_plan,
     stage_git_files,
+    switch_task,
     suggest_branch_name,
     suggest_commit_message,
     suggest_pr_body,
@@ -93,6 +98,14 @@ from agentiux_dev_verification import (
     wait_for_verification_run,
     write_verification_recipes,
 )
+from agentiux_dev_youtrack import (
+    apply_youtrack_workstream_plan,
+    connect_youtrack,
+    list_youtrack_connections,
+    propose_youtrack_workstream_plan,
+    search_youtrack_issues,
+    show_youtrack_issue_queue,
+)
 from install_home_local import install_plugin
 from build_context_catalogs import check_catalogs
 from agentiux_dev_context import (
@@ -102,6 +115,179 @@ from agentiux_dev_context import (
     show_intent_route,
     show_workspace_context_pack,
 )
+
+
+class _FakeYouTrackHandler(BaseHTTPRequestHandler):
+    server_version = "FakeYouTrack/1.0"
+
+    def log_message(self, format: str, *args) -> None:  # noqa: A003
+        return
+
+    def _send_json(self, payload: object, status: int = 200) -> None:
+        body = json.dumps(payload).encode("utf-8")
+        self.send_response(status)
+        self.send_header("Content-Type", "application/json; charset=utf-8")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+    def _unauthorized(self) -> None:
+        self._send_json({"error": "unauthorized"}, status=401)
+
+    def _authorized(self) -> bool:
+        return self.headers.get("Authorization") == f"Bearer {self.server.token}"  # type: ignore[attr-defined]
+
+    def do_GET(self) -> None:  # noqa: N802
+        if not self._authorized():
+            self._unauthorized()
+            return
+        parsed = urllib.parse.urlparse(self.path)
+        query = urllib.parse.parse_qs(parsed.query)
+        fixtures = self.server.fixtures  # type: ignore[attr-defined]
+        if parsed.path == "/api/users/me":
+            self._send_json({"id": "1-1", "login": "alex", "name": "Alex"})
+            return
+        if parsed.path == "/api/admin/projects":
+            self._send_json(fixtures["projects"])
+            return
+        if parsed.path == "/api/admin/customFieldSettings/customFields":
+            self._send_json(fixtures["fields"])
+            return
+        if parsed.path == "/api/issues":
+            raw_query = " ".join(query.get("query", []))
+            items = list(fixtures["issues"])
+            lowered = raw_query.lower()
+            project_match = re.search(r"project:\s*([a-z0-9,\s-]+?)(?=\s+[a-z-]+:|$)", lowered)
+            if project_match:
+                allowed = {part.strip().upper() for part in project_match.group(1).split(",") if part.strip()}
+                items = [item for item in items if item["project"]["shortName"].upper() in allowed]
+            if "assignee: me" in lowered or "for: me" in lowered:
+                items = [item for item in items if any(field.get("name") == "Assignee" and field.get("value", {}).get("name") == "Alex" for field in item["customFields"])]
+            skip = int(query.get("$skip", ["0"])[0])
+            top = int(query.get("$top", ["42"])[0])
+            self._send_json(items[skip : skip + top])
+            return
+        if parsed.path == "/api/workItems":
+            raw_query = " ".join(query.get("query", []))
+            issue_match = re.search(r"issue id:\s*([A-Z0-9-]+)", raw_query, re.IGNORECASE)
+            issue_id = issue_match.group(1).upper() if issue_match else None
+            self._send_json(fixtures["work_items"].get(issue_id, []))
+            return
+        self._send_json({"error": "not found", "path": parsed.path}, status=404)
+
+
+class _FakeYouTrackServer:
+    def __init__(self) -> None:
+        self.token = "perm:test-token"
+        self.fixtures = {
+            "projects": [
+                {"id": "0-0", "shortName": "SL", "name": "Shop Lab"},
+                {"id": "0-1", "shortName": "APP", "name": "App"},
+            ],
+            "fields": [
+                {"id": "10-0", "name": "Priority"},
+                {"id": "10-1", "name": "Severity"},
+                {"id": "10-2", "name": "Estimation"},
+                {"id": "10-3", "name": "Assignee"},
+                {"id": "10-4", "name": "State"},
+            ],
+            "issues": [
+                {
+                    "id": "2-1",
+                    "idReadable": "SL-4591",
+                    "summary": "Fix payment retry banner",
+                    "description": "Short UI fix",
+                    "updated": 1,
+                    "created": 1,
+                    "resolved": None,
+                    "project": {"id": "0-0", "shortName": "SL", "name": "Shop Lab"},
+                    "customFields": [
+                        {"name": "Priority", "value": {"name": "5"}},
+                        {"name": "Severity", "value": {"name": "Major"}},
+                        {"name": "Estimation", "value": {"minutes": 30, "presentation": "30m"}},
+                        {"name": "Assignee", "value": {"name": "Alex"}},
+                        {"name": "State", "value": {"name": "Open"}},
+                    ],
+                },
+                {
+                    "id": "2-2",
+                    "idReadable": "SL-4592",
+                    "summary": "Investigate checkout tax mismatch",
+                    "description": "Large backend bug",
+                    "updated": 2,
+                    "created": 1,
+                    "resolved": None,
+                    "project": {"id": "0-0", "shortName": "SL", "name": "Shop Lab"},
+                    "customFields": [
+                        {"name": "Priority", "value": {"name": "8"}},
+                        {"name": "Severity", "value": {"name": "Normal"}},
+                        {"name": "Estimation", "value": {"minutes": 360, "presentation": "6h"}},
+                        {"name": "Assignee", "value": {"name": "Alex"}},
+                        {"name": "State", "value": {"name": "Open"}},
+                    ],
+                },
+                {
+                    "id": "2-3",
+                    "idReadable": "SL-4593",
+                    "summary": "Fix small cart icon overlap",
+                    "description": "Short UI polish",
+                    "updated": 3,
+                    "created": 1,
+                    "resolved": None,
+                    "project": {"id": "0-0", "shortName": "SL", "name": "Shop Lab"},
+                    "customFields": [
+                        {"name": "Priority", "value": {"name": "5"}},
+                        {"name": "Severity", "value": {"name": "Major"}},
+                        {"name": "Estimation", "value": {"minutes": 30, "presentation": "30m"}},
+                        {"name": "Assignee", "value": {"name": "Alex"}},
+                        {"name": "State", "value": {"name": "Open"}},
+                    ],
+                },
+                {
+                    "id": "2-4",
+                    "idReadable": "APP-100",
+                    "summary": "Mobile onboarding crash",
+                    "description": "Other project",
+                    "updated": 4,
+                    "created": 1,
+                    "resolved": None,
+                    "project": {"id": "0-1", "shortName": "APP", "name": "App"},
+                    "customFields": [
+                        {"name": "Priority", "value": {"name": "9"}},
+                        {"name": "Severity", "value": {"name": "Critical"}},
+                        {"name": "Estimation", "value": {"minutes": 120, "presentation": "2h"}},
+                        {"name": "Assignee", "value": {"name": "Alex"}},
+                        {"name": "State", "value": {"name": "Open"}},
+                    ],
+                },
+            ],
+            "work_items": {
+                "SL-4591": [{"id": "w1", "duration": {"minutes": 20, "presentation": "20m"}, "date": 1, "text": "support"}],
+                "SL-4592": [{"id": "w2", "duration": {"minutes": 45, "presentation": "45m"}, "date": 1, "text": "investigation"}],
+                "SL-4593": [],
+                "APP-100": [{"id": "w4", "duration": {"minutes": 30, "presentation": "30m"}, "date": 1, "text": "triage"}],
+            },
+        }
+        self.httpd: ThreadingHTTPServer | None = None
+        self.thread: threading.Thread | None = None
+        self.base_url: str | None = None
+
+    def __enter__(self) -> "_FakeYouTrackServer":
+        self.httpd = ThreadingHTTPServer(("127.0.0.1", 0), _FakeYouTrackHandler)
+        self.httpd.token = self.token  # type: ignore[attr-defined]
+        self.httpd.fixtures = self.fixtures  # type: ignore[attr-defined]
+        host, port = self.httpd.server_address
+        self.base_url = f"http://{host}:{port}"
+        self.thread = threading.Thread(target=self.httpd.serve_forever, daemon=True)
+        self.thread.start()
+        return self
+
+    def __exit__(self, exc_type, exc, tb) -> None:
+        if self.httpd is not None:
+            self.httpd.shutdown()
+            self.httpd.server_close()
+        if self.thread is not None:
+            self.thread.join(timeout=2)
 
 
 def _seed_workspace(root: Path) -> None:
@@ -172,6 +358,18 @@ def _read_json_file(path: Path) -> dict:
 
 def _write_json_file(path: Path, payload: dict) -> None:
     path.write_text(json.dumps(payload, indent=2) + "\n")
+
+
+def _http_json(url: str, *, method: str = "GET", payload: dict | None = None, timeout: float = 10.0) -> dict:
+    data = json.dumps(payload).encode("utf-8") if payload is not None else None
+    request = urllib.request.Request(
+        url,
+        data=data,
+        headers={"Content-Type": "application/json; charset=utf-8"},
+        method=method,
+    )
+    with urllib.request.urlopen(request, timeout=timeout) as response:
+        return json.loads(response.read().decode("utf-8"))
 
 
 def _wait_for_run_started(
@@ -2135,6 +2333,267 @@ def main() -> int:
             assert starter_workspace_paths["verification_recipes"] == ""
             _assert_no_default_origin(run["summary"])
         assert list_starter_runs(limit=None)["run_count"] >= len(starter_presets)
+
+        youtrack_workspace = temp_root / "youtrack-workspace"
+        youtrack_workspace.mkdir()
+        _seed_workspace(youtrack_workspace)
+        subprocess.run(["git", "init"], cwd=youtrack_workspace, check=True, capture_output=True, text=True)
+        subprocess.run(["git", "add", "."], cwd=youtrack_workspace, check=True, capture_output=True, text=True)
+        _git_commit(youtrack_workspace, "feat: bootstrap youtrack workspace")
+        init_workspace(youtrack_workspace)
+
+        with _FakeYouTrackServer() as fake_youtrack:
+            connected = connect_youtrack(
+                youtrack_workspace,
+                base_url=fake_youtrack.base_url or "",
+                token=fake_youtrack.token,
+                label="Primary tracker",
+                connection_id="primary-tracker",
+                project_scope="SL",
+                default=True,
+            )
+            assert connected["connection"]["status"] == "connected"
+            assert connected["field_catalog"]["field_mapping"]["priority"]
+            redacted_connections = list_youtrack_connections(youtrack_workspace)
+            serialized_connections = json.dumps(redacted_connections)
+            assert fake_youtrack.token not in serialized_connections
+            assert '"token":' not in serialized_connections
+            assert redacted_connections["items"][0]["auth_mode"] == "permanent_token"
+            secret_path = Path(workspace_paths(youtrack_workspace)["youtrack_secrets_dir"]) / "primary-tracker.json"
+            assert secret_path.exists()
+            if os.name != "nt":
+                assert (secret_path.stat().st_mode & 0o777) == 0o600
+
+            paged_search = search_youtrack_issues(
+                youtrack_workspace,
+                query_text="assignee: me",
+                connection_id="primary-tracker",
+                page_size=2,
+                shortlist_size=2,
+            )["search_session"]
+            assert paged_search["result_count"] == 3
+            assert paged_search["result_count_exact"] is True
+            assert paged_search["page_cursor"]["has_more"] is True
+            assert len(paged_search["shortlist_page"]["items"]) == 2
+
+            search_session = search_youtrack_issues(
+                youtrack_workspace,
+                query_text="assignee: me",
+                connection_id="primary-tracker",
+                page_size=3,
+                shortlist_size=3,
+            )["search_session"]
+            assert search_session["shortlist"]
+            assert search_session["result_count"] == 3
+            assert search_session["result_count_exact"] is True
+            assert all(item["issue_key"].startswith("SL-") for item in search_session["shortlist"])
+            queue = show_youtrack_issue_queue(youtrack_workspace, search_session_id=search_session["session_id"])
+            assert queue["search_session"]["session_id"] == search_session["session_id"]
+            assert queue["connection"]["connection_id"] == "primary-tracker"
+            youtrack_mcp = _call_mcp(
+                plugin_root / "scripts" / "agentiux_dev_mcp.py",
+                {
+                    "jsonrpc": "2.0",
+                    "id": 140,
+                    "method": "tools/call",
+                    "params": {
+                        "name": "show_youtrack_connections",
+                        "arguments": {"workspacePath": str(youtrack_workspace)},
+                    },
+                },
+            )
+            assert youtrack_mcp["result"]["structuredContent"]["items"][0]["connection_id"] == "primary-tracker"
+
+            selected_issue_ids = [item["issue_id"] for item in search_session["shortlist"][:3]]
+            proposed_plan = propose_youtrack_workstream_plan(
+                youtrack_workspace,
+                search_session_id=search_session["session_id"],
+                selected_issue_ids=selected_issue_ids,
+                workstream_title="YouTrack checkout queue",
+            )["plan"]
+            assert proposed_plan["task_proposals"]
+            assert len(proposed_plan["stages"]) >= 2
+            assert proposed_plan["status"] == "needs_user_confirmation"
+            assert not [
+                item for item in list_tasks(youtrack_workspace)["items"] if (item.get("external_issue") or {}).get("issue_key")
+            ]
+            proposed_plan_mcp = _call_mcp(
+                plugin_root / "scripts" / "agentiux_dev_mcp.py",
+                {
+                    "jsonrpc": "2.0",
+                    "id": 141,
+                    "method": "tools/call",
+                    "params": {
+                        "name": "show_youtrack_issue_queue",
+                        "arguments": {
+                            "workspacePath": str(youtrack_workspace),
+                            "searchSessionId": search_session["session_id"],
+                        },
+                    },
+                },
+            )
+            assert proposed_plan_mcp["result"]["structuredContent"]["search_session"]["session_id"] == search_session["session_id"]
+            try:
+                apply_youtrack_workstream_plan(
+                    youtrack_workspace,
+                    plan_id=proposed_plan["plan_id"],
+                    confirmed=False,
+                )
+            except ValueError as exc:
+                assert "confirmed=True" in str(exc)
+            else:
+                raise AssertionError("Expected YouTrack plan apply without confirmation to fail.")
+
+            applied_plan = apply_youtrack_workstream_plan(
+                youtrack_workspace,
+                plan_id=proposed_plan["plan_id"],
+                confirmed=True,
+            )["plan"]
+            assert applied_plan["status"] == "applied"
+            assert applied_plan["created_task_ids"]
+            assert current_workstream(youtrack_workspace)["source_context"]["plan_id"] == proposed_plan["plan_id"]
+
+            yt_snapshot = dashboard_snapshot(youtrack_workspace)
+            assert yt_snapshot["workspace_detail"]["summary"]["youtrack"]["connection_count"] == 1
+            assert yt_snapshot["workspace_detail"]["youtrack"]["current_plan"]["plan_id"] == proposed_plan["plan_id"]
+            assert yt_snapshot["workspace_detail"]["youtrack"]["current_workstream_issues"]["items"]
+
+            imported_tasks = [
+                item for item in list_tasks(youtrack_workspace)["items"] if (item.get("external_issue") or {}).get("issue_key")
+            ]
+            assert imported_tasks
+            activated_task = switch_task(youtrack_workspace, imported_tasks[0]["task_id"])
+            assert activated_task["status"] == "active"
+            issue_key = activated_task["external_issue"]["issue_key"]
+            activated_task_path = Path(workspace_paths(youtrack_workspace, task_id=activated_task["task_id"])["current_task_record"])
+            activated_task_payload = _read_json_file(activated_task_path)
+            activated_started_at = (datetime.now(timezone.utc) - timedelta(minutes=7)).replace(microsecond=0).isoformat().replace("+00:00", "Z")
+            activated_task_payload["time_tracking"]["active_session_started_at"] = activated_started_at
+            activated_task_payload["time_tracking"]["active_session_id"] = "session-a"
+            _write_json_file(activated_task_path, activated_task_payload)
+            tasks_index_path = Path(workspace_paths(youtrack_workspace)["tasks_index"])
+            tasks_index_payload = _read_json_file(tasks_index_path)
+            for item in tasks_index_payload.get("items", []):
+                if item.get("task_id") == activated_task["task_id"]:
+                    item.setdefault("time_tracking", {})["active_session_started_at"] = activated_started_at
+                    item["time_tracking"]["active_session_id"] = "session-a"
+                    break
+            _write_json_file(tasks_index_path, tasks_index_payload)
+
+            (youtrack_workspace / "issue-change.txt").write_text("linked issue change\n")
+            subprocess.run(["git", "add", "issue-change.txt"], cwd=youtrack_workspace, check=True, capture_output=True, text=True)
+            try:
+                create_git_commit(youtrack_workspace, "fix: missing linked issue prefix")
+            except ValueError as exc:
+                assert issue_key in str(exc)
+            else:
+                raise AssertionError("Expected linked task commit without issue prefix to fail.")
+            linked_commit_message = suggest_commit_message(
+                youtrack_workspace,
+                "Fix linked issue flow",
+                files=["issue-change.txt"],
+            )["suggested_message"]
+            assert linked_commit_message.startswith(f"{issue_key} ")
+            linked_commit = create_git_commit(youtrack_workspace, linked_commit_message)
+            assert linked_commit["workspace_context"]["issue_key"] == issue_key
+            linked_task = read_task(youtrack_workspace, task_id=activated_task["task_id"])
+            assert linked_task["latest_commit"]["commit_hash"] == linked_commit["commit_hash"]
+            closed_linked_task = close_task(youtrack_workspace, task_id=activated_task["task_id"])
+            assert closed_linked_task["issue_ledger"]["linked_task_ids"]
+            assert closed_linked_task["issue_ledger"]["latest_snapshot"]["issue_key"] == issue_key
+            assert closed_linked_task["time_summary"]["aggregate_issue_minutes"] == closed_linked_task["issue_ledger"]["codex_total_minutes"]
+
+            rerun_task = create_task(
+                youtrack_workspace,
+                title=f"{issue_key} rerun verification",
+                objective="Re-open linked issue for regression follow-up",
+                linked_workstream_id=current_workstream(youtrack_workspace)["workstream_id"],
+                stage_id=closed_linked_task["stage_id"],
+                external_issue=closed_linked_task["external_issue"],
+                codex_estimate_minutes=closed_linked_task["time_summary"]["codex_estimate_minutes"],
+                task_id=f"{issue_key.lower()}-rerun",
+                make_current=True,
+            )["task"]
+            rerun_task_path = Path(workspace_paths(youtrack_workspace, task_id=rerun_task["task_id"])["current_task_record"])
+            rerun_task_payload = _read_json_file(rerun_task_path)
+            rerun_started_at = (datetime.now(timezone.utc) - timedelta(minutes=5)).replace(microsecond=0).isoformat().replace("+00:00", "Z")
+            rerun_task_payload["time_tracking"]["active_session_started_at"] = rerun_started_at
+            rerun_task_payload["time_tracking"]["active_session_id"] = "session-b"
+            _write_json_file(rerun_task_path, rerun_task_payload)
+            tasks_index_payload = _read_json_file(tasks_index_path)
+            for item in tasks_index_payload.get("items", []):
+                if item.get("task_id") == rerun_task["task_id"]:
+                    item.setdefault("time_tracking", {})["active_session_started_at"] = rerun_started_at
+                    item["time_tracking"]["active_session_id"] = "session-b"
+                    break
+            _write_json_file(tasks_index_path, tasks_index_payload)
+            rerun_closed_task = close_task(youtrack_workspace, task_id=rerun_task["task_id"])
+            assert set(entry["session_id"] for entry in rerun_closed_task["issue_ledger"]["time_entries"]) >= {"session-a", "session-b"}
+            assert set(rerun_closed_task["issue_ledger"]["linked_task_ids"]) >= {
+                activated_task["task_id"],
+                rerun_task["task_id"],
+            }
+            assert rerun_closed_task["issue_ledger"]["codex_total_minutes"] >= 12
+
+            gui_launch_process = subprocess.run(
+                ["python3", str(plugin_root / "scripts" / "agentiux_dev_gui.py"), "launch", "--workspace", str(youtrack_workspace)],
+                text=True,
+                capture_output=True,
+                env=os.environ.copy(),
+                check=False,
+            )
+            if gui_launch_process.returncode == 0:
+                gui_launch = json.loads(gui_launch_process.stdout)
+                try:
+                    encoded_workspace = urllib.parse.quote(str(youtrack_workspace.resolve()), safe="")
+                    connections_payload = _http_json(f"{gui_launch['url']}/api/youtrack/connections?workspace={encoded_workspace}")
+                    assert connections_payload["default_connection_id"] == "primary-tracker"
+                    serialized_gui_connections = json.dumps(connections_payload)
+                    assert fake_youtrack.token not in serialized_gui_connections
+                    assert '"token":' not in serialized_gui_connections
+                    created_secondary = _http_json(
+                        f"{gui_launch['url']}/api/youtrack/connections",
+                        method="POST",
+                        payload={
+                            "workspacePath": str(youtrack_workspace.resolve()),
+                            "label": "Secondary tracker",
+                            "connectionId": "secondary-tracker",
+                            "baseUrl": fake_youtrack.base_url,
+                            "token": fake_youtrack.token,
+                            "projectScope": ["SL"],
+                        },
+                    )
+                    assert created_secondary["created_connection_id"] == "secondary-tracker"
+                    tested_secondary = _http_json(
+                        f"{gui_launch['url']}/api/youtrack/connections/secondary-tracker/test",
+                        method="POST",
+                        payload={"workspacePath": str(youtrack_workspace.resolve())},
+                    )
+                    assert tested_secondary["connection"]["status"] == "connected"
+                    _http_json(
+                        f"{gui_launch['url']}/api/youtrack/connections",
+                        method="PATCH",
+                        payload={
+                            "workspacePath": str(youtrack_workspace.resolve()),
+                            "connectionId": "secondary-tracker",
+                            "label": "Secondary tracker updated",
+                            "default": True,
+                            "testConnection": False,
+                        },
+                    )
+                    updated_connections = _http_json(f"{gui_launch['url']}/api/youtrack/connections?workspace={encoded_workspace}")
+                    assert updated_connections["default_connection_id"] == "secondary-tracker"
+                    _http_json(
+                        f"{gui_launch['url']}/api/youtrack/connections",
+                        method="DELETE",
+                        payload={"workspacePath": str(youtrack_workspace.resolve()), "connectionId": "secondary-tracker"},
+                    )
+                    final_connections = _http_json(f"{gui_launch['url']}/api/youtrack/connections?workspace={encoded_workspace}")
+                    assert len(final_connections["items"]) == 1
+                finally:
+                    stop_gui()
+            else:
+                assert "Operation not permitted" in gui_launch_process.stderr or "PermissionError" in gui_launch_process.stderr
 
         overview = list_workspaces()
         assert overview["workspace_count"] >= 1

@@ -92,6 +92,17 @@ button.secondary {
   background: rgba(148, 163, 184, 0.14);
 }
 
+input,
+textarea {
+  width: 100%;
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  padding: 10px 12px;
+  background: rgba(8, 18, 32, 0.78);
+  color: var(--text);
+  font: inherit;
+}
+
 .stat-strip {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(120px, 1fr));
@@ -142,6 +153,26 @@ button.secondary {
   flex-wrap: wrap;
   gap: 8px;
   margin-top: 10px;
+}
+
+.form-grid {
+  display: grid;
+  gap: 12px;
+}
+
+.form-grid label {
+  display: grid;
+  gap: 6px;
+  color: var(--muted);
+}
+
+.checkbox-row {
+  grid-template-columns: auto 1fr;
+  align-items: center;
+}
+
+.checkbox-row input {
+  width: auto;
 }
 
 .chip {

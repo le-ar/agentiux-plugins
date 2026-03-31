@@ -12,7 +12,8 @@
         "git",
         "plugin-dev",
         "verification",
-        "workstream"
+        "workstream",
+        "youtrack"
       ],
       "summary": "AgentiUX Dev exposes a small chat-first command surface.",
       "tags": [
@@ -38,9 +39,10 @@
       "primary_surface": "reference",
       "related_routes": [
         "plugin-dev",
-        "release"
+        "release",
+        "youtrack"
       ],
-      "summary": "AgentiUX Dev includes a read-only local dashboard launched through `scripts/agentiux_dev_gui.py`.",
+      "summary": "AgentiUX Dev includes a local-only dashboard launched through `scripts/agentiux_dev_gui.py`.",
       "tags": [
         "dashboard",
         "gui",

@@ -5,6 +5,7 @@ import argparse
 import json
 import mimetypes
 import os
+import re
 import socket
 import time
 import traceback
@@ -26,6 +27,13 @@ from agentiux_dev_lib import (
     state_root,
     start_logged_python_process,
     stop_process,
+)
+from agentiux_dev_youtrack import (
+    connect_youtrack,
+    list_youtrack_connections,
+    remove_youtrack_connection,
+    test_youtrack_connection,
+    update_youtrack_connection,
 )
 
 
@@ -177,6 +185,18 @@ class DashboardHandler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(body)
 
+    def _read_json_body(self) -> dict[str, Any]:
+        length = int(self.headers.get("Content-Length", "0") or "0")
+        if length <= 0:
+            return {}
+        raw = self.rfile.read(length).decode("utf-8")
+        return json.loads(raw) if raw else {}
+
+    def _resolve_workspace(self, parsed: urllib.parse.ParseResult, body: dict[str, Any] | None = None) -> str | None:
+        query = urllib.parse.parse_qs(parsed.query)
+        body_workspace = (body or {}).get("workspacePath")
+        return body_workspace or query.get("workspace", [None])[0] or self._runtime_default_workspace()
+
     def _send_file(self, path: Path) -> None:
         content = path.read_bytes()
         content_type = mimetypes.guess_type(path.name)[0] or "application/octet-stream"
@@ -211,6 +231,12 @@ class DashboardHandler(BaseHTTPRequestHandler):
                     return
                 self._send_json(get_state_paths(workspace))
                 return
+            if parsed.path == "/api/youtrack/connections":
+                if not workspace:
+                    self._send_json({"error": "workspace query parameter is required"}, status=400)
+                    return
+                self._send_json(list_youtrack_connections(workspace))
+                return
 
             dashboard_dir = dashboard_root()
             relative_path = parsed.path.lstrip("/") or "index.html"
@@ -230,6 +256,80 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 },
                 status=500,
             )
+
+    def do_POST(self) -> None:  # noqa: N802
+        try:
+            parsed = urllib.parse.urlparse(self.path)
+            body = self._read_json_body()
+            workspace = self._resolve_workspace(parsed, body)
+            if not workspace:
+                self._send_json({"error": "workspacePath is required"}, status=400)
+                return
+            if parsed.path == "/api/youtrack/connections":
+                self._send_json(
+                    connect_youtrack(
+                        workspace,
+                        base_url=body["baseUrl"],
+                        token=body["token"],
+                        label=body.get("label"),
+                        connection_id=body.get("connectionId"),
+                        project_scope=body.get("projectScope"),
+                        default=body.get("default", False),
+                        test_connection=body.get("testConnection", True),
+                    )
+                )
+                return
+            match = re.match(r"^/api/youtrack/connections/([^/]+)/test$", parsed.path)
+            if match:
+                self._send_json(test_youtrack_connection(workspace, urllib.parse.unquote(match.group(1))))
+                return
+            self._send_json({"error": f"Unsupported POST path: {parsed.path}"}, status=404)
+        except Exception as exc:  # noqa: BLE001
+            traceback.print_exc()
+            self._send_json({"error": "Dashboard request failed", "detail": str(exc), "path": self.path}, status=500)
+
+    def do_PATCH(self) -> None:  # noqa: N802
+        try:
+            parsed = urllib.parse.urlparse(self.path)
+            body = self._read_json_body()
+            workspace = self._resolve_workspace(parsed, body)
+            if not workspace:
+                self._send_json({"error": "workspacePath is required"}, status=400)
+                return
+            if parsed.path != "/api/youtrack/connections":
+                self._send_json({"error": f"Unsupported PATCH path: {parsed.path}"}, status=404)
+                return
+            self._send_json(
+                update_youtrack_connection(
+                    workspace,
+                    body["connectionId"],
+                    base_url=body.get("baseUrl"),
+                    token=body.get("token"),
+                    label=body.get("label"),
+                    project_scope=body.get("projectScope"),
+                    default=body.get("default"),
+                    test_connection=body.get("testConnection", True),
+                )
+            )
+        except Exception as exc:  # noqa: BLE001
+            traceback.print_exc()
+            self._send_json({"error": "Dashboard request failed", "detail": str(exc), "path": self.path}, status=500)
+
+    def do_DELETE(self) -> None:  # noqa: N802
+        try:
+            parsed = urllib.parse.urlparse(self.path)
+            body = self._read_json_body()
+            workspace = self._resolve_workspace(parsed, body)
+            if not workspace:
+                self._send_json({"error": "workspacePath is required"}, status=400)
+                return
+            if parsed.path != "/api/youtrack/connections":
+                self._send_json({"error": f"Unsupported DELETE path: {parsed.path}"}, status=404)
+                return
+            self._send_json(remove_youtrack_connection(workspace, body["connectionId"]))
+        except Exception as exc:  # noqa: BLE001
+            traceback.print_exc()
+            self._send_json({"error": "Dashboard request failed", "detail": str(exc), "path": self.path}, status=500)
 
 
 def serve(host: str, port: int, workspace: str | None) -> int:

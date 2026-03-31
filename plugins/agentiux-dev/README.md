@@ -32,6 +32,7 @@ The source repo remains the place where you edit and verify the plugin. The inst
 
 - Small targeted fix: initialize the repo, let `workflow-advice` create or reuse a task, then run targeted verification.
 - Large feature or epic: create a workstream, confirm the stage plan, execute, and close stages explicitly.
+- YouTrack triage: connect a token-scoped tracker, persist a search session, shortlist issues, draft a workstream plan, and apply it only after explicit confirmation.
 - Existing repo hardening: initialize, audit the repository, inspect the upgrade plan, then apply only confirmed items.
 - Greenfield work: choose a starter preset, run the upstream CLI through the plugin, then initialize the new workspace explicitly.
 - Self-hosting this plugin: run the same workflow on this repository and let the `plugin-platform` profile route the work.
@@ -52,9 +53,10 @@ The source repo remains the place where you edit and verify the plugin. The inst
 - state repair for stale or profile-inaccurate workspace state
 - host-aware support reporting across Windows, Linux, and macOS
 - repo-aware Git workflow advice plus safe local branch, staging, and commit actions
+- workspace-scoped YouTrack integration with permanent-token connections, persisted search sessions, plan drafts, and issue-ledger aggregation
 - repo-tracked low-token catalogs for skills, MCP tools, scripts, references, and intent routes
 - global project context indexing and semantic cache under `~/.agentiux/agentiux-dev/cache/context/`
-- a read-only local dashboard launched from chat
+- a local-only dashboard launched from chat, with dashboard writes limited to YouTrack integration management
 
 ## Low-Token Retrieval
 
@@ -110,9 +112,18 @@ The plugin keeps canonical versioned catalogs in `catalogs/` and stores project-
 - `show current workstream`
 - `close current workstream`
 - `create task`
+- `switch task`
 - `list tasks`
 - `show current task`
 - `close current task`
+- `show youtrack connections`
+- `connect youtrack`
+- `update youtrack connection`
+- `remove youtrack connection`
+- `search youtrack issues`
+- `show youtrack issue queue`
+- `propose youtrack workstream plan`
+- `apply youtrack workstream plan`
 - `audit repository`
 - `show upgrade plan`
 - `apply upgrade plan`
@@ -167,6 +178,12 @@ Localized aliases are matched at runtime. The tracked source remains English-onl
 - `python3 scripts/agentiux_dev_state.py current-workstream --workspace /path/to/repo`
 - `python3 scripts/agentiux_dev_state.py create-workstream --workspace /path/to/repo --title "Checkout Feature"`
 - `python3 scripts/agentiux_dev_state.py create-task --workspace /path/to/repo --title "Fix CTA" --objective "Tighten spacing"`
+- `python3 scripts/agentiux_dev_state.py switch-task --workspace /path/to/repo --task-id task-123`
+- `python3 scripts/agentiux_dev_state.py show-youtrack-connections --workspace /path/to/repo`
+- `python3 scripts/agentiux_dev_state.py connect-youtrack --workspace /path/to/repo --base-url https://tracker.example.com --token perm:xxxx --project-scope SL`
+- `python3 scripts/agentiux_dev_state.py search-youtrack-issues --workspace /path/to/repo --query-text "assignee: me"`
+- `python3 scripts/agentiux_dev_state.py propose-youtrack-workstream-plan --workspace /path/to/repo --search-session-id yt-search-123 --selected-issue-id SL-100`
+- `python3 scripts/agentiux_dev_state.py apply-youtrack-workstream-plan --workspace /path/to/repo --plan-id yt-plan-123 --confirmed`
 - `python3 scripts/agentiux_dev_state.py detect-commit-style --repo-root /path/to/repo`
 - `python3 scripts/agentiux_dev_state.py suggest-commit-message --repo-root /path/to/repo --summary "Improve dashboard log view"`
 - `python3 scripts/agentiux_dev_state.py audit-repository --workspace /path/to/repo`

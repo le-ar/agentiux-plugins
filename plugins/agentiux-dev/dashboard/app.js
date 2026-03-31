@@ -5,6 +5,7 @@ const state = {
   selectedWorkspace: null,
   loading: true,
   error: null,
+  editingConnection: null,
 };
 
 function escapeHtml(value) {
@@ -25,6 +26,22 @@ function statusChip(status) {
 
 function formatLines(lines, fallback) {
   return escapeHtml((lines || []).join("\n") || fallback);
+}
+
+async function apiJson(url, options = {}) {
+  const response = await fetch(url, {
+    cache: "no-store",
+    headers: {
+      "Content-Type": "application/json",
+      ...(options.headers || {}),
+    },
+    ...options,
+  });
+  const payload = await response.json();
+  if (!response.ok) {
+    throw new Error(payload.detail || payload.error || `Request failed with ${response.status}`);
+  }
+  return payload;
 }
 
 function renderVerificationSummary(run) {
@@ -133,6 +150,137 @@ function renderPluginPlatform(pluginPlatform) {
   `;
 }
 
+function renderYouTrack(detail) {
+  const youtrack = detail.youtrack || {};
+  const connections = youtrack.connections?.items || [];
+  const summary = detail.summary?.youtrack || {};
+  const currentSearch = youtrack.current_search_session || null;
+  const currentPlan = youtrack.current_plan || null;
+  const workstreamIssues = youtrack.current_workstream_issues?.items || [];
+  const editing = state.editingConnection;
+  const editingId = editing?.connection_id || "";
+  const editingLabel = editing?.label || "";
+  const editingBaseUrl = editing?.base_url || "";
+  const editingProjectScope = (editing?.project_scope || []).join(", ");
+  const submitLabel = editing ? "Update connection" : "Add connection";
+  return `
+    <section class="panel">
+      <h3>YouTrack</h3>
+      <div class="section-list">
+        <div class="section-row">
+          <strong>Workspace summary</strong>
+          <pre>${escapeHtml(
+            [
+              `Connections: ${summary.connection_count ?? 0}`,
+              `Default connection: ${summary.default_connection_id || "none"}`,
+              `Last search session: ${summary.last_search_session_id || "none"}`,
+              `Active plan: ${summary.active_plan_id || "none"}`,
+              `Current workstream issues: ${summary.current_workstream_issue_count ?? 0}`,
+            ].join("\n"),
+          )}</pre>
+        </div>
+        <div class="section-row">
+          <strong>Connections</strong>
+          <div class="stage-list">
+            ${connections
+              .map(
+                (connection) => `
+                  <div class="stage-item">
+                    <div><strong>${escapeHtml(connection.label)}</strong></div>
+                    <div class="muted">${escapeHtml(connection.base_url)}</div>
+                    <div class="workspace-meta">
+                      <span class="chip ${statusChip(connection.status)}">${escapeHtml(connection.status)}</span>
+                      <span class="chip">${escapeHtml(connection.connection_id)}</span>
+                      <span class="chip">${connection.default ? "default" : "secondary"}</span>
+                    </div>
+                    <div class="workspace-meta">
+                      <button onclick='window.__agentiux.editYouTrackConnection(${JSON.stringify(connection.connection_id)})'>Edit</button>
+                      <button class="secondary" onclick='window.__agentiux.testYouTrackConnection(${JSON.stringify(connection.connection_id)})'>Test</button>
+                      <button class="secondary" onclick='window.__agentiux.setDefaultYouTrackConnection(${JSON.stringify(connection.connection_id)})'>Make default</button>
+                      <button class="secondary" onclick='window.__agentiux.removeYouTrackConnection(${JSON.stringify(connection.connection_id)})'>Remove</button>
+                    </div>
+                  </div>
+                `,
+              )
+              .join("") || `<pre>No YouTrack connections recorded.</pre>`}
+          </div>
+        </div>
+        <div class="section-row">
+          <strong>${editing ? "Edit connection" : "Add connection"}</strong>
+          <div class="form-grid">
+            <input id="yt-connection-id" type="hidden" value="${escapeHtml(editingId)}" />
+            <label>
+              <span>Label</span>
+              <input id="yt-label" value="${escapeHtml(editingLabel)}" placeholder="Primary tracker" />
+            </label>
+            <label>
+              <span>Base URL</span>
+              <input id="yt-base-url" value="${escapeHtml(editingBaseUrl)}" placeholder="https://tracker.example.com" />
+            </label>
+            <label>
+              <span>Permanent token</span>
+              <input id="yt-token" type="password" placeholder="${editing ? "Leave empty to keep current token" : "perm:xxxx"}" />
+            </label>
+            <label>
+              <span>Project scope</span>
+              <input id="yt-project-scope" value="${escapeHtml(editingProjectScope)}" placeholder="SL, APP" />
+            </label>
+            <label class="checkbox-row">
+              <input id="yt-default" type="checkbox" ${editing?.default ? "checked" : ""} />
+              <span>Use as default connection</span>
+            </label>
+            <div class="workspace-meta">
+              <button onclick="window.__agentiux.submitYouTrackConnection()">${submitLabel}</button>
+              ${editing ? `<button class="secondary" onclick="window.__agentiux.clearYouTrackForm()">Cancel</button>` : ""}
+            </div>
+          </div>
+        </div>
+        <div class="section-row">
+          <strong>Search and plan state</strong>
+          <pre>${escapeHtml(
+            [
+              currentSearch
+                ? `Search ${currentSearch.session_id}: ${currentSearch.resolved_query} -> results ${currentSearch.result_count ?? "unknown"}, shortlist ${currentSearch.shortlist?.length || 0}, page ${currentSearch.shortlist_page?.skip || 0}/${currentSearch.shortlist_page?.page_size || 0}`
+                : "No persisted search session.",
+              currentPlan
+                ? `Plan ${currentPlan.plan_id}: ${currentPlan.status} / selected issues ${currentPlan.selected_issue_ids?.length || 0}`
+                : "No persisted YouTrack plan.",
+            ].join("\n"),
+          )}</pre>
+        </div>
+        <div class="section-row">
+          <strong>Current workstream issue cards</strong>
+          <div class="stage-list">
+            ${workstreamIssues
+              .map(
+                (item) => `
+                  <div class="stage-item">
+                    <div><strong><a href="${escapeHtml(item.issue_url)}" target="_blank" rel="noreferrer">${escapeHtml(item.issue_key)}</a></strong></div>
+                    <div class="muted">${escapeHtml(item.title)}</div>
+                    <div class="workspace-meta">
+                      <span class="chip ${statusChip(item.task_status)}">${escapeHtml(item.task_status || "planned")}</span>
+                      <span class="chip">${escapeHtml(item.stage_id || "no-stage")}</span>
+                      <span class="chip">YT est ${escapeHtml(item.user_estimate_minutes ?? "n/a")}</span>
+                      <span class="chip">Codex est ${escapeHtml(item.codex_estimate_minutes ?? "n/a")}</span>
+                      <span class="chip">YT spent ${escapeHtml(item.youtrack_spent_minutes ?? 0)}</span>
+                      <span class="chip">Codex spent ${escapeHtml(item.codex_spent_minutes ?? 0)}</span>
+                    </div>
+                    <pre>${escapeHtml(
+                      item.latest_commit
+                        ? `Latest commit: ${item.latest_commit.commit_hash} ${item.latest_commit.message}`
+                        : "No linked commit recorded yet.",
+                    )}</pre>
+                  </div>
+                `,
+              )
+              .join("") || `<pre>No YouTrack-linked tasks in the current workstream.</pre>`}
+          </div>
+        </div>
+      </div>
+    </section>
+  `;
+}
+
 async function fetchSnapshot(workspacePath) {
   state.loading = true;
   render();
@@ -146,6 +294,11 @@ async function fetchSnapshot(workspacePath) {
       snapshot.workspace_detail?.summary?.workspace_path ||
       snapshot.overview?.workspaces?.[0]?.workspace_path ||
       null;
+    const knownConnections = snapshot.workspace_detail?.youtrack?.connections?.items || [];
+    if (state.editingConnection) {
+      state.editingConnection =
+        knownConnections.find((item) => item.connection_id === state.editingConnection.connection_id) || null;
+    }
     state.error = null;
   } catch (error) {
     state.error = error.message;
@@ -394,6 +547,7 @@ function renderDetail(detail) {
           </div>
         </div>
       </section>
+      ${renderYouTrack(detail)}
       <section class="panel">
         <h3>Verification state</h3>
         <div class="section-list">
@@ -551,6 +705,77 @@ function renderDetail(detail) {
   `;
 }
 
+async function submitYouTrackConnection() {
+  const workspacePath = state.selectedWorkspace;
+  if (!workspacePath) return;
+  const connectionId = document.getElementById("yt-connection-id")?.value || "";
+  const label = document.getElementById("yt-label")?.value || "";
+  const baseUrl = document.getElementById("yt-base-url")?.value || "";
+  const token = document.getElementById("yt-token")?.value || "";
+  const projectScope = (document.getElementById("yt-project-scope")?.value || "")
+    .split(",")
+    .map((value) => value.trim())
+    .filter(Boolean);
+  const isDefault = Boolean(document.getElementById("yt-default")?.checked);
+  const body = {
+    workspacePath,
+    label,
+    baseUrl,
+    token: token || undefined,
+    projectScope,
+    default: isDefault,
+  };
+  if (connectionId) {
+    body.connectionId = connectionId;
+    await apiJson("/api/youtrack/connections", { method: "PATCH", body: JSON.stringify(body) });
+  } else {
+    await apiJson("/api/youtrack/connections", { method: "POST", body: JSON.stringify(body) });
+  }
+  state.editingConnection = null;
+  await fetchSnapshot(workspacePath);
+}
+
+function clearYouTrackForm() {
+  state.editingConnection = null;
+  render();
+}
+
+async function testYouTrackConnection(connectionId) {
+  if (!state.selectedWorkspace) return;
+  await apiJson(`/api/youtrack/connections/${encodeURIComponent(connectionId)}/test`, {
+    method: "POST",
+    body: JSON.stringify({ workspacePath: state.selectedWorkspace }),
+  });
+  await fetchSnapshot(state.selectedWorkspace);
+}
+
+async function removeYouTrackConnection(connectionId) {
+  if (!state.selectedWorkspace) return;
+  await apiJson("/api/youtrack/connections", {
+    method: "DELETE",
+    body: JSON.stringify({ workspacePath: state.selectedWorkspace, connectionId }),
+  });
+  if (state.editingConnection?.connection_id === connectionId) {
+    state.editingConnection = null;
+  }
+  await fetchSnapshot(state.selectedWorkspace);
+}
+
+async function setDefaultYouTrackConnection(connectionId) {
+  if (!state.selectedWorkspace) return;
+  await apiJson("/api/youtrack/connections", {
+    method: "PATCH",
+    body: JSON.stringify({ workspacePath: state.selectedWorkspace, connectionId, default: true, testConnection: false }),
+  });
+  await fetchSnapshot(state.selectedWorkspace);
+}
+
+function editYouTrackConnection(connectionId) {
+  const connections = state.snapshot?.workspace_detail?.youtrack?.connections?.items || [];
+  state.editingConnection = connections.find((item) => item.connection_id === connectionId) || null;
+  render();
+}
+
 function render() {
   if (state.loading) {
     appRoot.innerHTML = `<div class="loading-shell">Loading AgentiUX Dev dashboard...</div>`;
@@ -581,6 +806,12 @@ window.__agentiux = {
   refresh: () => fetchSnapshot(state.selectedWorkspace),
   clearSelection: () => fetchSnapshot(null),
   selectWorkspace,
+  submitYouTrackConnection,
+  clearYouTrackForm,
+  testYouTrackConnection,
+  removeYouTrackConnection,
+  setDefaultYouTrackConnection,
+  editYouTrackConnection,
 };
 
 fetchSnapshot();

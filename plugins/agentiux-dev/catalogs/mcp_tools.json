@@ -64,6 +64,45 @@
       "cost_hint": "low",
       "follow_up_paths": [
         "README.md",
+        "references/command-surface.md",
+        "references/dashboard.md"
+      ],
+      "id": "apply_youtrack_workstream_plan",
+      "kind": "mcp_tool",
+      "path": "scripts/agentiux_dev_mcp.py",
+      "primary_surface": "mcp",
+      "read_only": false,
+      "related_routes": [
+        "design",
+        "workstream",
+        "youtrack"
+      ],
+      "required_inputs": [
+        "workspacePath"
+      ],
+      "returns": "Structured mutation result payload.",
+      "summary": "Apply a confirmed YouTrack plan draft by creating a workstream, stage register, linked tasks, and an execution brief.",
+      "tags": [
+        "apply",
+        "apply_youtrack_workstream_plan",
+        "design",
+        "plan",
+        "workstream",
+        "youtrack"
+      ],
+      "title": "Apply Youtrack Workstream Plan",
+      "tool_name": "apply_youtrack_workstream_plan",
+      "triggers": [
+        "apply youtrack workstream plan",
+        "design",
+        "workstream",
+        "youtrack"
+      ]
+    },
+    {
+      "cost_hint": "low",
+      "follow_up_paths": [
+        "README.md",
         "references/visual-verification.md",
         "skills/deterministic-verification/SKILL.md"
       ],
@@ -305,6 +344,43 @@
         "close task",
         "verification",
         "workstream"
+      ]
+    },
+    {
+      "cost_hint": "low",
+      "follow_up_paths": [
+        "README.md",
+        "references/command-surface.md",
+        "references/dashboard.md"
+      ],
+      "id": "connect_youtrack",
+      "kind": "mcp_tool",
+      "path": "scripts/agentiux_dev_mcp.py",
+      "primary_surface": "mcp",
+      "read_only": false,
+      "related_routes": [
+        "workstream",
+        "youtrack"
+      ],
+      "required_inputs": [
+        "workspacePath",
+        "baseUrl",
+        "token"
+      ],
+      "returns": "Structured mutation result payload.",
+      "summary": "Create or validate a workspace-scoped YouTrack connection using a permanent token.",
+      "tags": [
+        "connect",
+        "connect_youtrack",
+        "workstream",
+        "youtrack"
+      ],
+      "title": "Connect Youtrack",
+      "tool_name": "connect_youtrack",
+      "triggers": [
+        "connect youtrack",
+        "workstream",
+        "youtrack"
       ]
     },
     {
@@ -1826,6 +1902,42 @@
       "follow_up_paths": [
         "README.md",
         "references/command-surface.md",
+        "references/dashboard.md"
+      ],
+      "id": "propose_youtrack_workstream_plan",
+      "kind": "mcp_tool",
+      "path": "scripts/agentiux_dev_mcp.py",
+      "primary_surface": "mcp",
+      "read_only": false,
+      "related_routes": [
+        "workstream",
+        "youtrack"
+      ],
+      "required_inputs": [
+        "workspacePath"
+      ],
+      "returns": "Structured mutation result payload.",
+      "summary": "Persist a draft workstream plan from a YouTrack search session by selecting issue ids and batching them into stages.",
+      "tags": [
+        "plan",
+        "propose",
+        "propose_youtrack_workstream_plan",
+        "workstream",
+        "youtrack"
+      ],
+      "title": "Propose Youtrack Workstream Plan",
+      "tool_name": "propose_youtrack_workstream_plan",
+      "triggers": [
+        "propose youtrack workstream plan",
+        "workstream",
+        "youtrack"
+      ]
+    },
+    {
+      "cost_hint": "low",
+      "follow_up_paths": [
+        "README.md",
+        "references/command-surface.md",
         "references/visual-verification.md"
       ],
       "id": "refresh_context_index",
@@ -1856,6 +1968,43 @@
         "refresh context index",
         "verification",
         "workstream"
+      ]
+    },
+    {
+      "cost_hint": "low",
+      "follow_up_paths": [
+        "README.md",
+        "references/command-surface.md",
+        "references/dashboard.md"
+      ],
+      "id": "remove_youtrack_connection",
+      "kind": "mcp_tool",
+      "path": "scripts/agentiux_dev_mcp.py",
+      "primary_surface": "mcp",
+      "read_only": false,
+      "related_routes": [
+        "workstream",
+        "youtrack"
+      ],
+      "required_inputs": [
+        "workspacePath",
+        "connectionId"
+      ],
+      "returns": "Structured mutation result payload.",
+      "summary": "Remove a YouTrack connection and its stored token metadata from a workspace.",
+      "tags": [
+        "connection",
+        "remove",
+        "remove_youtrack_connection",
+        "workstream",
+        "youtrack"
+      ],
+      "title": "Remove Youtrack Connection",
+      "tool_name": "remove_youtrack_connection",
+      "triggers": [
+        "remove youtrack connection",
+        "workstream",
+        "youtrack"
       ]
     },
     {
@@ -2060,6 +2209,40 @@
       "tool_name": "search_context_index",
       "triggers": [
         "search context index"
+      ]
+    },
+    {
+      "cost_hint": "low",
+      "follow_up_paths": [
+        "README.md",
+        "references/command-surface.md",
+        "references/dashboard.md"
+      ],
+      "id": "search_youtrack_issues",
+      "kind": "mcp_tool",
+      "path": "scripts/agentiux_dev_mcp.py",
+      "primary_surface": "mcp",
+      "read_only": false,
+      "related_routes": [
+        "youtrack"
+      ],
+      "required_inputs": [
+        "workspacePath",
+        "queryText"
+      ],
+      "returns": "Structured mutation result payload.",
+      "summary": "Run a YouTrack issue search, persist the search session, and return a ranked shortlist.",
+      "tags": [
+        "issues",
+        "search",
+        "search_youtrack_issues",
+        "youtrack"
+      ],
+      "title": "Search Youtrack Issues",
+      "tool_name": "search_youtrack_issues",
+      "triggers": [
+        "search youtrack issues",
+        "youtrack"
       ]
     },
     {
@@ -2374,6 +2557,76 @@
       "follow_up_paths": [
         "README.md",
         "references/command-surface.md",
+        "references/dashboard.md"
+      ],
+      "id": "show_youtrack_connections",
+      "kind": "mcp_tool",
+      "path": "scripts/agentiux_dev_mcp.py",
+      "primary_surface": "mcp",
+      "read_only": true,
+      "related_routes": [
+        "workstream",
+        "youtrack"
+      ],
+      "required_inputs": [
+        "workspacePath"
+      ],
+      "returns": "Structured JSON payload for inspection and routing.",
+      "summary": "List sanitized YouTrack connections for a workspace, including default status and cached field-catalog paths.",
+      "tags": [
+        "connections",
+        "show",
+        "show_youtrack_connections",
+        "workstream",
+        "youtrack"
+      ],
+      "title": "Show Youtrack Connections",
+      "tool_name": "show_youtrack_connections",
+      "triggers": [
+        "show youtrack connections",
+        "workstream",
+        "youtrack"
+      ]
+    },
+    {
+      "cost_hint": "low",
+      "follow_up_paths": [
+        "README.md",
+        "references/command-surface.md",
+        "references/dashboard.md"
+      ],
+      "id": "show_youtrack_issue_queue",
+      "kind": "mcp_tool",
+      "path": "scripts/agentiux_dev_mcp.py",
+      "primary_surface": "mcp",
+      "read_only": true,
+      "related_routes": [
+        "youtrack"
+      ],
+      "required_inputs": [
+        "workspacePath"
+      ],
+      "returns": "Structured JSON payload for inspection and routing.",
+      "summary": "Read the current or explicit persisted YouTrack search session and shortlist queue.",
+      "tags": [
+        "issue",
+        "queue",
+        "show",
+        "show_youtrack_issue_queue",
+        "youtrack"
+      ],
+      "title": "Show Youtrack Issue Queue",
+      "tool_name": "show_youtrack_issue_queue",
+      "triggers": [
+        "show youtrack issue queue",
+        "youtrack"
+      ]
+    },
+    {
+      "cost_hint": "low",
+      "follow_up_paths": [
+        "README.md",
+        "references/command-surface.md",
         "references/workflow-kernel.md"
       ],
       "id": "stage_git_files",
@@ -2556,6 +2809,40 @@
         "references/workflow-kernel.md",
         "skills/workspace-kernel/SKILL.md"
       ],
+      "id": "switch_task",
+      "kind": "mcp_tool",
+      "path": "scripts/agentiux_dev_mcp.py",
+      "primary_surface": "mcp",
+      "read_only": false,
+      "related_routes": [
+        "workstream"
+      ],
+      "required_inputs": [
+        "workspacePath",
+        "taskId"
+      ],
+      "returns": "Structured mutation result payload.",
+      "summary": "Make an existing task current and start its active task session.",
+      "tags": [
+        "switch",
+        "switch_task",
+        "task",
+        "workstream"
+      ],
+      "title": "Switch Task",
+      "tool_name": "switch_task",
+      "triggers": [
+        "switch task",
+        "workstream"
+      ]
+    },
+    {
+      "cost_hint": "low",
+      "follow_up_paths": [
+        "references/command-surface.md",
+        "references/workflow-kernel.md",
+        "skills/workspace-kernel/SKILL.md"
+      ],
       "id": "switch_workstream",
       "kind": "mcp_tool",
       "path": "scripts/agentiux_dev_mcp.py",
@@ -2622,6 +2909,40 @@
       "cost_hint": "low",
       "follow_up_paths": [
         "README.md",
+        "references/command-surface.md",
+        "references/dashboard.md"
+      ],
+      "id": "test_youtrack_connection",
+      "kind": "mcp_tool",
+      "path": "scripts/agentiux_dev_mcp.py",
+      "primary_surface": "mcp",
+      "read_only": false,
+      "related_routes": [
+        "youtrack"
+      ],
+      "required_inputs": [
+        "workspacePath",
+        "connectionId"
+      ],
+      "returns": "Structured mutation result payload.",
+      "summary": "Re-run connection validation and refresh the field catalog for a YouTrack connection.",
+      "tags": [
+        "connection",
+        "test",
+        "test_youtrack_connection",
+        "youtrack"
+      ],
+      "title": "Test Youtrack Connection",
+      "tool_name": "test_youtrack_connection",
+      "triggers": [
+        "test youtrack connection",
+        "youtrack"
+      ]
+    },
+    {
+      "cost_hint": "low",
+      "follow_up_paths": [
+        "README.md",
         "references/visual-verification.md",
         "skills/deterministic-verification/SKILL.md"
       ],
@@ -2650,6 +2971,40 @@
       "triggers": [
         "update verification baseline",
         "verification"
+      ]
+    },
+    {
+      "cost_hint": "low",
+      "follow_up_paths": [
+        "README.md",
+        "references/command-surface.md",
+        "references/dashboard.md"
+      ],
+      "id": "update_youtrack_connection",
+      "kind": "mcp_tool",
+      "path": "scripts/agentiux_dev_mcp.py",
+      "primary_surface": "mcp",
+      "read_only": false,
+      "related_routes": [
+        "youtrack"
+      ],
+      "required_inputs": [
+        "workspacePath",
+        "connectionId"
+      ],
+      "returns": "Structured mutation result payload.",
+      "summary": "Update a YouTrack connection, optionally rotate its token, and refresh cached metadata.",
+      "tags": [
+        "connection",
+        "update",
+        "update_youtrack_connection",
+        "youtrack"
+      ],
+      "title": "Update Youtrack Connection",
+      "tool_name": "update_youtrack_connection",
+      "triggers": [
+        "update youtrack connection",
+        "youtrack"
       ]
     },
     {
@@ -2866,7 +3221,7 @@
       ]
     }
   ],
-  "entry_count": 84,
+  "entry_count": 94,
   "plugin": {
     "name": "agentiux-dev",
     "version": "0.8.0"

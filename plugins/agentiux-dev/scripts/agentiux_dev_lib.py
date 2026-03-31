@@ -84,6 +84,8 @@ TASK_BRIEF_PLACEHOLDER = """# TaskBrief
 No active task brief is recorded yet.
 """
 
+TASK_TIME_TRACKING_SCHEMA_VERSION = 2
+
 
 class StateFileError(ValueError):
     pass
@@ -138,9 +140,18 @@ CANONICAL_COMMAND_SURFACE = [
     "show current workstream",
     "close current workstream",
     "create task",
+    "switch task",
     "list tasks",
     "show current task",
     "close current task",
+    "show youtrack connections",
+    "connect youtrack",
+    "update youtrack connection",
+    "remove youtrack connection",
+    "search youtrack issues",
+    "show youtrack issue queue",
+    "propose youtrack workstream plan",
+    "apply youtrack workstream plan",
     "audit repository",
     "show upgrade plan",
     "apply upgrade plan",
@@ -470,6 +481,10 @@ COMMAND_ALIAS_TABLE = {
         "create task",
         "\u0441\u043e\u0437\u0434\u0430\u0439 task",
     ],
+    "switch task": [
+        "switch task",
+        "\u043f\u0435\u0440\u0435\u043a\u043b\u044e\u0447\u0438 task",
+    ],
     "list tasks": [
         "list tasks",
         "\u043f\u043e\u043a\u0430\u0436\u0438 tasks",
@@ -481,6 +496,38 @@ COMMAND_ALIAS_TABLE = {
     "close current task": [
         "close current task",
         "\u0437\u0430\u043a\u0440\u043e\u0439 current task",
+    ],
+    "show youtrack connections": [
+        "show youtrack connections",
+        "\u043f\u043e\u043a\u0430\u0436\u0438 youtrack connections",
+    ],
+    "connect youtrack": [
+        "connect youtrack",
+        "\u043f\u043e\u0434\u043a\u043b\u044e\u0447\u0438 youtrack",
+    ],
+    "update youtrack connection": [
+        "update youtrack connection",
+        "\u043e\u0431\u043d\u043e\u0432\u0438 youtrack connection",
+    ],
+    "remove youtrack connection": [
+        "remove youtrack connection",
+        "\u0443\u0434\u0430\u043b\u0438 youtrack connection",
+    ],
+    "search youtrack issues": [
+        "search youtrack issues",
+        "\u043d\u0430\u0439\u0434\u0438 youtrack issues",
+    ],
+    "show youtrack issue queue": [
+        "show youtrack issue queue",
+        "\u043f\u043e\u043a\u0430\u0436\u0438 youtrack issue queue",
+    ],
+    "propose youtrack workstream plan": [
+        "propose youtrack workstream plan",
+        "\u043f\u0440\u0435\u0434\u043b\u043e\u0436\u0438 youtrack workstream plan",
+    ],
+    "apply youtrack workstream plan": [
+        "apply youtrack workstream plan",
+        "\u043f\u0440\u0438\u043c\u0435\u043d\u0438 youtrack workstream plan",
     ],
     "audit repository": [
         "audit repository",
@@ -1989,6 +2036,8 @@ def workspace_paths(workspace: str | Path, workstream_id: str | None = None, tas
     audits_root = workspace_dir / "audits"
     upgrade_root = workspace_dir / "upgrade-plans"
     migrations_root = workspace_dir / "migrations"
+    integrations_root = workspace_dir / "integrations"
+    youtrack_root = integrations_root / "youtrack"
     starter_runs_root = state_root() / "starter-runs"
     return {
         "workspace_path": str(workspace_path),
@@ -2033,6 +2082,14 @@ def workspace_paths(workspace: str | Path, workstream_id: str | None = None, tas
         "upgrade_plans_root": str(upgrade_root),
         "current_upgrade_plan": str(upgrade_root / "current.json"),
         "migrations_root": str(migrations_root),
+        "integrations_root": str(integrations_root),
+        "youtrack_root": str(youtrack_root),
+        "youtrack_connections_dir": str(youtrack_root / "connections"),
+        "youtrack_secrets_dir": str(youtrack_root / "secrets"),
+        "youtrack_field_catalogs_dir": str(youtrack_root / "field-catalogs"),
+        "youtrack_searches_dir": str(youtrack_root / "searches"),
+        "youtrack_plans_dir": str(youtrack_root / "plans"),
+        "youtrack_issues_dir": str(youtrack_root / "issues"),
         "starter_runs_root": str(starter_runs_root),
     }
 
@@ -2669,6 +2726,7 @@ def _git_workflow_advice(repo_root: str | Path) -> dict[str, Any]:
 def suggest_commit_message(repo_root: str | Path, summary: str, files: list[str] | None = None) -> dict[str, Any]:
     advice = _git_workflow_advice(repo_root)
     inspection = advice["inspection"]
+    context = _git_workspace_context(repo_root)
     compact_summary = _suggested_objective_from_request(summary)
     commit_type = _infer_commit_type(summary, files=files)
     scope = _infer_commit_scope(files, uses_scope=advice["commit_policy"]["uses_scope"])
@@ -2693,6 +2751,9 @@ def suggest_commit_message(repo_root: str | Path, summary: str, files: list[str]
         verb = verb_map.get(commit_type, "Update")
         tail = compact_summary[:1].lower() + compact_summary[1:] if compact_summary else "project state"
         message = f"{verb} {tail}".rstrip(".")
+    issue_key = _required_issue_prefix(context)
+    if issue_key and not message.startswith(f"{issue_key} "):
+        message = f"{issue_key} {message}"
 
     return {
         "repo_root": str(Path(repo_root).expanduser().resolve()),
@@ -2700,6 +2761,9 @@ def suggest_commit_message(repo_root: str | Path, summary: str, files: list[str]
         "advice": advice,
         "summary": summary,
         "files": files or [],
+        "workspace_context": context,
+        "required_issue_prefix": issue_key,
+        "commit_prefix_required": bool(issue_key),
         "suggested_message": message,
     }
 
@@ -3009,18 +3073,21 @@ def _git_workspace_context(repo_root: str | Path) -> dict[str, Any]:
             "summary": None,
             "task_id": None,
             "workstream_id": None,
+            "issue_key": None,
         }
     state = read_workspace_state(root)
     task = current_task(root)
     workstream = current_workstream(root) if state.get("current_workstream_id") else None
     if task:
         summary = task.get("objective") or task.get("title")
+        external_issue = task.get("external_issue") or {}
         return {
             "workspace_initialized": True,
             "context_type": "task",
             "summary": summary,
             "task_id": task.get("task_id"),
             "workstream_id": task.get("linked_workstream_id"),
+            "issue_key": external_issue.get("issue_key") or external_issue.get("issue_id"),
         }
     if workstream:
         summary = workstream.get("scope_summary") or workstream.get("title")
@@ -3030,6 +3097,7 @@ def _git_workspace_context(repo_root: str | Path) -> dict[str, Any]:
             "summary": summary,
             "task_id": None,
             "workstream_id": workstream.get("workstream_id"),
+            "issue_key": None,
         }
     return {
         "workspace_initialized": True,
@@ -3037,7 +3105,27 @@ def _git_workspace_context(repo_root: str | Path) -> dict[str, Any]:
         "summary": None,
         "task_id": None,
         "workstream_id": state.get("current_workstream_id"),
+        "issue_key": None,
     }
+
+
+def _required_issue_prefix(context: dict[str, Any] | None) -> str | None:
+    issue_key = (context or {}).get("issue_key")
+    return str(issue_key).strip() if issue_key else None
+
+
+def _record_task_commit(workspace: str | Path, task_id: str, commit_hash: str, message: str) -> None:
+    try:
+        task = read_task(workspace, task_id=task_id)
+    except FileNotFoundError:
+        return
+    task["latest_commit"] = {
+        "commit_hash": commit_hash,
+        "message": message,
+        "recorded_at": now_iso(),
+    }
+    persisted = _persist_task_record(workspace, task)
+    _sync_linked_issue_ledger(workspace, persisted)
 
 
 def plan_git_change(repo_root: str | Path, summary: str | None = None, files: list[str] | None = None) -> dict[str, Any]:
@@ -3063,6 +3151,7 @@ def plan_git_change(repo_root: str | Path, summary: str | None = None, files: li
     commit_suggestion = suggest_commit_message(repo_root, resolved_summary, files=resolved_files)
     pr_title = suggest_pr_title(repo_root, resolved_summary, files=resolved_files)
     pr_body = suggest_pr_body(repo_root, resolved_summary, files=resolved_files)
+    required_issue_prefix = _required_issue_prefix(context)
     confirmations = []
     if worktree_action == "create_linked_worktree":
         confirmations.append(f"Confirm creating linked worktree `{suggested_worktree_path}` for `{suggested_branch_name}`.")
@@ -3082,6 +3171,8 @@ def plan_git_change(repo_root: str | Path, summary: str | None = None, files: li
         "suggested_worktree_path": suggested_worktree_path,
         "suggested_branch_name": suggested_branch_name,
         "suggested_commit_message": commit_suggestion["suggested_message"],
+        "required_issue_prefix": required_issue_prefix,
+        "commit_prefix_required": bool(required_issue_prefix),
         "suggested_pr_title": pr_title["suggested_pr_title"],
         "suggested_pr_body": pr_body["suggested_pr_body"],
         "required_confirmations": confirmations,
@@ -3149,18 +3240,26 @@ def create_git_commit(repo_root: str | Path, message: str, body: str | None = No
     if not _git_repo_exists(root):
         raise FileNotFoundError(f"Not a git repository: {root}")
     state = inspect_git_state(root)
+    context = _git_workspace_context(root)
     if not state["staged_files"]:
         raise ValueError("No staged changes are available for commit creation.")
+    issue_key = _required_issue_prefix(context)
+    if issue_key and not re.match(rf"^{re.escape(issue_key)}\b", message):
+        raise ValueError(f"Commit message must start with the linked issue id: {issue_key}")
     argv = ["git", "commit", "-m", message]
     if body:
         argv.extend(["-m", body])
     _git_output(root, argv)
     commit_hash = _git_output(root, ["git", "rev-parse", "--short", "HEAD"])
+    if context.get("task_id"):
+        _record_task_commit(root, context["task_id"], commit_hash, message)
     return {
         "repo_root": str(root),
         "commit_hash": commit_hash,
         "message": message,
         "body": body,
+        "workspace_context": context,
+        "required_issue_prefix": issue_key,
         "git_state": inspect_git_state(root),
     }
 
@@ -3635,23 +3734,38 @@ def _default_task_record(
     verification_mode_default: str | None = None,
     branch_hint: str | None = None,
     linked_workstream_id: str | None = None,
+    stage_id: str | None = None,
+    external_issue: dict[str, Any] | None = None,
+    codex_estimate_minutes: int | None = None,
 ) -> dict[str, Any]:
     selectors = verification_selectors or {}
     if verification_target and not selectors:
         selectors = {"explicit_targets": [verification_target]}
     return {
-        "schema_version": 1,
+        "schema_version": 2,
         "workspace_path": workspace_path,
         "task_id": task_id,
         "title": title,
         "status": "planned",
         "branch_hint": branch_hint,
         "linked_workstream_id": linked_workstream_id,
+        "stage_id": stage_id,
         "objective": objective,
         "scope": scope or [],
         "verification_target": verification_target,
         "verification_selectors": selectors,
         "verification_mode_default": verification_mode_default or "targeted",
+        "codex_estimate_minutes": int(codex_estimate_minutes) if codex_estimate_minutes is not None else None,
+        "external_issue": copy.deepcopy(external_issue) if external_issue else None,
+        "time_tracking": {
+            "schema_version": TASK_TIME_TRACKING_SCHEMA_VERSION,
+            "active_session_started_at": None,
+            "active_session_id": None,
+            "local_total_minutes": 0,
+            "entries": [],
+            "updated_at": now_iso(),
+        },
+        "latest_commit": None,
         "docs_sync_required": True,
         "created_at": now_iso(),
         "updated_at": now_iso(),
@@ -3819,6 +3933,14 @@ def _ensure_state_dirs(paths: dict[str, str]) -> None:
         "audits_root",
         "upgrade_plans_root",
         "migrations_root",
+        "integrations_root",
+        "youtrack_root",
+        "youtrack_connections_dir",
+        "youtrack_secrets_dir",
+        "youtrack_field_catalogs_dir",
+        "youtrack_searches_dir",
+        "youtrack_plans_dir",
+        "youtrack_issues_dir",
         "starter_runs_root",
     ):
         Path(paths[key]).mkdir(parents=True, exist_ok=True)
@@ -3838,6 +3960,152 @@ def _task_record_by_id(index: dict[str, Any], task_id: str) -> dict[str, Any]:
     raise FileNotFoundError(f"Unknown task: {task_id}")
 
 
+def _parse_iso_timestamp(value: str | None) -> datetime | None:
+    if not value:
+        return None
+    try:
+        return datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+
+
+def _session_minutes_between(started_at: str | None, ended_at: str | None) -> int:
+    started = _parse_iso_timestamp(started_at)
+    ended = _parse_iso_timestamp(ended_at)
+    if not started or not ended:
+        return 0
+    seconds = max((ended - started).total_seconds(), 0)
+    if seconds <= 0:
+        return 0
+    return max(1, int((seconds + 59) // 60))
+
+
+def _default_task_time_tracking() -> dict[str, Any]:
+    return {
+        "schema_version": TASK_TIME_TRACKING_SCHEMA_VERSION,
+        "active_session_started_at": None,
+        "active_session_id": None,
+        "local_total_minutes": 0,
+        "entries": [],
+        "updated_at": now_iso(),
+    }
+
+
+def _normalize_task_time_tracking(tracking: dict[str, Any] | None) -> dict[str, Any]:
+    normalized = copy.deepcopy(tracking or {})
+    normalized["schema_version"] = normalized.get("schema_version", TASK_TIME_TRACKING_SCHEMA_VERSION)
+    normalized["active_session_started_at"] = normalized.get("active_session_started_at")
+    normalized["active_session_id"] = normalized.get("active_session_id")
+    normalized["entries"] = copy.deepcopy(normalized.get("entries") or [])
+    normalized["local_total_minutes"] = int(normalized.get("local_total_minutes") or 0)
+    for entry in normalized["entries"]:
+        if entry.get("minutes") is not None:
+            entry["minutes"] = int(entry.get("minutes") or 0)
+        entry["session_id"] = entry.get("session_id")
+    if not normalized["local_total_minutes"] and normalized["entries"]:
+        normalized["local_total_minutes"] = sum(int(entry.get("minutes") or 0) for entry in normalized["entries"])
+    normalized["updated_at"] = normalized.get("updated_at") or now_iso()
+    return normalized
+
+
+def _normalize_task_payload(payload: dict[str, Any]) -> dict[str, Any]:
+    normalized = copy.deepcopy(payload or {})
+    normalized["status"] = normalized.get("status") or "planned"
+    normalized["stage_id"] = normalized.get("stage_id")
+    normalized["codex_estimate_minutes"] = (
+        int(normalized.get("codex_estimate_minutes"))
+        if normalized.get("codex_estimate_minutes") not in {None, ""}
+        else None
+    )
+    normalized["external_issue"] = copy.deepcopy(normalized.get("external_issue")) if normalized.get("external_issue") else None
+    normalized["time_tracking"] = _normalize_task_time_tracking(normalized.get("time_tracking"))
+    normalized["latest_commit"] = copy.deepcopy(normalized.get("latest_commit")) if normalized.get("latest_commit") else None
+    return normalized
+
+
+def _activate_task_payload(task_payload: dict[str, Any], *, started_at: str | None = None) -> dict[str, Any]:
+    payload = _normalize_task_payload(task_payload)
+    payload["status"] = "active"
+    tracking = payload["time_tracking"]
+    tracking["active_session_started_at"] = tracking.get("active_session_started_at") or started_at or now_iso()
+    tracking["active_session_id"] = tracking.get("active_session_id") or uuid.uuid4().hex
+    tracking["updated_at"] = now_iso()
+    payload["updated_at"] = now_iso()
+    return payload
+
+
+def _pause_task_payload(task_payload: dict[str, Any], *, ended_at: str | None = None, next_status: str | None = None) -> dict[str, Any]:
+    payload = _normalize_task_payload(task_payload)
+    tracking = payload["time_tracking"]
+    stopped_at = ended_at or now_iso()
+    started_at = tracking.get("active_session_started_at")
+    if started_at:
+        entry = {
+            "started_at": started_at,
+            "ended_at": stopped_at,
+            "minutes": _session_minutes_between(started_at, stopped_at),
+            "session_id": tracking.get("active_session_id") or uuid.uuid4().hex,
+            "updated_at": stopped_at,
+        }
+        tracking["entries"].append(entry)
+        tracking["active_session_started_at"] = None
+        tracking["active_session_id"] = None
+        tracking["local_total_minutes"] = sum(int(item.get("minutes") or 0) for item in tracking["entries"])
+    else:
+        tracking["active_session_id"] = None
+    tracking["updated_at"] = stopped_at
+    payload["status"] = next_status or ("planned" if payload.get("status") == "active" else payload.get("status") or "planned")
+    payload["updated_at"] = stopped_at
+    return payload
+
+
+def _persist_task_record(workspace: str | Path, task_payload: dict[str, Any]) -> dict[str, Any]:
+    paths = _ensure_workspace_initialized(workspace)
+    payload = _normalize_task_payload(task_payload)
+    task_id = sanitize_identifier(payload.get("task_id"), "")
+    if not task_id:
+        raise ValueError("Task payload is missing a task_id.")
+    payload["task_id"] = task_id
+    payload["updated_at"] = now_iso()
+    task_paths = _task_paths(workspace, task_id)
+    _write_json(Path(task_paths["current_task_record"]), payload)
+    index = _load_tasks_index(paths)
+    replaced = False
+    for index_item, item in enumerate(index.get("items", [])):
+        if item.get("task_id") == task_id:
+            index["items"][index_item] = copy.deepcopy(payload)
+            replaced = True
+            break
+    if not replaced:
+        index.setdefault("items", []).append(copy.deepcopy(payload))
+    _save_tasks_index(paths, index)
+    return payload
+
+
+def _sync_linked_issue_ledger(workspace: str | Path, task_payload: dict[str, Any]) -> None:
+    external_issue = (task_payload or {}).get("external_issue") or {}
+    connection_id = external_issue.get("connection_id")
+    issue_id = external_issue.get("issue_id")
+    if not connection_id or not issue_id:
+        return
+    try:
+        from agentiux_dev_youtrack import recompute_issue_ledger
+
+        recompute_issue_ledger(workspace, connection_id=connection_id, issue_id=issue_id)
+    except Exception:
+        return
+
+
+def _deactivate_current_task(workspace: str | Path, *, next_status: str = "planned") -> dict[str, Any] | None:
+    active_task = current_task(workspace)
+    if not active_task:
+        return None
+    updated = _pause_task_payload(active_task, next_status=next_status)
+    persisted = _persist_task_record(workspace, updated)
+    _sync_linked_issue_ledger(workspace, persisted)
+    return persisted
+
+
 def _load_workstreams_index(paths: dict[str, str], *, strict: bool = True) -> dict[str, Any]:
     payload = _load_json(
         Path(paths["workstreams_index"]),
@@ -3851,12 +4119,14 @@ def _load_workstreams_index(paths: dict[str, str], *, strict: bool = True) -> di
 
 
 def _load_tasks_index(paths: dict[str, str], *, strict: bool = True) -> dict[str, Any]:
-    return _load_json(
+    payload = _load_json(
         Path(paths["tasks_index"]),
         default=_default_task_index(),
         strict=strict,
         purpose="tasks index",
     ) or _default_task_index()
+    payload["items"] = [_normalize_task_payload(item) for item in payload.get("items", [])]
+    return payload
 
 
 def _save_workstreams_index(paths: dict[str, str], index: dict[str, Any]) -> dict[str, Any]:
@@ -5510,15 +5780,19 @@ def create_workstream(
     branch_hint: str | None = None,
     scope_summary: str | None = None,
     workstream_id: str | None = None,
+    source_context: dict[str, Any] | None = None,
     make_current: bool = True,
 ) -> dict[str, Any]:
     paths = _ensure_workspace_initialized(workspace)
+    previous_task = _deactivate_current_task(workspace, next_status="planned")
     detection = detect_workspace(workspace)
     index = _load_workstreams_index(paths)
     target_id = sanitize_identifier(workstream_id or title, f"workstream-{uuid.uuid4().hex[:6]}")
     if any(item.get("workstream_id") == target_id for item in index.get("items", [])):
         raise ValueError(f"Workstream already exists: {target_id}")
     record = _default_workstream_record(detection, target_id, title=title, kind=kind, branch_hint=branch_hint, scope_summary=scope_summary)
+    if source_context:
+        record["source_context"] = copy.deepcopy(source_context)
     register = build_stage_register(detection, record)
     _write_default_workstream_documents(workspace, record, register)
     index["items"].append(record)
@@ -5537,12 +5811,14 @@ def create_workstream(
         "workspace_path": paths["workspace_path"],
         "created_workstream_id": target_id,
         "workstreams": list_workstreams(workspace),
+        "previous_task": previous_task,
         "current_workstream": current_workstream(workspace) if make_current else (current_workstream(workspace) if state.get("current_workstream_id") else None),
     }
 
 
 def switch_workstream(workspace: str | Path, workstream_id: str) -> dict[str, Any]:
     paths = _ensure_workspace_initialized(workspace)
+    _deactivate_current_task(workspace, next_status="planned")
     index = _load_workstreams_index(paths)
     _workstream_record_by_id(index, workstream_id)
     index["current_workstream_id"] = workstream_id
@@ -5599,6 +5875,30 @@ def list_tasks(workspace: str | Path) -> dict[str, Any]:
     }
 
 
+def switch_task(workspace: str | Path, task_id: str) -> dict[str, Any]:
+    paths = _ensure_workspace_initialized(workspace)
+    index = _load_tasks_index(paths)
+    target_id = sanitize_identifier(task_id, "")
+    if not target_id:
+        raise ValueError("Task id is required.")
+    target = _task_record_by_id(index, target_id)
+    current_id = sanitize_identifier(index.get("current_task_id"), "") if index.get("current_task_id") else ""
+    if current_id and current_id != target_id:
+        _deactivate_current_task(workspace, next_status="planned")
+        index = _load_tasks_index(paths)
+    activated = _activate_task_payload(target)
+    _persist_task_record(workspace, activated)
+    index = _load_tasks_index(paths)
+    index["current_task_id"] = target_id
+    _save_tasks_index(paths, index)
+    state = read_workspace_state(workspace)
+    state["current_task_id"] = target_id
+    state["workspace_mode"] = "task"
+    _persist_workspace_state(workspace, state)
+    _sync_linked_issue_ledger(workspace, activated)
+    return read_task(workspace, task_id=target_id)
+
+
 def create_task(
     workspace: str | Path,
     title: str,
@@ -5609,10 +5909,14 @@ def create_task(
     verification_mode_default: str | None = None,
     branch_hint: str | None = None,
     linked_workstream_id: str | None = None,
+    stage_id: str | None = None,
+    external_issue: dict[str, Any] | None = None,
+    codex_estimate_minutes: int | None = None,
     task_id: str | None = None,
     make_current: bool = True,
 ) -> dict[str, Any]:
     paths = _ensure_workspace_initialized(workspace)
+    previous_task = _deactivate_current_task(workspace, next_status="planned") if make_current else None
     index = _load_tasks_index(paths)
     target_id = sanitize_identifier(task_id or title, f"task-{uuid.uuid4().hex[:6]}")
     if any(item.get("task_id") == target_id for item in index.get("items", [])):
@@ -5630,8 +5934,12 @@ def create_task(
         verification_mode_default=verification_mode_default,
         branch_hint=branch_hint,
         linked_workstream_id=linked_workstream_id,
+        stage_id=stage_id,
+        external_issue=external_issue,
+        codex_estimate_minutes=codex_estimate_minutes,
     )
-    payload["status"] = "active" if make_current else "planned"
+    if make_current:
+        payload = _activate_task_payload(payload)
     _write_json(Path(task_paths["current_task_record"]), payload)
     _write_text(Path(task_paths["current_task_brief"]), TASK_BRIEF_PLACEHOLDER)
     _write_json(Path(task_paths["current_task_verification_summary"]), _default_verification_summary())
@@ -5644,9 +5952,11 @@ def create_task(
         state["current_task_id"] = target_id
         state["workspace_mode"] = "task"
     _persist_workspace_state(workspace, state)
+    _sync_linked_issue_ledger(workspace, payload)
     return {
         "workspace_path": paths["workspace_path"],
         "created_task_id": target_id,
+        "previous_task": previous_task,
         "task": read_task(workspace, task_id=target_id),
         "tasks": list_tasks(workspace),
     }
@@ -5659,12 +5969,15 @@ def read_task(workspace: str | Path, task_id: str | None = None) -> dict[str, An
     if not resolved_id:
         raise FileNotFoundError("No current task is selected.")
     task_paths = _task_paths(workspace, resolved_id)
-    payload = _load_json(
+    payload = _normalize_task_payload(
+        _load_json(
         Path(task_paths["current_task_record"]),
         default={},
         strict=True,
         purpose=f"task record `{resolved_id}`",
-    ) or {}
+    )
+        or {}
+    )
     if not payload:
         raise FileNotFoundError(f"Task does not exist: {resolved_id}")
     payload["task_brief_path"] = task_paths["current_task_brief"]
@@ -5680,6 +5993,34 @@ def read_task(workspace: str | Path, task_id: str | None = None) -> dict[str, An
         {"explicit_targets": [payload["verification_target"]]} if payload.get("verification_target") else {}
     )
     payload["verification_mode_default"] = payload.get("verification_mode_default") or "targeted"
+    tracking = _normalize_task_time_tracking(payload.get("time_tracking"))
+    running_minutes = _session_minutes_between(tracking.get("active_session_started_at"), now_iso()) if tracking.get("active_session_started_at") else 0
+    payload["time_tracking"] = {
+        **tracking,
+        "running_minutes": running_minutes,
+        "local_total_minutes_including_running": tracking.get("local_total_minutes", 0) + running_minutes,
+    }
+    issue_ledger = None
+    if payload.get("external_issue"):
+        try:
+            from agentiux_dev_youtrack import read_issue_ledger
+
+            issue_ledger = read_issue_ledger(
+                workspace,
+                connection_id=payload["external_issue"]["connection_id"],
+                issue_id=payload["external_issue"]["issue_id"],
+            )
+        except Exception:
+            issue_ledger = None
+    payload["issue_ledger"] = issue_ledger
+    payload["time_summary"] = {
+        "local_task_minutes": tracking.get("local_total_minutes", 0),
+        "local_task_minutes_including_running": payload["time_tracking"]["local_total_minutes_including_running"],
+        "aggregate_issue_minutes": (issue_ledger or {}).get("codex_total_minutes"),
+        "youtrack_estimate_minutes": (issue_ledger or {}).get("youtrack_estimate_minutes"),
+        "youtrack_spent_minutes": (issue_ledger or {}).get("youtrack_spent_minutes"),
+        "codex_estimate_minutes": payload.get("codex_estimate_minutes") if payload.get("codex_estimate_minutes") is not None else (issue_ledger or {}).get("codex_estimate_minutes"),
+    }
     return payload
 
 
@@ -5689,8 +6030,7 @@ def close_task(workspace: str | Path, task_id: str | None = None, verification_s
     resolved_id = sanitize_identifier(task_id or index.get("current_task_id"), "")
     if not resolved_id:
         raise FileNotFoundError("No current task is selected.")
-    record = _task_record_by_id(index, resolved_id)
-    record["status"] = "completed"
+    record = _pause_task_payload(_task_record_by_id(index, resolved_id), next_status="completed")
     record["closed_at"] = now_iso()
     record["updated_at"] = now_iso()
     task_paths = _task_paths(workspace, resolved_id)
@@ -5699,7 +6039,8 @@ def close_task(workspace: str | Path, task_id: str | None = None, verification_s
     payload["status"] = payload.get("status") or "completed"
     payload["updated_at"] = now_iso()
     _write_json(Path(task_paths["current_task_verification_summary"]), payload)
-    _write_json(Path(task_paths["current_task_record"]), record)
+    _persist_task_record(workspace, record)
+    index = _load_tasks_index(paths)
     if index.get("current_task_id") == resolved_id:
         index["current_task_id"] = None
     _save_tasks_index(paths, index)
@@ -5708,6 +6049,7 @@ def close_task(workspace: str | Path, task_id: str | None = None, verification_s
         state["current_task_id"] = None
         state["workspace_mode"] = "workstream" if state.get("current_workstream_id") else "workspace"
     _persist_workspace_state(workspace, state)
+    _sync_linked_issue_ledger(workspace, record)
     return read_task(workspace, task_id=resolved_id)
 
 
@@ -6143,6 +6485,7 @@ def list_starter_runs(limit: int | None = 10) -> dict[str, Any]:
 
 def workspace_summary(workspace: str | Path) -> dict[str, Any]:
     from agentiux_dev_verification import list_verification_runs, recent_verification_events, resolve_verification_selection
+    from agentiux_dev_youtrack import workspace_youtrack_summary
 
     paths = _ensure_workspace_initialized(workspace)
     workspace_state = read_workspace_state(workspace)
@@ -6203,7 +6546,11 @@ def workspace_summary(workspace: str | Path) -> dict[str, Any]:
             "title": task.get("title") if task else None,
             "status": task.get("status") if task else None,
             "linked_workstream_id": task.get("linked_workstream_id") if task else None,
+            "stage_id": task.get("stage_id") if task else None,
+            "external_issue": copy.deepcopy(task.get("external_issue")) if task else None,
+            "latest_commit": copy.deepcopy(task.get("latest_commit")) if task else None,
         },
+        "youtrack": workspace_youtrack_summary(workspace),
         "verification": {
             "active_run_id": active_run.get("run_id") if active_run else None,
             "active_run_status": active_run.get("status") if active_run else None,
@@ -6292,6 +6639,7 @@ def read_workspace_detail(workspace: str | Path | None) -> dict[str, Any] | None
         recent_verification_events,
         resolve_verification_selection,
     )
+    from agentiux_dev_youtrack import workspace_youtrack_detail
 
     if not workspace:
         return None
@@ -6328,6 +6676,7 @@ def read_workspace_detail(workspace: str | Path | None) -> dict[str, Any] | None
         "verification_coverage_audit": audit_verification_coverage(workspace),
         "current_audit": read_current_audit(workspace),
         "current_upgrade_plan": read_upgrade_plan(workspace),
+        "youtrack": workspace_youtrack_detail(workspace),
         "recent_starter_runs": [run for run in list_starter_runs(limit=20)["runs"] if run.get("workspace_initialized") and run.get("project_root") == str(Path(workspace).expanduser().resolve())],
         "gui_runtime_path": paths["gui_runtime"],
     }

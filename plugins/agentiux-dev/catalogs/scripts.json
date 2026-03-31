@@ -25,10 +25,11 @@
         "git",
         "plugin-dev",
         "verification",
-        "workstream"
+        "workstream",
+        "youtrack"
       ],
       "safe_usage": "Safe for local inspection commands; write subcommands mutate only external state or local git after explicit confirmation.",
-      "summary": "Command-line entrypoint for workspace state, git helpers, verification, catalogs, and context indexing.",
+      "summary": "Command-line entrypoint for workspace state, git helpers, verification, YouTrack flows, catalogs, and context indexing.",
       "tags": [
         "cli",
         "state",
@@ -55,10 +56,11 @@
       "produced_artifacts": [],
       "related_routes": [
         "plugin-dev",
-        "workstream"
+        "workstream",
+        "youtrack"
       ],
       "safe_usage": "Run through the plugin manifest or local Python launcher; it serves JSON-RPC over stdio.",
-      "summary": "Stdio MCP server exposing read and write tools for workspace state, git, verification, and context retrieval.",
+      "summary": "Stdio MCP server exposing read and write tools for workspace state, git, verification, YouTrack flows, and context retrieval.",
       "tags": [
         "mcp",
         "server",
@@ -133,10 +135,11 @@
       ],
       "related_routes": [
         "plugin-dev",
-        "release"
+        "release",
+        "youtrack"
       ],
-      "safe_usage": "Read-only UI runtime; it should not mutate repo code or external state implicitly.",
-      "summary": "Launches and stops the read-only local dashboard backed by dashboard snapshot and workspace detail payloads.",
+      "safe_usage": "Local-only UI runtime; dashboard mutations are limited to YouTrack integration-management flows.",
+      "summary": "Launches and stops the local-only dashboard backed by dashboard snapshot and workspace detail payloads.",
       "tags": [
         "dashboard",
         "gui",
@@ -147,6 +150,46 @@
         "dashboard",
         "launch gui",
         "show gui url"
+      ]
+    },
+    {
+      "common_flags": [],
+      "cost_hint": "medium",
+      "follow_up_paths": [
+        "README.md",
+        "references/command-surface.md",
+        "references/dashboard.md"
+      ],
+      "id": "agentiux_dev_youtrack",
+      "kind": "script",
+      "path": "scripts/agentiux_dev_youtrack.py",
+      "primary_surface": "integration-runtime",
+      "produced_artifacts": [
+        "workspace integration state",
+        "field catalogs",
+        "search sessions",
+        "plan drafts",
+        "issue ledger"
+      ],
+      "related_routes": [
+        "plugin-dev",
+        "workstream",
+        "youtrack"
+      ],
+      "safe_usage": "Reads YouTrack remotely and stores plugin-owned state locally; v1 does not write back to YouTrack.",
+      "summary": "Workspace-scoped YouTrack connections, field catalogs, persisted search sessions, plan drafts, and issue-ledger helpers.",
+      "tags": [
+        "integration",
+        "issues",
+        "planning",
+        "youtrack"
+      ],
+      "title": "YouTrack Integration Runtime",
+      "triggers": [
+        "issue triage",
+        "search backlog",
+        "youtrack",
+        "youtrack planning"
       ]
     },
     {
@@ -262,7 +305,7 @@
       ]
     }
   ],
-  "entry_count": 7,
+  "entry_count": 8,
   "plugin": {
     "name": "agentiux-dev",
     "version": "0.8.0"

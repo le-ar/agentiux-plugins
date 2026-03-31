@@ -79,6 +79,7 @@ from agentiux_dev_lib import (
     install_host_requirements,
     repair_host_requirements,
     stage_git_files,
+    switch_task,
     suggest_branch_name,
     suggest_commit_message,
     suggest_pr_body,
@@ -98,6 +99,17 @@ from agentiux_dev_context import (
     show_capability_catalog,
     show_intent_route,
     show_workspace_context_pack,
+)
+from agentiux_dev_youtrack import (
+    apply_youtrack_workstream_plan,
+    connect_youtrack,
+    list_youtrack_connections,
+    propose_youtrack_workstream_plan,
+    remove_youtrack_connection,
+    search_youtrack_issues,
+    show_youtrack_issue_queue,
+    test_youtrack_connection,
+    update_youtrack_connection,
 )
 
 
@@ -212,6 +224,9 @@ def parse_args() -> argparse.Namespace:
     cmd.add_argument("--verification-mode-default", choices=["targeted", "full"])
     cmd.add_argument("--branch-hint")
     cmd.add_argument("--linked-workstream-id")
+    cmd.add_argument("--stage-id")
+    cmd.add_argument("--external-issue-file")
+    cmd.add_argument("--codex-estimate-minutes", type=int)
     cmd.add_argument("--task-id")
     cmd.add_argument("--no-make-current", action="store_true")
 
@@ -219,6 +234,10 @@ def parse_args() -> argparse.Namespace:
     add_workspace_arg(cmd)
 
     cmd = subparsers.add_parser("task")
+    add_workspace_arg(cmd)
+    cmd.add_argument("--task-id", required=True)
+
+    cmd = subparsers.add_parser("switch-task")
     add_workspace_arg(cmd)
     cmd.add_argument("--task-id", required=True)
 
@@ -344,6 +363,62 @@ def parse_args() -> argparse.Namespace:
     cmd = subparsers.add_parser("refresh-context-index")
     add_workspace_arg(cmd)
     cmd.add_argument("--force", action="store_true")
+
+    cmd = subparsers.add_parser("show-youtrack-connections")
+    add_workspace_arg(cmd)
+
+    cmd = subparsers.add_parser("connect-youtrack")
+    add_workspace_arg(cmd)
+    cmd.add_argument("--base-url", required=True)
+    cmd.add_argument("--token", required=True)
+    cmd.add_argument("--label")
+    cmd.add_argument("--connection-id")
+    cmd.add_argument("--project-scope")
+    cmd.add_argument("--default", action="store_true")
+    cmd.add_argument("--no-test", action="store_true")
+
+    cmd = subparsers.add_parser("update-youtrack-connection")
+    add_workspace_arg(cmd)
+    cmd.add_argument("--connection-id", required=True)
+    cmd.add_argument("--base-url")
+    cmd.add_argument("--token")
+    cmd.add_argument("--label")
+    cmd.add_argument("--project-scope")
+    cmd.add_argument("--default", action="store_true")
+    cmd.add_argument("--no-test", action="store_true")
+
+    cmd = subparsers.add_parser("remove-youtrack-connection")
+    add_workspace_arg(cmd)
+    cmd.add_argument("--connection-id", required=True)
+
+    cmd = subparsers.add_parser("test-youtrack-connection")
+    add_workspace_arg(cmd)
+    cmd.add_argument("--connection-id", required=True)
+
+    cmd = subparsers.add_parser("search-youtrack-issues")
+    add_workspace_arg(cmd)
+    cmd.add_argument("--query-text", required=True)
+    cmd.add_argument("--connection-id")
+    cmd.add_argument("--page-size", type=int, default=25)
+    cmd.add_argument("--skip", type=int, default=0)
+    cmd.add_argument("--shortlist-size", type=int, default=8)
+
+    cmd = subparsers.add_parser("show-youtrack-issue-queue")
+    add_workspace_arg(cmd)
+    cmd.add_argument("--search-session-id")
+
+    cmd = subparsers.add_parser("propose-youtrack-workstream-plan")
+    add_workspace_arg(cmd)
+    cmd.add_argument("--search-session-id")
+    cmd.add_argument("--selected-issue-id", dest="selected_issue_ids", action="append")
+    cmd.add_argument("--rejected-issue-id", dest="rejected_issue_ids", action="append")
+    cmd.add_argument("--workstream-title")
+
+    cmd = subparsers.add_parser("apply-youtrack-workstream-plan")
+    add_workspace_arg(cmd)
+    cmd.add_argument("--plan-id")
+    cmd.add_argument("--confirmed", action="store_true")
+    cmd.add_argument("--activate-first-task", action="store_true")
 
     cmd = subparsers.add_parser("sync-verification-helpers")
     add_workspace_arg(cmd)
@@ -572,6 +647,9 @@ def main() -> int:
                 verification_mode_default=args.verification_mode_default,
                 branch_hint=args.branch_hint,
                 linked_workstream_id=args.linked_workstream_id,
+                stage_id=args.stage_id,
+                external_issue=_read_json(args.external_issue_file) if args.external_issue_file else None,
+                codex_estimate_minutes=args.codex_estimate_minutes,
                 task_id=args.task_id,
                 make_current=not args.no_make_current,
             )
@@ -579,6 +657,8 @@ def main() -> int:
             payload = current_task(args.workspace)
         elif args.command == "task":
             payload = read_task(args.workspace, task_id=args.task_id)
+        elif args.command == "switch-task":
+            payload = switch_task(args.workspace, args.task_id)
         elif args.command == "close-task":
             summary = _read_json(args.verification_summary_file) if args.verification_summary_file else None
             payload = close_task(args.workspace, task_id=args.task_id, verification_summary=summary)
@@ -656,6 +736,60 @@ def main() -> int:
             payload = search_context_index(args.workspace, args.query_text, route_id=args.route_id, limit=args.limit)
         elif args.command == "refresh-context-index":
             payload = refresh_context_index(args.workspace, force=args.force)
+        elif args.command == "show-youtrack-connections":
+            payload = list_youtrack_connections(args.workspace)
+        elif args.command == "connect-youtrack":
+            payload = connect_youtrack(
+                args.workspace,
+                base_url=args.base_url,
+                token=args.token,
+                label=args.label,
+                connection_id=args.connection_id,
+                project_scope=args.project_scope,
+                default=args.default,
+                test_connection=not args.no_test,
+            )
+        elif args.command == "update-youtrack-connection":
+            payload = update_youtrack_connection(
+                args.workspace,
+                args.connection_id,
+                base_url=args.base_url,
+                token=args.token,
+                label=args.label,
+                project_scope=args.project_scope,
+                default=True if args.default else None,
+                test_connection=not args.no_test,
+            )
+        elif args.command == "remove-youtrack-connection":
+            payload = remove_youtrack_connection(args.workspace, args.connection_id)
+        elif args.command == "test-youtrack-connection":
+            payload = test_youtrack_connection(args.workspace, args.connection_id)
+        elif args.command == "search-youtrack-issues":
+            payload = search_youtrack_issues(
+                args.workspace,
+                query_text=args.query_text,
+                connection_id=args.connection_id,
+                page_size=args.page_size,
+                skip=args.skip,
+                shortlist_size=args.shortlist_size,
+            )
+        elif args.command == "show-youtrack-issue-queue":
+            payload = show_youtrack_issue_queue(args.workspace, search_session_id=args.search_session_id)
+        elif args.command == "propose-youtrack-workstream-plan":
+            payload = propose_youtrack_workstream_plan(
+                args.workspace,
+                search_session_id=args.search_session_id,
+                selected_issue_ids=args.selected_issue_ids,
+                rejected_issue_ids=args.rejected_issue_ids,
+                workstream_title=args.workstream_title,
+            )
+        elif args.command == "apply-youtrack-workstream-plan":
+            payload = apply_youtrack_workstream_plan(
+                args.workspace,
+                plan_id=args.plan_id,
+                confirmed=args.confirmed,
+                activate_first_task=args.activate_first_task,
+            )
         elif args.command == "sync-verification-helpers":
             payload = sync_verification_helpers(args.workspace, force=args.force)
         elif args.command == "resolve-verification":

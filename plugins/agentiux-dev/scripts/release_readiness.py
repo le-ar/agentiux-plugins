@@ -236,6 +236,7 @@ def mcp_check(plugin_root: Path) -> dict[str, Any]:
         "list_verification_runs",
         "list_workstreams",
         "create_task",
+        "switch_task",
         "audit_repository",
         "create_starter",
         "approve_verification_baseline",
@@ -251,6 +252,15 @@ def mcp_check(plugin_root: Path) -> dict[str, Any]:
         "create_git_branch",
         "stage_git_files",
         "create_git_commit",
+        "show_youtrack_connections",
+        "connect_youtrack",
+        "update_youtrack_connection",
+        "remove_youtrack_connection",
+        "test_youtrack_connection",
+        "search_youtrack_issues",
+        "show_youtrack_issue_queue",
+        "propose_youtrack_workstream_plan",
+        "apply_youtrack_workstream_plan",
     }
     missing = required_tools.difference(tool_names)
     if init_response["result"]["serverInfo"]["name"] != "agentiux-dev-state":
@@ -326,6 +336,7 @@ def smoke(plugin_root: Path, repo_root: Path) -> dict[str, Any]:
             "context-index",
             "workstreams",
             "tasks",
+            "youtrack",
             "commit-style-detection",
             "verification-case",
             "verification-suite",
@@ -338,6 +349,7 @@ def smoke(plugin_root: Path, repo_root: Path) -> dict[str, Any]:
             "starter-creation",
             "git-safe-exec",
             "gui",
+            "dashboard-youtrack-management",
             "mcp",
         ],
     }

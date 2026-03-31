@@ -42,6 +42,14 @@ AgentiUX Dev exposes a small chat-first command surface.
 - `list tasks`
 - `show current task`
 - `close current task`
+- `show youtrack connections`
+- `connect youtrack`
+- `update youtrack connection`
+- `remove youtrack connection`
+- `search youtrack issues`
+- `show youtrack issue queue`
+- `propose youtrack workstream plan`
+- `apply youtrack workstream plan`
 - `audit repository`
 - `show upgrade plan`
 - `apply upgrade plan`
@@ -64,7 +72,7 @@ AgentiUX Dev exposes a small chat-first command surface.
 - `continue work` is an execution-intent trigger only after the workspace is initialized and either a current task exists or the current workstream has a confirmed stage plan.
 - `propose stage plan changes` is a planning action. It must not mutate state.
 - `apply stage plan changes` can mutate unfinished stage definitions only after explicit user confirmation.
-- `launch gui` launches the read-only local dashboard through `scripts/agentiux_dev_gui.py`.
+- `launch gui` launches the local-only dashboard through `scripts/agentiux_dev_gui.py`; the only allowed dashboard mutations are integration-management flows such as adding, testing, updating, removing, or marking a default YouTrack connection.
 - `show gui url` returns the current dashboard URL without opening the browser automatically.
 - `run verification case` starts one deterministic verification case.
 - `run verification suite` starts a deterministic suite in stable case order.
@@ -85,6 +93,10 @@ AgentiUX Dev exposes a small chat-first command surface.
 - `repair host requirements` reruns the current missing host requirement plan only after explicit confirmation and must refresh workspace host support after execution.
 - `create workstream` creates a named workstream container with its own external state and an empty stage register that still requires explicit stage-plan confirmation.
 - `create task` creates a lightweight task for point fixes without requiring a full workstream.
+- `connect youtrack` and `update youtrack connection` accept permanent tokens only in `v1`; raw password login and OAuth are intentionally out of scope.
+- `search youtrack issues` persists a search or triage session with ranked shortlist data and must not auto-create workstreams or tasks.
+- `propose youtrack workstream plan` is a planning action layered on a persisted search session and must keep the result in draft form until the user confirms apply.
+- `apply youtrack workstream plan` requires explicit confirmation before creating a workstream, linked tasks, and stage batches from the approved issue set.
 - In initialized repositories, `workflow-advice` may auto-create or reuse the active point task for narrow fixes.
 - Greenfield requests should trigger starter recommendations automatically instead of requiring `show starter presets` first.
 - `audit repository` is read-only for repo code and produces a structured gap report.
@@ -92,5 +104,6 @@ AgentiUX Dev exposes a small chat-first command surface.
 - `create starter` uses the official upstream CLI only and does not initialize AgentiUX Dev state automatically.
 - Cheap summaries and catalogs should be preferred before broad manual exploration.
 - Commit requests should inspect commit history or config before a message is suggested or a commit is created.
+- If the current task is linked to a YouTrack issue, `plan git change`, `suggest commit message`, and `create git commit` must require the `ISSUE-ID ...` commit-subject prefix from the linked task metadata.
 - `show git state` and `plan git change` are read-only.
 - `create git branch`, `stage git files`, and `create git commit` are local-only write actions and must not push or publish.

@@ -267,7 +267,8 @@
       "primary_surface": "skill",
       "related_routes": [
         "plugin-dev",
-        "release"
+        "release",
+        "youtrack"
       ],
       "summary": "Use for AgentiUX Dev self-hosting work on Python scripts, MCP tooling, installer flow, release-readiness gates, and the local dashboard.",
       "tags": [

@@ -19,6 +19,7 @@ SUPPORTED_ROUTE_IDS = (
     "git",
     "plugin-dev",
     "release",
+    "youtrack",
     "verification",
     "workstream",
 )
@@ -127,6 +128,33 @@ ROUTE_DEFINITIONS: dict[str, dict[str, Any]] = {
         ],
         "cost_hint": "low",
     },
+    "youtrack": {
+        "title": "YouTrack Workflow",
+        "summary": "Handle connection management, persisted issue search and triage sessions, plan drafts, and linked-task execution rules.",
+        "tags": ["connection", "issue", "planning", "search", "triage", "youtrack"],
+        "triggers": ["issue queue", "search tickets", "triage backlog", "youtrack", "youtrack plan", "youtrack search"],
+        "recommended_skills": ["plugin-platform", "workspace-kernel"],
+        "recommended_tools": [
+            "show_youtrack_connections",
+            "connect_youtrack",
+            "update_youtrack_connection",
+            "remove_youtrack_connection",
+            "test_youtrack_connection",
+            "search_youtrack_issues",
+            "show_youtrack_issue_queue",
+            "propose_youtrack_workstream_plan",
+            "apply_youtrack_workstream_plan",
+            "plan_git_change",
+            "suggest_commit_message",
+        ],
+        "summary_surfaces": ["show_youtrack_connections", "show_youtrack_issue_queue", "get_workspace_detail"],
+        "primary_paths": [
+            "README.md",
+            "references/command-surface.md",
+            "references/dashboard.md",
+        ],
+        "cost_hint": "medium",
+    },
     "workstream": {
         "title": "Workspace Kernel",
         "summary": "Route requests into workspace initialization, workstreams, tasks, stage plans, and audits.",
@@ -214,7 +242,7 @@ SKILL_OVERRIDES: dict[str, dict[str, Any]] = {
     "plugin-platform": {
         "tags": ["dashboard", "mcp", "plugin", "release"],
         "triggers": ["dashboard", "mcp tool", "plugin runtime", "release readiness"],
-        "related_routes": ["plugin-dev", "release"],
+        "related_routes": ["plugin-dev", "release", "youtrack"],
     },
     "docs-sync": {
         "tags": ["docs", "readme", "truth maintenance"],
@@ -247,7 +275,7 @@ REFERENCE_OVERRIDES: dict[str, dict[str, Any]] = {
     "command-surface.md": {
         "tags": ["aliases", "commands", "surface"],
         "triggers": ["command phrase", "command surface", "tool routing"],
-        "related_routes": ["workstream", "git", "verification", "plugin-dev"],
+        "related_routes": ["workstream", "git", "verification", "plugin-dev", "youtrack"],
     },
     "visual-verification.md": {
         "tags": ["helper bundle", "semantic", "verification", "visual"],
@@ -262,7 +290,7 @@ REFERENCE_OVERRIDES: dict[str, dict[str, Any]] = {
     "dashboard.md": {
         "tags": ["dashboard", "gui", "monitoring"],
         "triggers": ["dashboard", "gui", "workspace overview"],
-        "related_routes": ["plugin-dev", "release"],
+        "related_routes": ["plugin-dev", "release", "youtrack"],
     },
     "stack-profiles.md": {
         "tags": ["profiles", "stacks", "workspace detection"],
@@ -276,13 +304,13 @@ SCRIPT_DEFINITIONS: list[dict[str, Any]] = [
         "id": "agentiux_dev_state",
         "path": "scripts/agentiux_dev_state.py",
         "title": "Workspace State CLI",
-        "summary": "Command-line entrypoint for workspace state, git helpers, verification, catalogs, and context indexing.",
+        "summary": "Command-line entrypoint for workspace state, git helpers, verification, YouTrack flows, catalogs, and context indexing.",
         "tags": ["cli", "state", "workspace"],
         "triggers": ["agentiux_dev_state.py", "workspace cli", "state command"],
         "primary_surface": "cli",
         "follow_up_paths": ["references/command-surface.md", "README.md"],
         "cost_hint": "low",
-        "related_routes": ["workstream", "verification", "git", "plugin-dev"],
+        "related_routes": ["workstream", "verification", "git", "plugin-dev", "youtrack"],
         "safe_usage": "Safe for local inspection commands; write subcommands mutate only external state or local git after explicit confirmation.",
         "common_flags": ["--workspace", "--repo-root", "--workstream-id", "--task-id"],
         "produced_artifacts": ["external workspace state", "global context cache"],
@@ -291,13 +319,13 @@ SCRIPT_DEFINITIONS: list[dict[str, Any]] = [
         "id": "agentiux_dev_mcp",
         "path": "scripts/agentiux_dev_mcp.py",
         "title": "MCP Server",
-        "summary": "Stdio MCP server exposing read and write tools for workspace state, git, verification, and context retrieval.",
+        "summary": "Stdio MCP server exposing read and write tools for workspace state, git, verification, YouTrack flows, and context retrieval.",
         "tags": ["mcp", "server", "stdio"],
         "triggers": ["mcp", "tools/list", "tools/call"],
         "primary_surface": "mcp",
         "follow_up_paths": ["README.md", "references/command-surface.md"],
         "cost_hint": "low",
-        "related_routes": ["plugin-dev", "workstream"],
+        "related_routes": ["plugin-dev", "workstream", "youtrack"],
         "safe_usage": "Run through the plugin manifest or local Python launcher; it serves JSON-RPC over stdio.",
         "common_flags": [],
         "produced_artifacts": [],
@@ -321,16 +349,31 @@ SCRIPT_DEFINITIONS: list[dict[str, Any]] = [
         "id": "agentiux_dev_gui",
         "path": "scripts/agentiux_dev_gui.py",
         "title": "Dashboard Runtime",
-        "summary": "Launches and stops the read-only local dashboard backed by dashboard snapshot and workspace detail payloads.",
+        "summary": "Launches and stops the local-only dashboard backed by dashboard snapshot and workspace detail payloads.",
         "tags": ["dashboard", "gui", "http"],
         "triggers": ["dashboard", "launch gui", "show gui url"],
         "primary_surface": "dashboard",
         "follow_up_paths": ["references/dashboard.md", "README.md"],
         "cost_hint": "low",
-        "related_routes": ["plugin-dev", "release"],
-        "safe_usage": "Read-only UI runtime; it should not mutate repo code or external state implicitly.",
+        "related_routes": ["plugin-dev", "release", "youtrack"],
+        "safe_usage": "Local-only UI runtime; dashboard mutations are limited to YouTrack integration-management flows.",
         "common_flags": ["launch", "stop", "status", "--workspace"],
         "produced_artifacts": ["runtime/dashboard.json"],
+    },
+    {
+        "id": "agentiux_dev_youtrack",
+        "path": "scripts/agentiux_dev_youtrack.py",
+        "title": "YouTrack Integration Runtime",
+        "summary": "Workspace-scoped YouTrack connections, field catalogs, persisted search sessions, plan drafts, and issue-ledger helpers.",
+        "tags": ["integration", "issues", "planning", "youtrack"],
+        "triggers": ["issue triage", "search backlog", "youtrack", "youtrack planning"],
+        "primary_surface": "integration-runtime",
+        "follow_up_paths": ["references/command-surface.md", "references/dashboard.md", "README.md"],
+        "cost_hint": "medium",
+        "related_routes": ["plugin-dev", "workstream", "youtrack"],
+        "safe_usage": "Reads YouTrack remotely and stores plugin-owned state locally; v1 does not write back to YouTrack.",
+        "common_flags": [],
+        "produced_artifacts": ["workspace integration state", "field catalogs", "search sessions", "plan drafts", "issue ledger"],
     },
     {
         "id": "release_readiness",
@@ -471,6 +514,8 @@ def _route_ids_for_hint(*values: str) -> list[str]:
         route_ids.add("plugin-dev")
     if tokens.intersection({"dashboard", "release", "smoke"}):
         route_ids.add("release")
+    if tokens.intersection({"backlog", "tickets", "triage", "youtrack"}):
+        route_ids.add("youtrack")
     if tokens.intersection({"stage", "task", "workflow", "workstream", "workspace"}):
         route_ids.add("workstream")
     return sorted(route_ids)

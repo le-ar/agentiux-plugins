@@ -188,6 +188,55 @@
       "cost_hint": "medium",
       "primary_paths": [
         "README.md",
+        "references/command-surface.md",
+        "references/dashboard.md"
+      ],
+      "recommended_skills": [
+        "plugin-platform",
+        "workspace-kernel"
+      ],
+      "recommended_tools": [
+        "apply_youtrack_workstream_plan",
+        "connect_youtrack",
+        "plan_git_change",
+        "propose_youtrack_workstream_plan",
+        "remove_youtrack_connection",
+        "search_youtrack_issues",
+        "show_youtrack_connections",
+        "show_youtrack_issue_queue",
+        "suggest_commit_message",
+        "test_youtrack_connection",
+        "update_youtrack_connection"
+      ],
+      "route_id": "youtrack",
+      "summary": "Handle connection management, persisted issue search and triage sessions, plan drafts, and linked-task execution rules.",
+      "summary_surfaces": [
+        "get_workspace_detail",
+        "show_youtrack_connections",
+        "show_youtrack_issue_queue"
+      ],
+      "tags": [
+        "connection",
+        "issue",
+        "planning",
+        "search",
+        "triage",
+        "youtrack"
+      ],
+      "title": "YouTrack Workflow",
+      "triggers": [
+        "issue queue",
+        "search tickets",
+        "triage backlog",
+        "youtrack",
+        "youtrack plan",
+        "youtrack search"
+      ]
+    },
+    {
+      "cost_hint": "medium",
+      "primary_paths": [
+        "README.md",
         "references/visual-verification.md",
         "skills/deterministic-verification/SKILL.md"
       ],
@@ -284,7 +333,7 @@
       ]
     }
   ],
-  "entry_count": 6,
+  "entry_count": 7,
   "plugin": {
     "name": "agentiux-dev",
     "version": "0.8.0"
