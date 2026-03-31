@@ -1,0 +1,2875 @@
+{
+  "catalog": "mcp_tools",
+  "entries": [
+    {
+      "cost_hint": "low",
+      "follow_up_paths": [
+        "references/command-surface.md",
+        "references/workflow-kernel.md",
+        "skills/workspace-kernel/SKILL.md"
+      ],
+      "id": "advise_workflow",
+      "kind": "mcp_tool",
+      "path": "scripts/agentiux_dev_mcp.py",
+      "primary_surface": "mcp",
+      "read_only": false,
+      "related_routes": [
+        "workstream"
+      ],
+      "required_inputs": [
+        "workspacePath"
+      ],
+      "returns": "Structured mutation result payload.",
+      "summary": "Inspect the current request context and recommend workspace init, starter, workstream, or task actions before execution starts. This tool does not write state automatically.",
+      "tags": [
+        "advise",
+        "advise_workflow",
+        "workflow",
+        "workstream"
+      ],
+      "title": "Advise Workflow",
+      "tool_name": "advise_workflow",
+      "triggers": [
+        "advise workflow",
+        "workstream"
+      ]
+    },
+    {
+      "cost_hint": "low",
+      "follow_up_paths": [],
+      "id": "apply_upgrade_plan",
+      "kind": "mcp_tool",
+      "path": "scripts/agentiux_dev_mcp.py",
+      "primary_surface": "mcp",
+      "read_only": false,
+      "related_routes": [],
+      "required_inputs": [
+        "workspacePath"
+      ],
+      "returns": "Structured mutation result payload.",
+      "summary": "Apply an approved upgrade plan by creating workstreams and tasks for the identified gaps.",
+      "tags": [
+        "apply",
+        "apply_upgrade_plan",
+        "plan",
+        "upgrade"
+      ],
+      "title": "Apply Upgrade Plan",
+      "tool_name": "apply_upgrade_plan",
+      "triggers": [
+        "apply upgrade plan"
+      ]
+    },
+    {
+      "cost_hint": "low",
+      "follow_up_paths": [
+        "README.md",
+        "references/visual-verification.md",
+        "skills/deterministic-verification/SKILL.md"
+      ],
+      "id": "approve_verification_baseline",
+      "kind": "mcp_tool",
+      "path": "scripts/agentiux_dev_mcp.py",
+      "primary_surface": "mcp",
+      "read_only": false,
+      "related_routes": [
+        "verification"
+      ],
+      "required_inputs": [
+        "workspacePath",
+        "caseId"
+      ],
+      "returns": "Structured mutation result payload.",
+      "summary": "Approve a project-owned baseline from a completed verification run.",
+      "tags": [
+        "approve",
+        "approve_verification_baseline",
+        "baseline",
+        "verification"
+      ],
+      "title": "Approve Verification Baseline",
+      "tool_name": "approve_verification_baseline",
+      "triggers": [
+        "approve verification baseline",
+        "verification"
+      ]
+    },
+    {
+      "cost_hint": "low",
+      "follow_up_paths": [
+        "README.md",
+        "references/command-surface.md",
+        "references/design-workflow.md"
+      ],
+      "id": "audit_repository",
+      "kind": "mcp_tool",
+      "path": "scripts/agentiux_dev_mcp.py",
+      "primary_surface": "mcp",
+      "read_only": true,
+      "related_routes": [
+        "design",
+        "verification",
+        "workstream"
+      ],
+      "required_inputs": [
+        "workspacePath"
+      ],
+      "returns": "Structured JSON payload for inspection and routing.",
+      "summary": "Audit an existing repository for missing local infra, verification, docs, design hooks, and workflow readiness.",
+      "tags": [
+        "audit",
+        "audit_repository",
+        "design",
+        "repository",
+        "verification",
+        "workstream"
+      ],
+      "title": "Audit Repository",
+      "tool_name": "audit_repository",
+      "triggers": [
+        "audit repository",
+        "design",
+        "verification",
+        "workstream"
+      ]
+    },
+    {
+      "cost_hint": "medium",
+      "follow_up_paths": [
+        "README.md",
+        "references/command-surface.md",
+        "references/visual-verification.md"
+      ],
+      "id": "audit_verification_coverage",
+      "kind": "mcp_tool",
+      "path": "scripts/agentiux_dev_mcp.py",
+      "primary_surface": "mcp",
+      "read_only": true,
+      "related_routes": [
+        "verification",
+        "workstream"
+      ],
+      "required_inputs": [
+        "workspacePath"
+      ],
+      "returns": "Structured JSON payload for inspection and routing.",
+      "summary": "Audit warning-level deterministic verification coverage gaps, including missing web or Android visual cases, without mutating workspace state.",
+      "tags": [
+        "audit",
+        "audit_verification_coverage",
+        "coverage",
+        "verification",
+        "workstream"
+      ],
+      "title": "Audit Verification Coverage",
+      "tool_name": "audit_verification_coverage",
+      "triggers": [
+        "audit verification coverage",
+        "verification",
+        "workstream"
+      ]
+    },
+    {
+      "cost_hint": "low",
+      "follow_up_paths": [
+        "README.md",
+        "references/design-workflow.md",
+        "skills/design-orchestrator/SKILL.md"
+      ],
+      "id": "cache_reference_preview",
+      "kind": "mcp_tool",
+      "path": "scripts/agentiux_dev_mcp.py",
+      "primary_surface": "mcp",
+      "read_only": false,
+      "related_routes": [
+        "design"
+      ],
+      "required_inputs": [
+        "workspacePath",
+        "sourcePath"
+      ],
+      "returns": "Structured mutation result payload.",
+      "summary": "Copy a local preview asset into the external design cache for stable boards and GUI rendering.",
+      "tags": [
+        "cache",
+        "cache_reference_preview",
+        "design",
+        "preview",
+        "reference"
+      ],
+      "title": "Cache Reference Preview",
+      "tool_name": "cache_reference_preview",
+      "triggers": [
+        "cache reference preview",
+        "design"
+      ]
+    },
+    {
+      "cost_hint": "medium",
+      "follow_up_paths": [
+        "README.md",
+        "references/visual-verification.md",
+        "skills/deterministic-verification/SKILL.md"
+      ],
+      "id": "cancel_verification_run",
+      "kind": "mcp_tool",
+      "path": "scripts/agentiux_dev_mcp.py",
+      "primary_surface": "mcp",
+      "read_only": false,
+      "related_routes": [
+        "verification"
+      ],
+      "required_inputs": [
+        "workspacePath",
+        "runId"
+      ],
+      "returns": "Structured mutation result payload.",
+      "summary": "Cancel a running verification run.",
+      "tags": [
+        "cancel",
+        "cancel_verification_run",
+        "run",
+        "verification"
+      ],
+      "title": "Cancel Verification Run",
+      "tool_name": "cancel_verification_run",
+      "triggers": [
+        "cancel verification run",
+        "verification"
+      ]
+    },
+    {
+      "cost_hint": "low",
+      "follow_up_paths": [
+        "references/command-surface.md",
+        "references/workflow-kernel.md",
+        "skills/workspace-kernel/SKILL.md"
+      ],
+      "id": "close_current_workstream",
+      "kind": "mcp_tool",
+      "path": "scripts/agentiux_dev_mcp.py",
+      "primary_surface": "mcp",
+      "read_only": false,
+      "related_routes": [
+        "workstream"
+      ],
+      "required_inputs": [
+        "workspacePath"
+      ],
+      "returns": "Structured mutation result payload.",
+      "summary": "Close the current workstream and mark it completed or archived.",
+      "tags": [
+        "close",
+        "close_current_workstream",
+        "current",
+        "workstream"
+      ],
+      "title": "Close Current Workstream",
+      "tool_name": "close_current_workstream",
+      "triggers": [
+        "close current workstream",
+        "workstream"
+      ]
+    },
+    {
+      "cost_hint": "low",
+      "follow_up_paths": [
+        "README.md",
+        "references/command-surface.md",
+        "references/visual-verification.md"
+      ],
+      "id": "close_task",
+      "kind": "mcp_tool",
+      "path": "scripts/agentiux_dev_mcp.py",
+      "primary_surface": "mcp",
+      "read_only": false,
+      "related_routes": [
+        "verification",
+        "workstream"
+      ],
+      "required_inputs": [
+        "workspacePath"
+      ],
+      "returns": "Structured mutation result payload.",
+      "summary": "Close a task and optionally persist a verification summary.",
+      "tags": [
+        "close",
+        "close_task",
+        "task",
+        "verification",
+        "workstream"
+      ],
+      "title": "Close Task",
+      "tool_name": "close_task",
+      "triggers": [
+        "close task",
+        "verification",
+        "workstream"
+      ]
+    },
+    {
+      "cost_hint": "low",
+      "follow_up_paths": [
+        "README.md",
+        "references/command-surface.md",
+        "skills/git-ops/SKILL.md"
+      ],
+      "id": "create_git_branch",
+      "kind": "mcp_tool",
+      "path": "scripts/agentiux_dev_mcp.py",
+      "primary_surface": "mcp",
+      "read_only": false,
+      "related_routes": [
+        "git"
+      ],
+      "required_inputs": [
+        "repoRoot",
+        "branchName"
+      ],
+      "returns": "Structured mutation result payload.",
+      "summary": "Create or switch to a local branch after explicit confirmation.",
+      "tags": [
+        "branch",
+        "create",
+        "create_git_branch",
+        "git"
+      ],
+      "title": "Create Git Branch",
+      "tool_name": "create_git_branch",
+      "triggers": [
+        "create git branch",
+        "git"
+      ]
+    },
+    {
+      "cost_hint": "low",
+      "follow_up_paths": [
+        "README.md",
+        "references/command-surface.md",
+        "skills/git-ops/SKILL.md"
+      ],
+      "id": "create_git_commit",
+      "kind": "mcp_tool",
+      "path": "scripts/agentiux_dev_mcp.py",
+      "primary_surface": "mcp",
+      "read_only": false,
+      "related_routes": [
+        "git"
+      ],
+      "required_inputs": [
+        "repoRoot",
+        "message"
+      ],
+      "returns": "Structured mutation result payload.",
+      "summary": "Create a local git commit from the currently staged changes after explicit confirmation.",
+      "tags": [
+        "commit",
+        "create",
+        "create_git_commit",
+        "git"
+      ],
+      "title": "Create Git Commit",
+      "tool_name": "create_git_commit",
+      "triggers": [
+        "create git commit",
+        "git"
+      ]
+    },
+    {
+      "cost_hint": "low",
+      "follow_up_paths": [
+        "README.md",
+        "references/command-surface.md",
+        "skills/git-ops/SKILL.md"
+      ],
+      "id": "create_git_worktree",
+      "kind": "mcp_tool",
+      "path": "scripts/agentiux_dev_mcp.py",
+      "primary_surface": "mcp",
+      "read_only": false,
+      "related_routes": [
+        "git"
+      ],
+      "required_inputs": [
+        "repoRoot",
+        "path",
+        "branchName"
+      ],
+      "returns": "Structured mutation result payload.",
+      "summary": "Create a linked git worktree on a new branch after explicit confirmation.",
+      "tags": [
+        "create",
+        "create_git_worktree",
+        "git",
+        "worktree"
+      ],
+      "title": "Create Git Worktree",
+      "tool_name": "create_git_worktree",
+      "triggers": [
+        "create git worktree",
+        "git"
+      ]
+    },
+    {
+      "cost_hint": "low",
+      "follow_up_paths": [],
+      "id": "create_starter",
+      "kind": "mcp_tool",
+      "path": "scripts/agentiux_dev_mcp.py",
+      "primary_surface": "mcp",
+      "read_only": false,
+      "related_routes": [],
+      "required_inputs": [
+        "presetId",
+        "destinationRoot",
+        "projectName"
+      ],
+      "returns": "Structured mutation result payload.",
+      "summary": "Create a greenfield project from a curated starter preset using the official upstream CLI only.",
+      "tags": [
+        "create",
+        "create_starter",
+        "starter"
+      ],
+      "title": "Create Starter",
+      "tool_name": "create_starter",
+      "triggers": [
+        "create starter"
+      ]
+    },
+    {
+      "cost_hint": "low",
+      "follow_up_paths": [
+        "references/command-surface.md",
+        "references/workflow-kernel.md",
+        "skills/workspace-kernel/SKILL.md"
+      ],
+      "id": "create_task",
+      "kind": "mcp_tool",
+      "path": "scripts/agentiux_dev_mcp.py",
+      "primary_surface": "mcp",
+      "read_only": false,
+      "related_routes": [
+        "workstream"
+      ],
+      "required_inputs": [
+        "workspacePath",
+        "title",
+        "objective"
+      ],
+      "returns": "Structured mutation result payload.",
+      "summary": "Create a lightweight task for targeted work without starting a full workstream.",
+      "tags": [
+        "create",
+        "create_task",
+        "task",
+        "workstream"
+      ],
+      "title": "Create Task",
+      "tool_name": "create_task",
+      "triggers": [
+        "create task",
+        "workstream"
+      ]
+    },
+    {
+      "cost_hint": "low",
+      "follow_up_paths": [
+        "references/command-surface.md",
+        "references/workflow-kernel.md",
+        "skills/workspace-kernel/SKILL.md"
+      ],
+      "id": "create_workstream",
+      "kind": "mcp_tool",
+      "path": "scripts/agentiux_dev_mcp.py",
+      "primary_surface": "mcp",
+      "read_only": false,
+      "related_routes": [
+        "workstream"
+      ],
+      "required_inputs": [
+        "workspacePath",
+        "title"
+      ],
+      "returns": "Structured mutation result payload.",
+      "summary": "Create a named workstream container with its own external state and an empty stage register that still requires explicit stage-plan confirmation.",
+      "tags": [
+        "create",
+        "create_workstream",
+        "workstream"
+      ],
+      "title": "Create Workstream",
+      "tool_name": "create_workstream",
+      "triggers": [
+        "create workstream",
+        "workstream"
+      ]
+    },
+    {
+      "cost_hint": "low",
+      "follow_up_paths": [
+        "README.md",
+        "references/command-surface.md",
+        "skills/git-ops/SKILL.md"
+      ],
+      "id": "detect_commit_style",
+      "kind": "mcp_tool",
+      "path": "scripts/agentiux_dev_mcp.py",
+      "primary_surface": "mcp",
+      "read_only": true,
+      "related_routes": [
+        "git"
+      ],
+      "required_inputs": [
+        "repoRoot"
+      ],
+      "returns": "Structured JSON payload for inspection and routing.",
+      "summary": "Inspect git history and commitlint-style config to determine the repository commit message style.",
+      "tags": [
+        "commit",
+        "detect",
+        "detect_commit_style",
+        "git",
+        "style"
+      ],
+      "title": "Detect Commit Style",
+      "tool_name": "detect_commit_style",
+      "triggers": [
+        "detect commit style",
+        "git"
+      ]
+    },
+    {
+      "cost_hint": "low",
+      "follow_up_paths": [
+        "references/command-surface.md",
+        "references/workflow-kernel.md",
+        "skills/workspace-kernel/SKILL.md"
+      ],
+      "id": "detect_workspace",
+      "kind": "mcp_tool",
+      "path": "scripts/agentiux_dev_mcp.py",
+      "primary_surface": "mcp",
+      "read_only": true,
+      "related_routes": [
+        "workstream"
+      ],
+      "required_inputs": [
+        "workspacePath"
+      ],
+      "returns": "Structured JSON payload for inspection and routing.",
+      "summary": "Detect supported stacks, signals, and selected profile packs for a workspace path.",
+      "tags": [
+        "detect",
+        "detect_workspace",
+        "workspace",
+        "workstream"
+      ],
+      "title": "Detect Workspace",
+      "tool_name": "detect_workspace",
+      "triggers": [
+        "detect workspace",
+        "workstream"
+      ]
+    },
+    {
+      "cost_hint": "low",
+      "follow_up_paths": [
+        "README.md",
+        "references/command-surface.md",
+        "references/design-workflow.md"
+      ],
+      "id": "get_active_brief",
+      "kind": "mcp_tool",
+      "path": "scripts/agentiux_dev_mcp.py",
+      "primary_surface": "mcp",
+      "read_only": true,
+      "related_routes": [
+        "design",
+        "workstream"
+      ],
+      "required_inputs": [
+        "workspacePath"
+      ],
+      "returns": "Structured JSON payload for inspection and routing.",
+      "summary": "Read the current external StageExecutionBrief or TaskBrief markdown for a workspace.",
+      "tags": [
+        "active",
+        "brief",
+        "design",
+        "get",
+        "get_active_brief",
+        "workstream"
+      ],
+      "title": "Get Active Brief",
+      "tool_name": "get_active_brief",
+      "triggers": [
+        "design",
+        "get active brief",
+        "workstream"
+      ]
+    },
+    {
+      "cost_hint": "low",
+      "follow_up_paths": [],
+      "id": "get_command_aliases",
+      "kind": "mcp_tool",
+      "path": "scripts/agentiux_dev_mcp.py",
+      "primary_surface": "mcp",
+      "read_only": true,
+      "related_routes": [],
+      "required_inputs": [],
+      "returns": "Structured JSON payload for inspection and routing.",
+      "summary": "Return canonical command surface aliases used for runtime language matching.",
+      "tags": [
+        "aliases",
+        "command",
+        "get",
+        "get_command_aliases"
+      ],
+      "title": "Get Command Aliases",
+      "tool_name": "get_command_aliases",
+      "triggers": [
+        "get command aliases"
+      ]
+    },
+    {
+      "cost_hint": "medium",
+      "follow_up_paths": [
+        "references/command-surface.md",
+        "references/workflow-kernel.md",
+        "skills/workspace-kernel/SKILL.md"
+      ],
+      "id": "get_current_audit",
+      "kind": "mcp_tool",
+      "path": "scripts/agentiux_dev_mcp.py",
+      "primary_surface": "mcp",
+      "read_only": true,
+      "related_routes": [
+        "workstream"
+      ],
+      "required_inputs": [
+        "workspacePath"
+      ],
+      "returns": "Structured JSON payload for inspection and routing.",
+      "summary": "Read the latest persisted repository audit for a workspace.",
+      "tags": [
+        "audit",
+        "current",
+        "get",
+        "get_current_audit",
+        "workstream"
+      ],
+      "title": "Get Current Audit",
+      "tool_name": "get_current_audit",
+      "triggers": [
+        "get current audit",
+        "workstream"
+      ]
+    },
+    {
+      "cost_hint": "low",
+      "follow_up_paths": [
+        "references/command-surface.md",
+        "references/workflow-kernel.md",
+        "skills/workspace-kernel/SKILL.md"
+      ],
+      "id": "get_current_task",
+      "kind": "mcp_tool",
+      "path": "scripts/agentiux_dev_mcp.py",
+      "primary_surface": "mcp",
+      "read_only": true,
+      "related_routes": [
+        "workstream"
+      ],
+      "required_inputs": [
+        "workspacePath"
+      ],
+      "returns": "Structured JSON payload for inspection and routing.",
+      "summary": "Read the current task if task mode is active.",
+      "tags": [
+        "current",
+        "get",
+        "get_current_task",
+        "task",
+        "workstream"
+      ],
+      "title": "Get Current Task",
+      "tool_name": "get_current_task",
+      "triggers": [
+        "get current task",
+        "workstream"
+      ]
+    },
+    {
+      "cost_hint": "medium",
+      "follow_up_paths": [
+        "references/command-surface.md",
+        "references/workflow-kernel.md",
+        "skills/workspace-kernel/SKILL.md"
+      ],
+      "id": "get_current_upgrade_plan",
+      "kind": "mcp_tool",
+      "path": "scripts/agentiux_dev_mcp.py",
+      "primary_surface": "mcp",
+      "read_only": true,
+      "related_routes": [
+        "workstream"
+      ],
+      "required_inputs": [
+        "workspacePath"
+      ],
+      "returns": "Structured JSON payload for inspection and routing.",
+      "summary": "Read the latest persisted upgrade plan for a workspace.",
+      "tags": [
+        "current",
+        "get",
+        "get_current_upgrade_plan",
+        "plan",
+        "upgrade",
+        "workstream"
+      ],
+      "title": "Get Current Upgrade Plan",
+      "tool_name": "get_current_upgrade_plan",
+      "triggers": [
+        "get current upgrade plan",
+        "workstream"
+      ]
+    },
+    {
+      "cost_hint": "low",
+      "follow_up_paths": [
+        "references/command-surface.md",
+        "references/workflow-kernel.md",
+        "skills/workspace-kernel/SKILL.md"
+      ],
+      "id": "get_current_workstream",
+      "kind": "mcp_tool",
+      "path": "scripts/agentiux_dev_mcp.py",
+      "primary_surface": "mcp",
+      "read_only": true,
+      "related_routes": [
+        "workstream"
+      ],
+      "required_inputs": [
+        "workspacePath"
+      ],
+      "returns": "Structured JSON payload for inspection and routing.",
+      "summary": "Read the current workstream summary and register.",
+      "tags": [
+        "current",
+        "get",
+        "get_current_workstream",
+        "workstream"
+      ],
+      "title": "Get Current Workstream",
+      "tool_name": "get_current_workstream",
+      "triggers": [
+        "get current workstream",
+        "workstream"
+      ]
+    },
+    {
+      "cost_hint": "medium",
+      "follow_up_paths": [
+        "README.md",
+        "references/command-surface.md",
+        "references/dashboard.md"
+      ],
+      "id": "get_dashboard_snapshot",
+      "kind": "mcp_tool",
+      "path": "scripts/agentiux_dev_mcp.py",
+      "primary_surface": "mcp",
+      "read_only": true,
+      "related_routes": [
+        "plugin-dev",
+        "release",
+        "workstream"
+      ],
+      "required_inputs": [],
+      "returns": "Structured JSON payload for inspection and routing.",
+      "summary": "Return the overview and optional workspace detail payload used by the local GUI.",
+      "tags": [
+        "dashboard",
+        "get",
+        "get_dashboard_snapshot",
+        "plugin-dev",
+        "release",
+        "snapshot",
+        "workstream"
+      ],
+      "title": "Get Dashboard Snapshot",
+      "tool_name": "get_dashboard_snapshot",
+      "triggers": [
+        "get dashboard snapshot",
+        "plugin-dev",
+        "release",
+        "workstream"
+      ]
+    },
+    {
+      "cost_hint": "low",
+      "follow_up_paths": [
+        "README.md",
+        "references/command-surface.md",
+        "references/design-workflow.md"
+      ],
+      "id": "get_design_brief",
+      "kind": "mcp_tool",
+      "path": "scripts/agentiux_dev_mcp.py",
+      "primary_surface": "mcp",
+      "read_only": true,
+      "related_routes": [
+        "design",
+        "workstream"
+      ],
+      "required_inputs": [
+        "workspacePath"
+      ],
+      "returns": "Structured JSON payload for inspection and routing.",
+      "summary": "Read the persisted DesignBrief for a workspace or explicit workstream.",
+      "tags": [
+        "brief",
+        "design",
+        "get",
+        "get_design_brief",
+        "workstream"
+      ],
+      "title": "Get Design Brief",
+      "tool_name": "get_design_brief",
+      "triggers": [
+        "design",
+        "get design brief",
+        "workstream"
+      ]
+    },
+    {
+      "cost_hint": "low",
+      "follow_up_paths": [
+        "README.md",
+        "references/command-surface.md",
+        "references/design-workflow.md"
+      ],
+      "id": "get_design_handoff",
+      "kind": "mcp_tool",
+      "path": "scripts/agentiux_dev_mcp.py",
+      "primary_surface": "mcp",
+      "read_only": true,
+      "related_routes": [
+        "design",
+        "workstream"
+      ],
+      "required_inputs": [
+        "workspacePath"
+      ],
+      "returns": "Structured JSON payload for inspection and routing.",
+      "summary": "Read a persisted design handoff for a workspace or explicit workstream.",
+      "tags": [
+        "design",
+        "get",
+        "get_design_handoff",
+        "handoff",
+        "workstream"
+      ],
+      "title": "Get Design Handoff",
+      "tool_name": "get_design_handoff",
+      "triggers": [
+        "design",
+        "get design handoff",
+        "workstream"
+      ]
+    },
+    {
+      "cost_hint": "low",
+      "follow_up_paths": [
+        "README.md",
+        "references/workflow-kernel.md",
+        "skills/plugin-platform/SKILL.md"
+      ],
+      "id": "get_plugin_stats",
+      "kind": "mcp_tool",
+      "path": "scripts/agentiux_dev_mcp.py",
+      "primary_surface": "mcp",
+      "read_only": true,
+      "related_routes": [
+        "plugin-dev"
+      ],
+      "required_inputs": [],
+      "returns": "Structured JSON payload for inspection and routing.",
+      "summary": "Return aggregate plugin statistics across initialized workspaces.",
+      "tags": [
+        "get",
+        "get_plugin_stats",
+        "plugin",
+        "plugin-dev",
+        "stats"
+      ],
+      "title": "Get Plugin Stats",
+      "tool_name": "get_plugin_stats",
+      "triggers": [
+        "get plugin stats",
+        "plugin-dev"
+      ]
+    },
+    {
+      "cost_hint": "low",
+      "follow_up_paths": [
+        "README.md",
+        "references/command-surface.md",
+        "references/design-workflow.md"
+      ],
+      "id": "get_reference_board",
+      "kind": "mcp_tool",
+      "path": "scripts/agentiux_dev_mcp.py",
+      "primary_surface": "mcp",
+      "read_only": true,
+      "related_routes": [
+        "design",
+        "workstream"
+      ],
+      "required_inputs": [
+        "workspacePath"
+      ],
+      "returns": "Structured JSON payload for inspection and routing.",
+      "summary": "Read a persisted reference board for a workspace or explicit workstream.",
+      "tags": [
+        "board",
+        "design",
+        "get",
+        "get_reference_board",
+        "reference",
+        "workstream"
+      ],
+      "title": "Get Reference Board",
+      "tool_name": "get_reference_board",
+      "triggers": [
+        "design",
+        "get reference board",
+        "workstream"
+      ]
+    },
+    {
+      "cost_hint": "low",
+      "follow_up_paths": [
+        "references/command-surface.md",
+        "references/workflow-kernel.md",
+        "skills/workspace-kernel/SKILL.md"
+      ],
+      "id": "get_stage_register",
+      "kind": "mcp_tool",
+      "path": "scripts/agentiux_dev_mcp.py",
+      "primary_surface": "mcp",
+      "read_only": true,
+      "related_routes": [
+        "workstream"
+      ],
+      "required_inputs": [
+        "workspacePath"
+      ],
+      "returns": "Structured JSON payload for inspection and routing.",
+      "summary": "Read the external StageRegister document for a workspace or explicit workstream.",
+      "tags": [
+        "get",
+        "get_stage_register",
+        "register",
+        "stage",
+        "workstream"
+      ],
+      "title": "Get Stage Register",
+      "tool_name": "get_stage_register",
+      "triggers": [
+        "get stage register",
+        "workstream"
+      ]
+    },
+    {
+      "cost_hint": "low",
+      "follow_up_paths": [
+        "references/command-surface.md",
+        "references/workflow-kernel.md",
+        "skills/workspace-kernel/SKILL.md"
+      ],
+      "id": "get_state_paths",
+      "kind": "mcp_tool",
+      "path": "scripts/agentiux_dev_mcp.py",
+      "primary_surface": "mcp",
+      "read_only": true,
+      "related_routes": [
+        "workstream"
+      ],
+      "required_inputs": [
+        "workspacePath"
+      ],
+      "returns": "Structured JSON payload for inspection and routing.",
+      "summary": "Return the absolute external state paths for a workspace.",
+      "tags": [
+        "get",
+        "get_state_paths",
+        "paths",
+        "state",
+        "workstream"
+      ],
+      "title": "Get State Paths",
+      "tool_name": "get_state_paths",
+      "triggers": [
+        "get state paths",
+        "workstream"
+      ]
+    },
+    {
+      "cost_hint": "low",
+      "follow_up_paths": [
+        "references/command-surface.md",
+        "references/workflow-kernel.md",
+        "skills/workspace-kernel/SKILL.md"
+      ],
+      "id": "get_task",
+      "kind": "mcp_tool",
+      "path": "scripts/agentiux_dev_mcp.py",
+      "primary_surface": "mcp",
+      "read_only": true,
+      "related_routes": [
+        "workstream"
+      ],
+      "required_inputs": [
+        "workspacePath",
+        "taskId"
+      ],
+      "returns": "Structured JSON payload for inspection and routing.",
+      "summary": "Read a task by id.",
+      "tags": [
+        "get",
+        "get_task",
+        "task",
+        "workstream"
+      ],
+      "title": "Get Task",
+      "tool_name": "get_task",
+      "triggers": [
+        "get task",
+        "workstream"
+      ]
+    },
+    {
+      "cost_hint": "low",
+      "follow_up_paths": [
+        "README.md",
+        "references/visual-verification.md",
+        "skills/deterministic-verification/SKILL.md"
+      ],
+      "id": "get_verification_events",
+      "kind": "mcp_tool",
+      "path": "scripts/agentiux_dev_mcp.py",
+      "primary_surface": "mcp",
+      "read_only": true,
+      "related_routes": [
+        "verification"
+      ],
+      "required_inputs": [
+        "workspacePath",
+        "runId"
+      ],
+      "returns": "Structured JSON payload for inspection and routing.",
+      "summary": "Read recent structured verification events for a run.",
+      "tags": [
+        "events",
+        "get",
+        "get_verification_events",
+        "verification"
+      ],
+      "title": "Get Verification Events",
+      "tool_name": "get_verification_events",
+      "triggers": [
+        "get verification events",
+        "verification"
+      ]
+    },
+    {
+      "cost_hint": "low",
+      "follow_up_paths": [
+        "README.md",
+        "references/visual-verification.md",
+        "skills/deterministic-verification/SKILL.md"
+      ],
+      "id": "get_verification_log",
+      "kind": "mcp_tool",
+      "path": "scripts/agentiux_dev_mcp.py",
+      "primary_surface": "mcp",
+      "read_only": true,
+      "related_routes": [
+        "verification"
+      ],
+      "required_inputs": [
+        "workspacePath",
+        "runId"
+      ],
+      "returns": "Structured JSON payload for inspection and routing.",
+      "summary": "Read the tail of stdout, stderr, or Android logcat for a verification run.",
+      "tags": [
+        "get",
+        "get_verification_log",
+        "log",
+        "verification"
+      ],
+      "title": "Get Verification Log",
+      "tool_name": "get_verification_log",
+      "triggers": [
+        "get verification log",
+        "verification"
+      ]
+    },
+    {
+      "cost_hint": "low",
+      "follow_up_paths": [
+        "README.md",
+        "references/command-surface.md",
+        "references/visual-verification.md"
+      ],
+      "id": "get_verification_recipes",
+      "kind": "mcp_tool",
+      "path": "scripts/agentiux_dev_mcp.py",
+      "primary_surface": "mcp",
+      "read_only": true,
+      "related_routes": [
+        "verification",
+        "workstream"
+      ],
+      "required_inputs": [
+        "workspacePath"
+      ],
+      "returns": "Structured JSON payload for inspection and routing.",
+      "summary": "Read the verification recipe document for a workspace or explicit workstream.",
+      "tags": [
+        "get",
+        "get_verification_recipes",
+        "recipes",
+        "verification",
+        "workstream"
+      ],
+      "title": "Get Verification Recipes",
+      "tool_name": "get_verification_recipes",
+      "triggers": [
+        "get verification recipes",
+        "verification",
+        "workstream"
+      ]
+    },
+    {
+      "cost_hint": "medium",
+      "follow_up_paths": [
+        "README.md",
+        "references/visual-verification.md",
+        "skills/deterministic-verification/SKILL.md"
+      ],
+      "id": "get_verification_run",
+      "kind": "mcp_tool",
+      "path": "scripts/agentiux_dev_mcp.py",
+      "primary_surface": "mcp",
+      "read_only": true,
+      "related_routes": [
+        "verification"
+      ],
+      "required_inputs": [
+        "workspacePath",
+        "runId"
+      ],
+      "returns": "Structured JSON payload for inspection and routing.",
+      "summary": "Read a single verification run with health metadata.",
+      "tags": [
+        "get",
+        "get_verification_run",
+        "run",
+        "verification"
+      ],
+      "title": "Get Verification Run",
+      "tool_name": "get_verification_run",
+      "triggers": [
+        "get verification run",
+        "verification"
+      ]
+    },
+    {
+      "cost_hint": "medium",
+      "follow_up_paths": [
+        "README.md",
+        "references/command-surface.md",
+        "references/design-workflow.md"
+      ],
+      "id": "get_workspace_detail",
+      "kind": "mcp_tool",
+      "path": "scripts/agentiux_dev_mcp.py",
+      "primary_surface": "mcp",
+      "read_only": true,
+      "related_routes": [
+        "design",
+        "workstream"
+      ],
+      "required_inputs": [
+        "workspacePath"
+      ],
+      "returns": "Structured JSON payload for inspection and routing.",
+      "summary": "Return full detail for a workspace, including workstreams, tasks, stage state, briefs, design state, audits, starters, and paths.",
+      "tags": [
+        "design",
+        "detail",
+        "get",
+        "get_workspace_detail",
+        "workspace",
+        "workstream"
+      ],
+      "title": "Get Workspace Detail",
+      "tool_name": "get_workspace_detail",
+      "triggers": [
+        "design",
+        "get workspace detail",
+        "workstream"
+      ]
+    },
+    {
+      "cost_hint": "low",
+      "follow_up_paths": [
+        "references/command-surface.md",
+        "references/workflow-kernel.md",
+        "skills/workspace-kernel/SKILL.md"
+      ],
+      "id": "get_workspace_state",
+      "kind": "mcp_tool",
+      "path": "scripts/agentiux_dev_mcp.py",
+      "primary_surface": "mcp",
+      "read_only": true,
+      "related_routes": [
+        "workstream"
+      ],
+      "required_inputs": [
+        "workspacePath"
+      ],
+      "returns": "Structured JSON payload for inspection and routing.",
+      "summary": "Read the external WorkspaceState document for a workspace.",
+      "tags": [
+        "get",
+        "get_workspace_state",
+        "state",
+        "workspace",
+        "workstream"
+      ],
+      "title": "Get Workspace State",
+      "tool_name": "get_workspace_state",
+      "triggers": [
+        "get workspace state",
+        "workstream"
+      ]
+    },
+    {
+      "cost_hint": "low",
+      "follow_up_paths": [
+        "references/command-surface.md",
+        "references/workflow-kernel.md",
+        "skills/workspace-kernel/SKILL.md"
+      ],
+      "id": "init_workspace",
+      "kind": "mcp_tool",
+      "path": "scripts/agentiux_dev_mcp.py",
+      "primary_surface": "mcp",
+      "read_only": false,
+      "related_routes": [
+        "workstream"
+      ],
+      "required_inputs": [
+        "workspacePath"
+      ],
+      "returns": "Structured mutation result payload.",
+      "summary": "Initialize external AgentiUX Dev state for a workspace after explicit confirmation.",
+      "tags": [
+        "init",
+        "init_workspace",
+        "workspace",
+        "workstream"
+      ],
+      "title": "Init Workspace",
+      "tool_name": "init_workspace",
+      "triggers": [
+        "init workspace",
+        "workstream"
+      ]
+    },
+    {
+      "cost_hint": "low",
+      "follow_up_paths": [
+        "README.md",
+        "references/command-surface.md",
+        "skills/git-ops/SKILL.md"
+      ],
+      "id": "inspect_git_state",
+      "kind": "mcp_tool",
+      "path": "scripts/agentiux_dev_mcp.py",
+      "primary_surface": "mcp",
+      "read_only": true,
+      "related_routes": [
+        "git"
+      ],
+      "required_inputs": [
+        "repoRoot"
+      ],
+      "returns": "Structured JSON payload for inspection and routing.",
+      "summary": "Inspect branch, divergence, changed files, and staged state for a local repository.",
+      "tags": [
+        "git",
+        "inspect",
+        "inspect_git_state",
+        "state"
+      ],
+      "title": "Inspect Git State",
+      "tool_name": "inspect_git_state",
+      "triggers": [
+        "git",
+        "inspect git state"
+      ]
+    },
+    {
+      "cost_hint": "low",
+      "follow_up_paths": [
+        "README.md",
+        "references/command-surface.md",
+        "references/workflow-kernel.md"
+      ],
+      "id": "install_host_requirements",
+      "kind": "mcp_tool",
+      "path": "scripts/agentiux_dev_mcp.py",
+      "primary_surface": "mcp",
+      "read_only": false,
+      "related_routes": [
+        "plugin-dev",
+        "workstream"
+      ],
+      "required_inputs": [
+        "workspacePath"
+      ],
+      "returns": "Structured mutation result payload.",
+      "summary": "Install missing host requirements for a workspace after explicit confirmation, then refresh host support state.",
+      "tags": [
+        "host",
+        "install",
+        "install_host_requirements",
+        "plugin-dev",
+        "requirements",
+        "workstream"
+      ],
+      "title": "Install Host Requirements",
+      "tool_name": "install_host_requirements",
+      "triggers": [
+        "install host requirements",
+        "plugin-dev",
+        "workstream"
+      ]
+    },
+    {
+      "cost_hint": "low",
+      "follow_up_paths": [
+        "README.md",
+        "references/command-surface.md",
+        "references/design-workflow.md"
+      ],
+      "id": "list_design_handoffs",
+      "kind": "mcp_tool",
+      "path": "scripts/agentiux_dev_mcp.py",
+      "primary_surface": "mcp",
+      "read_only": true,
+      "related_routes": [
+        "design",
+        "workstream"
+      ],
+      "required_inputs": [
+        "workspacePath"
+      ],
+      "returns": "Structured JSON payload for inspection and routing.",
+      "summary": "List persisted design handoffs for a workspace or explicit workstream.",
+      "tags": [
+        "design",
+        "handoffs",
+        "list",
+        "list_design_handoffs",
+        "workstream"
+      ],
+      "title": "List Design Handoffs",
+      "tool_name": "list_design_handoffs",
+      "triggers": [
+        "design",
+        "list design handoffs",
+        "workstream"
+      ]
+    },
+    {
+      "cost_hint": "low",
+      "follow_up_paths": [
+        "README.md",
+        "references/command-surface.md",
+        "skills/git-ops/SKILL.md"
+      ],
+      "id": "list_git_worktrees",
+      "kind": "mcp_tool",
+      "path": "scripts/agentiux_dev_mcp.py",
+      "primary_surface": "mcp",
+      "read_only": true,
+      "related_routes": [
+        "git"
+      ],
+      "required_inputs": [
+        "repoRoot"
+      ],
+      "returns": "Structured JSON payload for inspection and routing.",
+      "summary": "Inspect linked git worktrees for a local repository.",
+      "tags": [
+        "git",
+        "list",
+        "list_git_worktrees",
+        "worktrees"
+      ],
+      "title": "List Git Worktrees",
+      "tool_name": "list_git_worktrees",
+      "triggers": [
+        "git",
+        "list git worktrees"
+      ]
+    },
+    {
+      "cost_hint": "low",
+      "follow_up_paths": [
+        "README.md",
+        "references/command-surface.md",
+        "references/design-workflow.md"
+      ],
+      "id": "list_reference_boards",
+      "kind": "mcp_tool",
+      "path": "scripts/agentiux_dev_mcp.py",
+      "primary_surface": "mcp",
+      "read_only": true,
+      "related_routes": [
+        "design",
+        "workstream"
+      ],
+      "required_inputs": [
+        "workspacePath"
+      ],
+      "returns": "Structured JSON payload for inspection and routing.",
+      "summary": "List persisted reference boards for a workspace or explicit workstream.",
+      "tags": [
+        "boards",
+        "design",
+        "list",
+        "list_reference_boards",
+        "reference",
+        "workstream"
+      ],
+      "title": "List Reference Boards",
+      "tool_name": "list_reference_boards",
+      "triggers": [
+        "design",
+        "list reference boards",
+        "workstream"
+      ]
+    },
+    {
+      "cost_hint": "low",
+      "follow_up_paths": [
+        "references/command-surface.md",
+        "references/workflow-kernel.md",
+        "skills/workspace-kernel/SKILL.md"
+      ],
+      "id": "list_stages",
+      "kind": "mcp_tool",
+      "path": "scripts/agentiux_dev_mcp.py",
+      "primary_surface": "mcp",
+      "read_only": true,
+      "related_routes": [
+        "workstream"
+      ],
+      "required_inputs": [
+        "workspacePath"
+      ],
+      "returns": "Structured JSON payload for inspection and routing.",
+      "summary": "List stage ids, titles, statuses, and paths for the workspace or explicit workstream.",
+      "tags": [
+        "list",
+        "list_stages",
+        "stages",
+        "workstream"
+      ],
+      "title": "List Stages",
+      "tool_name": "list_stages",
+      "triggers": [
+        "list stages",
+        "workstream"
+      ]
+    },
+    {
+      "cost_hint": "low",
+      "follow_up_paths": [],
+      "id": "list_starter_presets",
+      "kind": "mcp_tool",
+      "path": "scripts/agentiux_dev_mcp.py",
+      "primary_surface": "mcp",
+      "read_only": true,
+      "related_routes": [],
+      "required_inputs": [],
+      "returns": "Structured JSON payload for inspection and routing.",
+      "summary": "List curated starter presets and advisory metadata for thin-wrapper greenfield creation.",
+      "tags": [
+        "list",
+        "list_starter_presets",
+        "presets",
+        "starter"
+      ],
+      "title": "List Starter Presets",
+      "tool_name": "list_starter_presets",
+      "triggers": [
+        "list starter presets"
+      ]
+    },
+    {
+      "cost_hint": "low",
+      "follow_up_paths": [],
+      "id": "list_starter_runs",
+      "kind": "mcp_tool",
+      "path": "scripts/agentiux_dev_mcp.py",
+      "primary_surface": "mcp",
+      "read_only": true,
+      "related_routes": [],
+      "required_inputs": [],
+      "returns": "Structured JSON payload for inspection and routing.",
+      "summary": "List recent starter creation runs.",
+      "tags": [
+        "list",
+        "list_starter_runs",
+        "runs",
+        "starter"
+      ],
+      "title": "List Starter Runs",
+      "tool_name": "list_starter_runs",
+      "triggers": [
+        "list starter runs"
+      ]
+    },
+    {
+      "cost_hint": "low",
+      "follow_up_paths": [
+        "references/command-surface.md",
+        "references/workflow-kernel.md",
+        "skills/workspace-kernel/SKILL.md"
+      ],
+      "id": "list_tasks",
+      "kind": "mcp_tool",
+      "path": "scripts/agentiux_dev_mcp.py",
+      "primary_surface": "mcp",
+      "read_only": true,
+      "related_routes": [
+        "workstream"
+      ],
+      "required_inputs": [
+        "workspacePath"
+      ],
+      "returns": "Structured JSON payload for inspection and routing.",
+      "summary": "List lightweight tasks for a workspace.",
+      "tags": [
+        "list",
+        "list_tasks",
+        "tasks",
+        "workstream"
+      ],
+      "title": "List Tasks",
+      "tool_name": "list_tasks",
+      "triggers": [
+        "list tasks",
+        "workstream"
+      ]
+    },
+    {
+      "cost_hint": "medium",
+      "follow_up_paths": [
+        "README.md",
+        "references/visual-verification.md",
+        "skills/deterministic-verification/SKILL.md"
+      ],
+      "id": "list_verification_runs",
+      "kind": "mcp_tool",
+      "path": "scripts/agentiux_dev_mcp.py",
+      "primary_surface": "mcp",
+      "read_only": true,
+      "related_routes": [
+        "verification"
+      ],
+      "required_inputs": [
+        "workspacePath"
+      ],
+      "returns": "Structured JSON payload for inspection and routing.",
+      "summary": "List verification runs with explicit latest and active run metadata.",
+      "tags": [
+        "list",
+        "list_verification_runs",
+        "runs",
+        "verification"
+      ],
+      "title": "List Verification Runs",
+      "tool_name": "list_verification_runs",
+      "triggers": [
+        "list verification runs",
+        "verification"
+      ]
+    },
+    {
+      "cost_hint": "medium",
+      "follow_up_paths": [
+        "README.md",
+        "references/dashboard.md",
+        "references/workflow-kernel.md"
+      ],
+      "id": "list_workspaces",
+      "kind": "mcp_tool",
+      "path": "scripts/agentiux_dev_mcp.py",
+      "primary_surface": "mcp",
+      "read_only": true,
+      "related_routes": [
+        "plugin-dev",
+        "release"
+      ],
+      "required_inputs": [],
+      "returns": "Structured JSON payload for inspection and routing.",
+      "summary": "List all initialized workspaces with dashboard-oriented summaries.",
+      "tags": [
+        "list",
+        "list_workspaces",
+        "plugin-dev",
+        "release",
+        "workspaces"
+      ],
+      "title": "List Workspaces",
+      "tool_name": "list_workspaces",
+      "triggers": [
+        "list workspaces",
+        "plugin-dev",
+        "release"
+      ]
+    },
+    {
+      "cost_hint": "low",
+      "follow_up_paths": [
+        "references/command-surface.md",
+        "references/workflow-kernel.md",
+        "skills/workspace-kernel/SKILL.md"
+      ],
+      "id": "list_workstreams",
+      "kind": "mcp_tool",
+      "path": "scripts/agentiux_dev_mcp.py",
+      "primary_surface": "mcp",
+      "read_only": true,
+      "related_routes": [
+        "workstream"
+      ],
+      "required_inputs": [
+        "workspacePath"
+      ],
+      "returns": "Structured JSON payload for inspection and routing.",
+      "summary": "List workstreams for a workspace.",
+      "tags": [
+        "list",
+        "list_workstreams",
+        "workstream",
+        "workstreams"
+      ],
+      "title": "List Workstreams",
+      "tool_name": "list_workstreams",
+      "triggers": [
+        "list workstreams",
+        "workstream"
+      ]
+    },
+    {
+      "cost_hint": "low",
+      "follow_up_paths": [
+        "references/command-surface.md",
+        "references/workflow-kernel.md",
+        "skills/workspace-kernel/SKILL.md"
+      ],
+      "id": "migrate_workspace_state",
+      "kind": "mcp_tool",
+      "path": "scripts/agentiux_dev_mcp.py",
+      "primary_surface": "mcp",
+      "read_only": false,
+      "related_routes": [
+        "workstream"
+      ],
+      "required_inputs": [
+        "workspacePath"
+      ],
+      "returns": "Structured mutation result payload.",
+      "summary": "Migrate a workspace from the legacy single-register layout to workstreams and tasks.",
+      "tags": [
+        "migrate",
+        "migrate_workspace_state",
+        "state",
+        "workspace",
+        "workstream"
+      ],
+      "title": "Migrate Workspace State",
+      "tool_name": "migrate_workspace_state",
+      "triggers": [
+        "migrate workspace state",
+        "workstream"
+      ]
+    },
+    {
+      "cost_hint": "low",
+      "follow_up_paths": [
+        "README.md",
+        "references/command-surface.md",
+        "references/workflow-kernel.md"
+      ],
+      "id": "plan_git_change",
+      "kind": "mcp_tool",
+      "path": "scripts/agentiux_dev_mcp.py",
+      "primary_surface": "mcp",
+      "read_only": true,
+      "related_routes": [
+        "git",
+        "workstream"
+      ],
+      "required_inputs": [
+        "repoRoot"
+      ],
+      "returns": "Structured JSON payload for inspection and routing.",
+      "summary": "Plan the next safe local git actions from repository state plus current task or workstream context.",
+      "tags": [
+        "change",
+        "git",
+        "plan",
+        "plan_git_change",
+        "workstream"
+      ],
+      "title": "Plan Git Change",
+      "tool_name": "plan_git_change",
+      "triggers": [
+        "git",
+        "plan git change",
+        "workstream"
+      ]
+    },
+    {
+      "cost_hint": "low",
+      "follow_up_paths": [
+        "references/command-surface.md",
+        "references/workflow-kernel.md",
+        "skills/workspace-kernel/SKILL.md"
+      ],
+      "id": "preview_repair_workspace_state",
+      "kind": "mcp_tool",
+      "path": "scripts/agentiux_dev_mcp.py",
+      "primary_surface": "mcp",
+      "read_only": true,
+      "related_routes": [
+        "workstream"
+      ],
+      "required_inputs": [
+        "workspacePath"
+      ],
+      "returns": "Structured JSON payload for inspection and routing.",
+      "summary": "Preview how state repair would normalize external workspace state and remove stale infra assumptions without synthesizing new stage plans.",
+      "tags": [
+        "preview",
+        "preview_repair_workspace_state",
+        "repair",
+        "state",
+        "workspace",
+        "workstream"
+      ],
+      "title": "Preview Repair Workspace State",
+      "tool_name": "preview_repair_workspace_state",
+      "triggers": [
+        "preview repair workspace state",
+        "workstream"
+      ]
+    },
+    {
+      "cost_hint": "low",
+      "follow_up_paths": [
+        "references/command-surface.md",
+        "references/workflow-kernel.md",
+        "skills/workspace-kernel/SKILL.md"
+      ],
+      "id": "preview_workspace_init",
+      "kind": "mcp_tool",
+      "path": "scripts/agentiux_dev_mcp.py",
+      "primary_surface": "mcp",
+      "read_only": true,
+      "related_routes": [
+        "workstream"
+      ],
+      "required_inputs": [
+        "workspacePath"
+      ],
+      "returns": "Structured JSON payload for inspection and routing.",
+      "summary": "Show the external paths and detected stacks that would be created for workspace initialization.",
+      "tags": [
+        "init",
+        "preview",
+        "preview_workspace_init",
+        "workspace",
+        "workstream"
+      ],
+      "title": "Preview Workspace Init",
+      "tool_name": "preview_workspace_init",
+      "triggers": [
+        "preview workspace init",
+        "workstream"
+      ]
+    },
+    {
+      "cost_hint": "low",
+      "follow_up_paths": [
+        "README.md",
+        "references/command-surface.md",
+        "references/visual-verification.md"
+      ],
+      "id": "refresh_context_index",
+      "kind": "mcp_tool",
+      "path": "scripts/agentiux_dev_mcp.py",
+      "primary_surface": "mcp",
+      "read_only": true,
+      "related_routes": [
+        "verification",
+        "workstream"
+      ],
+      "required_inputs": [
+        "workspacePath"
+      ],
+      "returns": "Structured JSON payload for inspection and routing.",
+      "summary": "Refresh the global project context index and semantic cache metadata for a workspace.",
+      "tags": [
+        "context",
+        "index",
+        "refresh",
+        "refresh_context_index",
+        "verification",
+        "workstream"
+      ],
+      "title": "Refresh Context Index",
+      "tool_name": "refresh_context_index",
+      "triggers": [
+        "refresh context index",
+        "verification",
+        "workstream"
+      ]
+    },
+    {
+      "cost_hint": "low",
+      "follow_up_paths": [
+        "references/command-surface.md",
+        "references/workflow-kernel.md",
+        "skills/workspace-kernel/SKILL.md"
+      ],
+      "id": "repair_host_requirements",
+      "kind": "mcp_tool",
+      "path": "scripts/agentiux_dev_mcp.py",
+      "primary_surface": "mcp",
+      "read_only": false,
+      "related_routes": [
+        "workstream"
+      ],
+      "required_inputs": [
+        "workspacePath"
+      ],
+      "returns": "Structured mutation result payload.",
+      "summary": "Re-run the host requirement plan for a workspace after explicit confirmation and refresh host support state.",
+      "tags": [
+        "host",
+        "repair",
+        "repair_host_requirements",
+        "requirements",
+        "workstream"
+      ],
+      "title": "Repair Host Requirements",
+      "tool_name": "repair_host_requirements",
+      "triggers": [
+        "repair host requirements",
+        "workstream"
+      ]
+    },
+    {
+      "cost_hint": "low",
+      "follow_up_paths": [
+        "references/command-surface.md",
+        "references/workflow-kernel.md",
+        "skills/workspace-kernel/SKILL.md"
+      ],
+      "id": "repair_workspace_state",
+      "kind": "mcp_tool",
+      "path": "scripts/agentiux_dev_mcp.py",
+      "primary_surface": "mcp",
+      "read_only": false,
+      "related_routes": [
+        "workstream"
+      ],
+      "required_inputs": [
+        "workspacePath"
+      ],
+      "returns": "Structured mutation result payload.",
+      "summary": "Repair external workspace state using the current host support model and local-dev policy without auto-generating stage plans.",
+      "tags": [
+        "repair",
+        "repair_workspace_state",
+        "state",
+        "workspace",
+        "workstream"
+      ],
+      "title": "Repair Workspace State",
+      "tool_name": "repair_workspace_state",
+      "triggers": [
+        "repair workspace state",
+        "workstream"
+      ]
+    },
+    {
+      "cost_hint": "low",
+      "follow_up_paths": [
+        "README.md",
+        "references/command-surface.md",
+        "references/visual-verification.md"
+      ],
+      "id": "resolve_verification",
+      "kind": "mcp_tool",
+      "path": "scripts/agentiux_dev_mcp.py",
+      "primary_surface": "mcp",
+      "read_only": true,
+      "related_routes": [
+        "verification",
+        "workstream"
+      ],
+      "required_inputs": [
+        "workspacePath"
+      ],
+      "returns": "Structured JSON payload for inspection and routing.",
+      "summary": "Resolve the targeted verification plan for the current task or workstream without starting a run.",
+      "tags": [
+        "resolve",
+        "resolve_verification",
+        "verification",
+        "workstream"
+      ],
+      "title": "Resolve Verification",
+      "tool_name": "resolve_verification",
+      "triggers": [
+        "resolve verification",
+        "verification",
+        "workstream"
+      ]
+    },
+    {
+      "cost_hint": "low",
+      "follow_up_paths": [
+        "README.md",
+        "references/command-surface.md",
+        "references/visual-verification.md"
+      ],
+      "id": "run_verification_case",
+      "kind": "mcp_tool",
+      "path": "scripts/agentiux_dev_mcp.py",
+      "primary_surface": "mcp",
+      "read_only": false,
+      "related_routes": [
+        "verification",
+        "workstream"
+      ],
+      "required_inputs": [
+        "workspacePath",
+        "caseId"
+      ],
+      "returns": "Structured mutation result payload.",
+      "summary": "Start one deterministic verification case for a workspace or explicit workstream.",
+      "tags": [
+        "case",
+        "run",
+        "run_verification_case",
+        "verification",
+        "workstream"
+      ],
+      "title": "Run Verification Case",
+      "tool_name": "run_verification_case",
+      "triggers": [
+        "run verification case",
+        "verification",
+        "workstream"
+      ]
+    },
+    {
+      "cost_hint": "low",
+      "follow_up_paths": [
+        "README.md",
+        "references/command-surface.md",
+        "references/visual-verification.md"
+      ],
+      "id": "run_verification_suite",
+      "kind": "mcp_tool",
+      "path": "scripts/agentiux_dev_mcp.py",
+      "primary_surface": "mcp",
+      "read_only": false,
+      "related_routes": [
+        "verification",
+        "workstream"
+      ],
+      "required_inputs": [
+        "workspacePath",
+        "suiteId"
+      ],
+      "returns": "Structured mutation result payload.",
+      "summary": "Start one named deterministic verification suite for a workspace or explicit workstream.",
+      "tags": [
+        "run",
+        "run_verification_suite",
+        "suite",
+        "verification",
+        "workstream"
+      ],
+      "title": "Run Verification Suite",
+      "tool_name": "run_verification_suite",
+      "triggers": [
+        "run verification suite",
+        "verification",
+        "workstream"
+      ]
+    },
+    {
+      "cost_hint": "low",
+      "follow_up_paths": [],
+      "id": "search_context_index",
+      "kind": "mcp_tool",
+      "path": "scripts/agentiux_dev_mcp.py",
+      "primary_surface": "mcp",
+      "read_only": true,
+      "related_routes": [],
+      "required_inputs": [
+        "workspacePath",
+        "queryText"
+      ],
+      "returns": "Structured JSON payload for inspection and routing.",
+      "summary": "Search the global low-token context index for relevant repo chunks and recommended capabilities.",
+      "tags": [
+        "context",
+        "index",
+        "search",
+        "search_context_index"
+      ],
+      "title": "Search Context Index",
+      "tool_name": "search_context_index",
+      "triggers": [
+        "search context index"
+      ]
+    },
+    {
+      "cost_hint": "low",
+      "follow_up_paths": [
+        "README.md",
+        "references/command-surface.md",
+        "references/design-workflow.md"
+      ],
+      "id": "set_active_brief",
+      "kind": "mcp_tool",
+      "path": "scripts/agentiux_dev_mcp.py",
+      "primary_surface": "mcp",
+      "read_only": false,
+      "related_routes": [
+        "design",
+        "workstream"
+      ],
+      "required_inputs": [
+        "workspacePath",
+        "markdown"
+      ],
+      "returns": "Structured mutation result payload.",
+      "summary": "Persist the active StageExecutionBrief or TaskBrief markdown document for the selected workspace mode.",
+      "tags": [
+        "active",
+        "brief",
+        "design",
+        "set",
+        "set_active_brief",
+        "workstream"
+      ],
+      "title": "Set Active Brief",
+      "tool_name": "set_active_brief",
+      "triggers": [
+        "design",
+        "set active brief",
+        "workstream"
+      ]
+    },
+    {
+      "cost_hint": "low",
+      "follow_up_paths": [
+        "README.md",
+        "references/workflow-kernel.md",
+        "skills/plugin-platform/SKILL.md"
+      ],
+      "id": "show_capability_catalog",
+      "kind": "mcp_tool",
+      "path": "scripts/agentiux_dev_mcp.py",
+      "primary_surface": "mcp",
+      "read_only": true,
+      "related_routes": [
+        "plugin-dev"
+      ],
+      "required_inputs": [],
+      "returns": "Structured JSON payload for inspection and routing.",
+      "summary": "Show the compact low-token catalog for skills, MCP tools, scripts, and references.",
+      "tags": [
+        "capability",
+        "catalog",
+        "plugin-dev",
+        "show",
+        "show_capability_catalog"
+      ],
+      "title": "Show Capability Catalog",
+      "tool_name": "show_capability_catalog",
+      "triggers": [
+        "plugin-dev",
+        "show capability catalog"
+      ]
+    },
+    {
+      "cost_hint": "low",
+      "follow_up_paths": [
+        "README.md",
+        "references/command-surface.md",
+        "references/workflow-kernel.md"
+      ],
+      "id": "show_git_workflow_advice",
+      "kind": "mcp_tool",
+      "path": "scripts/agentiux_dev_mcp.py",
+      "primary_surface": "mcp",
+      "read_only": true,
+      "related_routes": [
+        "git",
+        "workstream"
+      ],
+      "required_inputs": [
+        "repoRoot"
+      ],
+      "returns": "Structured JSON payload for inspection and routing.",
+      "summary": "Inspect repository history and return repo-aware Git workflow advice.",
+      "tags": [
+        "advice",
+        "git",
+        "show",
+        "show_git_workflow_advice",
+        "workflow",
+        "workstream"
+      ],
+      "title": "Show Git Workflow Advice",
+      "tool_name": "show_git_workflow_advice",
+      "triggers": [
+        "git",
+        "show git workflow advice",
+        "workstream"
+      ]
+    },
+    {
+      "cost_hint": "low",
+      "follow_up_paths": [
+        "README.md",
+        "references/command-surface.md",
+        "references/workflow-kernel.md"
+      ],
+      "id": "show_host_setup_plan",
+      "kind": "mcp_tool",
+      "path": "scripts/agentiux_dev_mcp.py",
+      "primary_surface": "mcp",
+      "read_only": true,
+      "related_routes": [
+        "plugin-dev",
+        "workstream"
+      ],
+      "required_inputs": [
+        "workspacePath"
+      ],
+      "returns": "Structured JSON payload for inspection and routing.",
+      "summary": "Preview the host-specific install or manual-repair steps required to satisfy missing toolchains for a workspace.",
+      "tags": [
+        "host",
+        "plan",
+        "plugin-dev",
+        "setup",
+        "show",
+        "show_host_setup_plan",
+        "workstream"
+      ],
+      "title": "Show Host Setup Plan",
+      "tool_name": "show_host_setup_plan",
+      "triggers": [
+        "plugin-dev",
+        "show host setup plan",
+        "workstream"
+      ]
+    },
+    {
+      "cost_hint": "low",
+      "follow_up_paths": [
+        "references/command-surface.md",
+        "references/workflow-kernel.md",
+        "skills/workspace-kernel/SKILL.md"
+      ],
+      "id": "show_host_support",
+      "kind": "mcp_tool",
+      "path": "scripts/agentiux_dev_mcp.py",
+      "primary_surface": "mcp",
+      "read_only": true,
+      "related_routes": [
+        "workstream"
+      ],
+      "required_inputs": [
+        "workspacePath"
+      ],
+      "returns": "Structured JSON payload for inspection and routing.",
+      "summary": "Read host support, toolchain capabilities, and support warnings for a workspace.",
+      "tags": [
+        "host",
+        "show",
+        "show_host_support",
+        "support",
+        "workstream"
+      ],
+      "title": "Show Host Support",
+      "tool_name": "show_host_support",
+      "triggers": [
+        "show host support",
+        "workstream"
+      ]
+    },
+    {
+      "cost_hint": "low",
+      "follow_up_paths": [],
+      "id": "show_intent_route",
+      "kind": "mcp_tool",
+      "path": "scripts/agentiux_dev_mcp.py",
+      "primary_surface": "mcp",
+      "read_only": true,
+      "related_routes": [],
+      "required_inputs": [],
+      "returns": "Structured JSON payload for inspection and routing.",
+      "summary": "Resolve the canonical low-token route for a request before reading large docs or scripts.",
+      "tags": [
+        "intent",
+        "route",
+        "show",
+        "show_intent_route"
+      ],
+      "title": "Show Intent Route",
+      "tool_name": "show_intent_route",
+      "triggers": [
+        "show intent route"
+      ]
+    },
+    {
+      "cost_hint": "medium",
+      "follow_up_paths": [],
+      "id": "show_upgrade_plan",
+      "kind": "mcp_tool",
+      "path": "scripts/agentiux_dev_mcp.py",
+      "primary_surface": "mcp",
+      "read_only": true,
+      "related_routes": [],
+      "required_inputs": [
+        "workspacePath"
+      ],
+      "returns": "Structured JSON payload for inspection and routing.",
+      "summary": "Build or read the current upgrade plan from the latest repository audit.",
+      "tags": [
+        "plan",
+        "show",
+        "show_upgrade_plan",
+        "upgrade"
+      ],
+      "title": "Show Upgrade Plan",
+      "tool_name": "show_upgrade_plan",
+      "triggers": [
+        "show upgrade plan"
+      ]
+    },
+    {
+      "cost_hint": "low",
+      "follow_up_paths": [
+        "README.md",
+        "references/command-surface.md",
+        "references/visual-verification.md"
+      ],
+      "id": "show_verification_helper_catalog",
+      "kind": "mcp_tool",
+      "path": "scripts/agentiux_dev_mcp.py",
+      "primary_surface": "mcp",
+      "read_only": true,
+      "related_routes": [
+        "plugin-dev",
+        "verification",
+        "workstream"
+      ],
+      "required_inputs": [
+        "workspacePath"
+      ],
+      "returns": "Structured JSON payload for inspection and routing.",
+      "summary": "Show the plugin-owned visual helper bundle catalog, supported runners, entrypoints, and materialization status for a workspace.",
+      "tags": [
+        "catalog",
+        "helper",
+        "plugin-dev",
+        "show",
+        "show_verification_helper_catalog",
+        "verification",
+        "workstream"
+      ],
+      "title": "Show Verification Helper Catalog",
+      "tool_name": "show_verification_helper_catalog",
+      "triggers": [
+        "plugin-dev",
+        "show verification helper catalog",
+        "verification",
+        "workstream"
+      ]
+    },
+    {
+      "cost_hint": "low",
+      "follow_up_paths": [
+        "README.md",
+        "references/command-surface.md",
+        "references/visual-verification.md"
+      ],
+      "id": "show_workspace_context_pack",
+      "kind": "mcp_tool",
+      "path": "scripts/agentiux_dev_mcp.py",
+      "primary_surface": "mcp",
+      "read_only": true,
+      "related_routes": [
+        "verification",
+        "workstream"
+      ],
+      "required_inputs": [
+        "workspacePath"
+      ],
+      "returns": "Structured JSON payload for inspection and routing.",
+      "summary": "Load the current workspace context pack and optional semantic retrieval pack for a request.",
+      "tags": [
+        "context",
+        "pack",
+        "show",
+        "show_workspace_context_pack",
+        "verification",
+        "workspace",
+        "workstream"
+      ],
+      "title": "Show Workspace Context Pack",
+      "tool_name": "show_workspace_context_pack",
+      "triggers": [
+        "show workspace context pack",
+        "verification",
+        "workstream"
+      ]
+    },
+    {
+      "cost_hint": "low",
+      "follow_up_paths": [
+        "README.md",
+        "references/command-surface.md",
+        "references/workflow-kernel.md"
+      ],
+      "id": "stage_git_files",
+      "kind": "mcp_tool",
+      "path": "scripts/agentiux_dev_mcp.py",
+      "primary_surface": "mcp",
+      "read_only": false,
+      "related_routes": [
+        "git",
+        "workstream"
+      ],
+      "required_inputs": [
+        "repoRoot",
+        "files"
+      ],
+      "returns": "Structured mutation result payload.",
+      "summary": "Stage an explicit set of files with git add.",
+      "tags": [
+        "files",
+        "git",
+        "stage",
+        "stage_git_files",
+        "workstream"
+      ],
+      "title": "Stage Git Files",
+      "tool_name": "stage_git_files",
+      "triggers": [
+        "git",
+        "stage git files",
+        "workstream"
+      ]
+    },
+    {
+      "cost_hint": "low",
+      "follow_up_paths": [
+        "README.md",
+        "references/command-surface.md",
+        "skills/git-ops/SKILL.md"
+      ],
+      "id": "suggest_branch_name",
+      "kind": "mcp_tool",
+      "path": "scripts/agentiux_dev_mcp.py",
+      "primary_surface": "mcp",
+      "read_only": true,
+      "related_routes": [
+        "git"
+      ],
+      "required_inputs": [
+        "repoRoot",
+        "summary"
+      ],
+      "returns": "Structured JSON payload for inspection and routing.",
+      "summary": "Suggest a branch name aligned with repository history or fallback policy.",
+      "tags": [
+        "branch",
+        "git",
+        "name",
+        "suggest",
+        "suggest_branch_name"
+      ],
+      "title": "Suggest Branch Name",
+      "tool_name": "suggest_branch_name",
+      "triggers": [
+        "git",
+        "suggest branch name"
+      ]
+    },
+    {
+      "cost_hint": "low",
+      "follow_up_paths": [
+        "README.md",
+        "references/command-surface.md",
+        "skills/git-ops/SKILL.md"
+      ],
+      "id": "suggest_commit_message",
+      "kind": "mcp_tool",
+      "path": "scripts/agentiux_dev_mcp.py",
+      "primary_surface": "mcp",
+      "read_only": true,
+      "related_routes": [
+        "git"
+      ],
+      "required_inputs": [
+        "repoRoot",
+        "summary"
+      ],
+      "returns": "Structured JSON payload for inspection and routing.",
+      "summary": "Suggest a commit message that follows the detected repository commit style.",
+      "tags": [
+        "commit",
+        "git",
+        "message",
+        "suggest",
+        "suggest_commit_message"
+      ],
+      "title": "Suggest Commit Message",
+      "tool_name": "suggest_commit_message",
+      "triggers": [
+        "git",
+        "suggest commit message"
+      ]
+    },
+    {
+      "cost_hint": "low",
+      "follow_up_paths": [
+        "README.md",
+        "references/command-surface.md",
+        "references/workflow-kernel.md"
+      ],
+      "id": "suggest_pr_body",
+      "kind": "mcp_tool",
+      "path": "scripts/agentiux_dev_mcp.py",
+      "primary_surface": "mcp",
+      "read_only": true,
+      "related_routes": [
+        "git",
+        "workstream"
+      ],
+      "required_inputs": [
+        "repoRoot",
+        "summary"
+      ],
+      "returns": "Structured JSON payload for inspection and routing.",
+      "summary": "Suggest a pull request body skeleton aligned with repository workflow guidance.",
+      "tags": [
+        "body",
+        "git",
+        "pr",
+        "suggest",
+        "suggest_pr_body",
+        "workstream"
+      ],
+      "title": "Suggest PR Body",
+      "tool_name": "suggest_pr_body",
+      "triggers": [
+        "git",
+        "suggest pr body",
+        "workstream"
+      ]
+    },
+    {
+      "cost_hint": "low",
+      "follow_up_paths": [
+        "README.md",
+        "references/command-surface.md",
+        "skills/git-ops/SKILL.md"
+      ],
+      "id": "suggest_pr_title",
+      "kind": "mcp_tool",
+      "path": "scripts/agentiux_dev_mcp.py",
+      "primary_surface": "mcp",
+      "read_only": true,
+      "related_routes": [
+        "git"
+      ],
+      "required_inputs": [
+        "repoRoot",
+        "summary"
+      ],
+      "returns": "Structured JSON payload for inspection and routing.",
+      "summary": "Suggest a pull request title aligned with repository conventions.",
+      "tags": [
+        "git",
+        "pr",
+        "suggest",
+        "suggest_pr_title",
+        "title"
+      ],
+      "title": "Suggest PR Title",
+      "tool_name": "suggest_pr_title",
+      "triggers": [
+        "git",
+        "suggest pr title"
+      ]
+    },
+    {
+      "cost_hint": "low",
+      "follow_up_paths": [
+        "references/command-surface.md",
+        "references/workflow-kernel.md",
+        "skills/workspace-kernel/SKILL.md"
+      ],
+      "id": "switch_workstream",
+      "kind": "mcp_tool",
+      "path": "scripts/agentiux_dev_mcp.py",
+      "primary_surface": "mcp",
+      "read_only": false,
+      "related_routes": [
+        "workstream"
+      ],
+      "required_inputs": [
+        "workspacePath",
+        "workstreamId"
+      ],
+      "returns": "Structured mutation result payload.",
+      "summary": "Switch the workspace to a different current workstream.",
+      "tags": [
+        "switch",
+        "switch_workstream",
+        "workstream"
+      ],
+      "title": "Switch Workstream",
+      "tool_name": "switch_workstream",
+      "triggers": [
+        "switch workstream",
+        "workstream"
+      ]
+    },
+    {
+      "cost_hint": "low",
+      "follow_up_paths": [
+        "README.md",
+        "references/visual-verification.md",
+        "references/workflow-kernel.md"
+      ],
+      "id": "sync_verification_helpers",
+      "kind": "mcp_tool",
+      "path": "scripts/agentiux_dev_mcp.py",
+      "primary_surface": "mcp",
+      "read_only": false,
+      "related_routes": [
+        "plugin-dev",
+        "verification"
+      ],
+      "required_inputs": [
+        "workspacePath"
+      ],
+      "returns": "Structured mutation result payload.",
+      "summary": "Materialize the versioned plugin-owned visual helper bundle into the repository-local generated helper directory.",
+      "tags": [
+        "helpers",
+        "plugin-dev",
+        "sync",
+        "sync_verification_helpers",
+        "verification"
+      ],
+      "title": "Sync Verification Helpers",
+      "tool_name": "sync_verification_helpers",
+      "triggers": [
+        "plugin-dev",
+        "sync verification helpers",
+        "verification"
+      ]
+    },
+    {
+      "cost_hint": "low",
+      "follow_up_paths": [
+        "README.md",
+        "references/visual-verification.md",
+        "skills/deterministic-verification/SKILL.md"
+      ],
+      "id": "update_verification_baseline",
+      "kind": "mcp_tool",
+      "path": "scripts/agentiux_dev_mcp.py",
+      "primary_surface": "mcp",
+      "read_only": false,
+      "related_routes": [
+        "verification"
+      ],
+      "required_inputs": [
+        "workspacePath",
+        "caseId"
+      ],
+      "returns": "Structured mutation result payload.",
+      "summary": "Copy a verification artifact into a project-owned canonical baseline path.",
+      "tags": [
+        "baseline",
+        "update",
+        "update_verification_baseline",
+        "verification"
+      ],
+      "title": "Update Verification Baseline",
+      "tool_name": "update_verification_baseline",
+      "triggers": [
+        "update verification baseline",
+        "verification"
+      ]
+    },
+    {
+      "cost_hint": "medium",
+      "follow_up_paths": [
+        "README.md",
+        "references/visual-verification.md",
+        "skills/deterministic-verification/SKILL.md"
+      ],
+      "id": "wait_for_verification_run",
+      "kind": "mcp_tool",
+      "path": "scripts/agentiux_dev_mcp.py",
+      "primary_surface": "mcp",
+      "read_only": false,
+      "related_routes": [
+        "verification"
+      ],
+      "required_inputs": [
+        "workspacePath",
+        "runId"
+      ],
+      "returns": "Structured mutation result payload.",
+      "summary": "Wait for a verification run to finish.",
+      "tags": [
+        "for",
+        "run",
+        "verification",
+        "wait",
+        "wait_for_verification_run"
+      ],
+      "title": "Wait For Verification Run",
+      "tool_name": "wait_for_verification_run",
+      "triggers": [
+        "verification",
+        "wait for verification run"
+      ]
+    },
+    {
+      "cost_hint": "low",
+      "follow_up_paths": [
+        "README.md",
+        "references/command-surface.md",
+        "references/design-workflow.md"
+      ],
+      "id": "write_design_brief",
+      "kind": "mcp_tool",
+      "path": "scripts/agentiux_dev_mcp.py",
+      "primary_surface": "mcp",
+      "read_only": false,
+      "related_routes": [
+        "design",
+        "workstream"
+      ],
+      "required_inputs": [
+        "workspacePath",
+        "brief"
+      ],
+      "returns": "Structured mutation result payload.",
+      "summary": "Persist a DesignBrief for a workspace.",
+      "tags": [
+        "brief",
+        "design",
+        "workstream",
+        "write",
+        "write_design_brief"
+      ],
+      "title": "Write Design Brief",
+      "tool_name": "write_design_brief",
+      "triggers": [
+        "design",
+        "workstream",
+        "write design brief"
+      ]
+    },
+    {
+      "cost_hint": "low",
+      "follow_up_paths": [
+        "README.md",
+        "references/design-workflow.md",
+        "skills/design-orchestrator/SKILL.md"
+      ],
+      "id": "write_design_handoff",
+      "kind": "mcp_tool",
+      "path": "scripts/agentiux_dev_mcp.py",
+      "primary_surface": "mcp",
+      "read_only": false,
+      "related_routes": [
+        "design"
+      ],
+      "required_inputs": [
+        "workspacePath",
+        "handoff"
+      ],
+      "returns": "Structured mutation result payload.",
+      "summary": "Persist a design handoff and optionally mark it as current.",
+      "tags": [
+        "design",
+        "handoff",
+        "write",
+        "write_design_handoff"
+      ],
+      "title": "Write Design Handoff",
+      "tool_name": "write_design_handoff",
+      "triggers": [
+        "design",
+        "write design handoff"
+      ]
+    },
+    {
+      "cost_hint": "low",
+      "follow_up_paths": [
+        "README.md",
+        "references/design-workflow.md",
+        "skills/design-orchestrator/SKILL.md"
+      ],
+      "id": "write_reference_board",
+      "kind": "mcp_tool",
+      "path": "scripts/agentiux_dev_mcp.py",
+      "primary_surface": "mcp",
+      "read_only": false,
+      "related_routes": [
+        "design"
+      ],
+      "required_inputs": [
+        "workspacePath",
+        "board"
+      ],
+      "returns": "Structured mutation result payload.",
+      "summary": "Persist a reference board and optionally mark it as current.",
+      "tags": [
+        "board",
+        "design",
+        "reference",
+        "write",
+        "write_reference_board"
+      ],
+      "title": "Write Reference Board",
+      "tool_name": "write_reference_board",
+      "triggers": [
+        "design",
+        "write reference board"
+      ]
+    },
+    {
+      "cost_hint": "low",
+      "follow_up_paths": [
+        "references/command-surface.md",
+        "references/workflow-kernel.md",
+        "skills/workspace-kernel/SKILL.md"
+      ],
+      "id": "write_stage_register",
+      "kind": "mcp_tool",
+      "path": "scripts/agentiux_dev_mcp.py",
+      "primary_surface": "mcp",
+      "read_only": false,
+      "related_routes": [
+        "workstream"
+      ],
+      "required_inputs": [
+        "workspacePath",
+        "register"
+      ],
+      "returns": "Structured mutation result payload.",
+      "summary": "Persist a StageRegister update. Stage definition changes require explicit confirmation and completed stages are immutable.",
+      "tags": [
+        "register",
+        "stage",
+        "workstream",
+        "write",
+        "write_stage_register"
+      ],
+      "title": "Write Stage Register",
+      "tool_name": "write_stage_register",
+      "triggers": [
+        "workstream",
+        "write stage register"
+      ]
+    },
+    {
+      "cost_hint": "low",
+      "follow_up_paths": [
+        "README.md",
+        "references/command-surface.md",
+        "references/visual-verification.md"
+      ],
+      "id": "write_verification_recipes",
+      "kind": "mcp_tool",
+      "path": "scripts/agentiux_dev_mcp.py",
+      "primary_surface": "mcp",
+      "read_only": false,
+      "related_routes": [
+        "verification",
+        "workstream"
+      ],
+      "required_inputs": [
+        "workspacePath",
+        "recipes"
+      ],
+      "returns": "Structured mutation result payload.",
+      "summary": "Persist verification cases and suites for a workspace or explicit workstream.",
+      "tags": [
+        "recipes",
+        "verification",
+        "workstream",
+        "write",
+        "write_verification_recipes"
+      ],
+      "title": "Write Verification Recipes",
+      "tool_name": "write_verification_recipes",
+      "triggers": [
+        "verification",
+        "workstream",
+        "write verification recipes"
+      ]
+    }
+  ],
+  "entry_count": 84,
+  "plugin": {
+    "name": "agentiux-dev",
+    "version": "0.8.0"
+  },
+  "schema_version": 1
+}

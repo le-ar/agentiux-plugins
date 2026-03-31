@@ -13,12 +13,16 @@ description: Use for deterministic verification and repair loops across web, Rea
 ## Required Workflow
 
 1. Choose the platform-specific deterministic gate for the changed surface.
-2. Keep all screenshots, diffs, traces, and verification packets under the external artifact root for the workspace.
-3. Define verification recipes so one named case can run independently and named suites can run in stable order.
-4. Use scoped reruns first after repairs.
-5. Record a verification summary before closeout.
-6. Keep structured verification progress events plus stdout, stderr, and Android logcat when configured so long-running checks are observable.
-7. Use `audit-verification-coverage` to surface warning-level coverage gaps before claiming a surface is ready.
+2. Resolve the verification route and low-token context first when the request is broad:
+   - `python3 ../../scripts/agentiux_dev_state.py show-intent-route --request-text "<user request>"`
+   - `python3 ../../scripts/agentiux_dev_state.py show-capability-catalog --route-id verification`
+   - `python3 ../../scripts/agentiux_dev_state.py search-context-index --workspace <repo> --query-text "<verification query>"`
+3. Keep all screenshots, diffs, traces, and verification packets under the external artifact root for the workspace.
+4. Define verification recipes so one named case can run independently and named suites can run in stable order.
+5. Use scoped reruns first after repairs.
+6. Record a verification summary before closeout.
+7. Keep structured verification progress events plus stdout, stderr, and Android logcat when configured so long-running checks are observable.
+8. Use `audit-verification-coverage` to surface warning-level coverage gaps before claiming a surface is ready.
 
 ## Default Gates
 

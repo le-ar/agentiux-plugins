@@ -1,0 +1,271 @@
+{
+  "catalog": "scripts",
+  "entries": [
+    {
+      "common_flags": [
+        "--workspace",
+        "--repo-root",
+        "--workstream-id",
+        "--task-id"
+      ],
+      "cost_hint": "low",
+      "follow_up_paths": [
+        "README.md",
+        "references/command-surface.md"
+      ],
+      "id": "agentiux_dev_state",
+      "kind": "script",
+      "path": "scripts/agentiux_dev_state.py",
+      "primary_surface": "cli",
+      "produced_artifacts": [
+        "external workspace state",
+        "global context cache"
+      ],
+      "related_routes": [
+        "git",
+        "plugin-dev",
+        "verification",
+        "workstream"
+      ],
+      "safe_usage": "Safe for local inspection commands; write subcommands mutate only external state or local git after explicit confirmation.",
+      "summary": "Command-line entrypoint for workspace state, git helpers, verification, catalogs, and context indexing.",
+      "tags": [
+        "cli",
+        "state",
+        "workspace"
+      ],
+      "title": "Workspace State CLI",
+      "triggers": [
+        "agentiux_dev_state.py",
+        "state command",
+        "workspace cli"
+      ]
+    },
+    {
+      "common_flags": [],
+      "cost_hint": "low",
+      "follow_up_paths": [
+        "README.md",
+        "references/command-surface.md"
+      ],
+      "id": "agentiux_dev_mcp",
+      "kind": "script",
+      "path": "scripts/agentiux_dev_mcp.py",
+      "primary_surface": "mcp",
+      "produced_artifacts": [],
+      "related_routes": [
+        "plugin-dev",
+        "workstream"
+      ],
+      "safe_usage": "Run through the plugin manifest or local Python launcher; it serves JSON-RPC over stdio.",
+      "summary": "Stdio MCP server exposing read and write tools for workspace state, git, verification, and context retrieval.",
+      "tags": [
+        "mcp",
+        "server",
+        "stdio"
+      ],
+      "title": "MCP Server",
+      "triggers": [
+        "mcp",
+        "tools/call",
+        "tools/list"
+      ]
+    },
+    {
+      "common_flags": [
+        "--workspace",
+        "--workstream-id",
+        "--case-id",
+        "--suite-id"
+      ],
+      "cost_hint": "medium",
+      "follow_up_paths": [
+        "README.md",
+        "references/visual-verification.md"
+      ],
+      "id": "agentiux_dev_verification",
+      "kind": "script",
+      "path": "scripts/agentiux_dev_verification.py",
+      "primary_surface": "verification-runtime",
+      "produced_artifacts": [
+        "verification runs",
+        "events",
+        "logs",
+        "helper materialization metadata"
+      ],
+      "related_routes": [
+        "plugin-dev",
+        "verification"
+      ],
+      "safe_usage": "Use through CLI or MCP helpers; transient artifacts stay outside repositories.",
+      "summary": "Verification runner, recipe resolution, semantic helper sync, log/event streaming, and baseline lifecycle logic.",
+      "tags": [
+        "baseline",
+        "runner",
+        "semantic",
+        "verification"
+      ],
+      "title": "Verification Runtime",
+      "triggers": [
+        "semantic checks",
+        "verification case",
+        "verification runtime"
+      ]
+    },
+    {
+      "common_flags": [
+        "launch",
+        "stop",
+        "status",
+        "--workspace"
+      ],
+      "cost_hint": "low",
+      "follow_up_paths": [
+        "README.md",
+        "references/dashboard.md"
+      ],
+      "id": "agentiux_dev_gui",
+      "kind": "script",
+      "path": "scripts/agentiux_dev_gui.py",
+      "primary_surface": "dashboard",
+      "produced_artifacts": [
+        "runtime/dashboard.json"
+      ],
+      "related_routes": [
+        "plugin-dev",
+        "release"
+      ],
+      "safe_usage": "Read-only UI runtime; it should not mutate repo code or external state implicitly.",
+      "summary": "Launches and stops the read-only local dashboard backed by dashboard snapshot and workspace detail payloads.",
+      "tags": [
+        "dashboard",
+        "gui",
+        "http"
+      ],
+      "title": "Dashboard Runtime",
+      "triggers": [
+        "dashboard",
+        "launch gui",
+        "show gui url"
+      ]
+    },
+    {
+      "common_flags": [
+        "run",
+        "audit",
+        "python-compile",
+        "mcp-check",
+        "--repo-root",
+        "--smoke-runs"
+      ],
+      "cost_hint": "medium",
+      "follow_up_paths": [
+        "README.md",
+        "skills/plugin-platform/SKILL.md"
+      ],
+      "id": "release_readiness",
+      "kind": "script",
+      "path": "scripts/release_readiness.py",
+      "primary_surface": "release-check",
+      "produced_artifacts": [
+        "stdout JSON report",
+        "temporary self-host fixtures"
+      ],
+      "related_routes": [
+        "plugin-dev",
+        "release"
+      ],
+      "safe_usage": "Read-only for repo-tracked source; writes only to temp dirs and external state during checks.",
+      "summary": "Runs audit, compile, self-host, MCP, dashboard, catalog, and smoke validations for the plugin.",
+      "tags": [
+        "readiness",
+        "release",
+        "smoke"
+      ],
+      "title": "Release Readiness Checks",
+      "triggers": [
+        "release readiness",
+        "ship plugin",
+        "smoke checks"
+      ]
+    },
+    {
+      "common_flags": [],
+      "cost_hint": "high",
+      "follow_up_paths": [
+        "README.md",
+        "scripts/release_readiness.py"
+      ],
+      "id": "smoke_test",
+      "kind": "script",
+      "path": "scripts/smoke_test.py",
+      "primary_surface": "test",
+      "produced_artifacts": [
+        "temporary repos",
+        "temporary external state"
+      ],
+      "related_routes": [
+        "plugin-dev",
+        "release"
+      ],
+      "safe_usage": "Runs in temp directories and isolated external state roots.",
+      "summary": "Synthetic integration coverage for workspace, verification, git, installer, dashboard, MCP, and context indexing flows.",
+      "tags": [
+        "integration",
+        "regression",
+        "smoke",
+        "synthetic"
+      ],
+      "title": "Synthetic Smoke Test",
+      "triggers": [
+        "plugin regression",
+        "smoke",
+        "synthetic test"
+      ]
+    },
+    {
+      "common_flags": [
+        "--plugin-root",
+        "--install-root",
+        "--marketplace-path"
+      ],
+      "cost_hint": "low",
+      "follow_up_paths": [
+        ".codex-plugin/plugin.json",
+        "README.md"
+      ],
+      "id": "install_home_local",
+      "kind": "script",
+      "path": "scripts/install_home_local.py",
+      "primary_surface": "installer",
+      "produced_artifacts": [
+        "installed plugin copy",
+        "install-metadata.json",
+        "marketplace.json"
+      ],
+      "related_routes": [
+        "plugin-dev",
+        "release"
+      ],
+      "safe_usage": "Copies tracked plugin files to the install root and updates local marketplace metadata.",
+      "summary": "Installs the plugin into a home-local plugins directory and updates marketplace metadata.",
+      "tags": [
+        "install",
+        "marketplace",
+        "plugin"
+      ],
+      "title": "Home-Local Installer",
+      "triggers": [
+        "home-local install",
+        "install plugin",
+        "marketplace entry"
+      ]
+    }
+  ],
+  "entry_count": 7,
+  "plugin": {
+    "name": "agentiux-dev",
+    "version": "0.8.0"
+  },
+  "schema_version": 1
+}

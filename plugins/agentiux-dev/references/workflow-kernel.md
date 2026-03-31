@@ -33,3 +33,11 @@ AgentiUX Dev combines the strongest workflow rules from the user's reference rep
 - Stage description changes require explicit user confirmation and cannot touch completed stages.
 - Commit requests should inspect existing commit history or repo commit rules first so generated messages match local conventions.
 - The GUI is read-only and must never mutate repo code or external state implicitly.
+
+## Retrieval Ladder
+
+- Codex should prefer existing cheap summaries before opening large tracked files.
+- Resolve the intent route through the compact route catalog before reading long docs or Python entrypoints.
+- Use the capability catalog to choose skills, MCP tools, scripts, and reference docs instead of scanning the repo blindly.
+- Load the global workspace context pack and search the context index before broad `rg` or manual exploration.
+- Project-derived context indexes and semantic cache packets stay under `~/.agentiux/agentiux-dev/cache/context/` and never inside repositories.

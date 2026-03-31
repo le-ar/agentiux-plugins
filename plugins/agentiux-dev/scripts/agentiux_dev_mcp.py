@@ -71,8 +71,11 @@ from agentiux_dev_lib import (
     read_workspace_state,
     set_active_brief,
     show_git_workflow_advice,
+    show_host_setup_plan,
     show_host_support,
     show_upgrade_plan,
+    install_host_requirements,
+    repair_host_requirements,
     stage_git_files,
     suggest_branch_name,
     suggest_commit_message,
@@ -85,6 +88,13 @@ from agentiux_dev_lib import (
     write_reference_board,
     write_stage_register,
     repair_workspace_state,
+)
+from agentiux_dev_context import (
+    refresh_context_index,
+    search_context_index,
+    show_capability_catalog,
+    show_intent_route,
+    show_workspace_context_pack,
 )
 
 
@@ -125,6 +135,30 @@ def _read_tool(name: str, description: str, handler: Any, extra_properties: dict
             "type": "object",
             "properties": properties,
             "required": required_keys,
+            "additionalProperties": False,
+        },
+        "annotations": {
+            "readOnlyHint": True,
+            "idempotentHint": True,
+        },
+        "handler": handler,
+    }
+
+
+def _read_tool_no_workspace(
+    name: str,
+    description: str,
+    handler: Any,
+    properties: dict[str, Any] | None = None,
+    required: list[str] | None = None,
+) -> dict[str, Any]:
+    return {
+        "title": name.replace("_", " ").title(),
+        "description": description,
+        "inputSchema": {
+            "type": "object",
+            "properties": properties or {},
+            "required": required or [],
             "additionalProperties": False,
         },
         "annotations": {
@@ -208,6 +242,42 @@ TOOLS = {
         "show_host_support",
         "Read host support, toolchain capabilities, and support warnings for a workspace.",
         lambda args: show_host_support(args["workspacePath"]),
+    ),
+    "show_host_setup_plan": _read_tool(
+        "show_host_setup_plan",
+        "Preview the host-specific install or manual-repair steps required to satisfy missing toolchains for a workspace.",
+        lambda args: show_host_setup_plan(args["workspacePath"], requirement_ids=args.get("requirementIds")),
+        {"requirementIds": {"type": "array", "items": {"type": "string"}}},
+    ),
+    "install_host_requirements": _write_tool(
+        "install_host_requirements",
+        "Install missing host requirements for a workspace after explicit confirmation, then refresh host support state.",
+        lambda args: install_host_requirements(
+            args["workspacePath"],
+            requirement_ids=args.get("requirementIds"),
+            confirmed=args.get("confirmed", False),
+        ),
+        {
+            "workspacePath": {"type": "string"},
+            "requirementIds": {"type": "array", "items": {"type": "string"}},
+            "confirmed": {"type": "boolean"},
+        },
+        ["workspacePath"],
+    ),
+    "repair_host_requirements": _write_tool(
+        "repair_host_requirements",
+        "Re-run the host requirement plan for a workspace after explicit confirmation and refresh host support state.",
+        lambda args: repair_host_requirements(
+            args["workspacePath"],
+            requirement_ids=args.get("requirementIds"),
+            confirmed=args.get("confirmed", False),
+        ),
+        {
+            "workspacePath": {"type": "string"},
+            "requirementIds": {"type": "array", "items": {"type": "string"}},
+            "confirmed": {"type": "boolean"},
+        },
+        ["workspacePath"],
     ),
     "get_stage_register": _read_tool(
         "get_stage_register",
@@ -440,6 +510,31 @@ TOOLS = {
         },
         "handler": lambda args: {"command_aliases": command_aliases()},
     },
+    "show_capability_catalog": _read_tool_no_workspace(
+        "show_capability_catalog",
+        "Show the compact low-token catalog for skills, MCP tools, scripts, and references.",
+        lambda args: show_capability_catalog(
+            kind=args.get("kind"),
+            route_id=args.get("routeId"),
+            query_text=args.get("queryText"),
+            limit=args.get("limit"),
+        ),
+        {
+            "kind": {"type": "string", "enum": ["skill", "mcp_tool", "script", "reference"]},
+            "routeId": {"type": "string"},
+            "queryText": {"type": "string"},
+            "limit": {"type": "integer"},
+        },
+    ),
+    "show_intent_route": _read_tool_no_workspace(
+        "show_intent_route",
+        "Resolve the canonical low-token route for a request before reading large docs or scripts.",
+        lambda args: show_intent_route(route_id=args.get("routeId"), request_text=args.get("requestText")),
+        {
+            "routeId": {"type": "string"},
+            "requestText": {"type": "string"},
+        },
+    ),
     "audit_repository": _read_tool(
         "audit_repository",
         "Audit an existing repository for missing local infra, verification, docs, design hooks, and workflow readiness.",
@@ -582,6 +677,47 @@ TOOLS = {
         "show_verification_helper_catalog",
         "Show the plugin-owned visual helper bundle catalog, supported runners, entrypoints, and materialization status for a workspace.",
         lambda args: show_verification_helper_catalog(args["workspacePath"]),
+    ),
+    "show_workspace_context_pack": _read_tool(
+        "show_workspace_context_pack",
+        "Load the current workspace context pack and optional semantic retrieval pack for a request.",
+        lambda args: show_workspace_context_pack(
+            args["workspacePath"],
+            request_text=args.get("requestText"),
+            route_id=args.get("routeId"),
+            limit=args.get("limit"),
+            force_refresh=args.get("forceRefresh", False),
+        ),
+        {
+            "requestText": {"type": "string"},
+            "routeId": {"type": "string"},
+            "limit": {"type": "integer"},
+            "forceRefresh": {"type": "boolean"},
+        },
+    ),
+    "search_context_index": _read_tool(
+        "search_context_index",
+        "Search the global low-token context index for relevant repo chunks and recommended capabilities.",
+        lambda args: search_context_index(
+            args["workspacePath"],
+            args["queryText"],
+            route_id=args.get("routeId"),
+            limit=args.get("limit"),
+        ),
+        {
+            "queryText": {"type": "string"},
+            "routeId": {"type": "string"},
+            "limit": {"type": "integer"},
+        },
+        ["workspacePath", "queryText"],
+    ),
+    "refresh_context_index": _read_tool(
+        "refresh_context_index",
+        "Refresh the global project context index and semantic cache metadata for a workspace.",
+        lambda args: refresh_context_index(args["workspacePath"], force=args.get("force", False)),
+        {
+            "force": {"type": "boolean"},
+        },
     ),
     "sync_verification_helpers": _write_tool(
         "sync_verification_helpers",

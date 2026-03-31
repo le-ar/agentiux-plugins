@@ -1,0 +1,167 @@
+{
+  "catalog": "references",
+  "entries": [
+    {
+      "cost_hint": "medium",
+      "follow_up_paths": [],
+      "id": "command-surface",
+      "kind": "reference",
+      "path": "references/command-surface.md",
+      "primary_surface": "reference",
+      "related_routes": [
+        "git",
+        "plugin-dev",
+        "verification",
+        "workstream"
+      ],
+      "summary": "AgentiUX Dev exposes a small chat-first command surface.",
+      "tags": [
+        "aliases",
+        "command",
+        "command-surface",
+        "commands",
+        "surface"
+      ],
+      "title": "Command Surface",
+      "triggers": [
+        "command phrase",
+        "command surface",
+        "tool routing"
+      ]
+    },
+    {
+      "cost_hint": "low",
+      "follow_up_paths": [],
+      "id": "dashboard",
+      "kind": "reference",
+      "path": "references/dashboard.md",
+      "primary_surface": "reference",
+      "related_routes": [
+        "plugin-dev",
+        "release"
+      ],
+      "summary": "AgentiUX Dev includes a read-only local dashboard launched through `scripts/agentiux_dev_gui.py`.",
+      "tags": [
+        "dashboard",
+        "gui",
+        "monitoring"
+      ],
+      "title": "Local Dashboard",
+      "triggers": [
+        "dashboard",
+        "gui",
+        "workspace overview"
+      ]
+    },
+    {
+      "cost_hint": "low",
+      "follow_up_paths": [],
+      "id": "design-workflow",
+      "kind": "reference",
+      "path": "references/design-workflow.md",
+      "primary_surface": "reference",
+      "related_routes": [
+        "design"
+      ],
+      "summary": "AgentiUX Dev uses a deterministic design workflow for web and Expo surfaces.",
+      "tags": [
+        "brief",
+        "design",
+        "design-workflow",
+        "handoff",
+        "reference board",
+        "workflow"
+      ],
+      "title": "Design Workflow",
+      "triggers": [
+        "design handoff",
+        "design workflow",
+        "reference board"
+      ]
+    },
+    {
+      "cost_hint": "low",
+      "follow_up_paths": [],
+      "id": "stack-profiles",
+      "kind": "reference",
+      "path": "references/stack-profiles.md",
+      "primary_surface": "reference",
+      "related_routes": [
+        "plugin-dev",
+        "workstream"
+      ],
+      "summary": "AgentiUX Dev treats all supported technologies as first-class inputs to routing, stage planning, and verification.",
+      "tags": [
+        "profiles",
+        "stack",
+        "stack-profiles",
+        "stacks",
+        "workspace detection"
+      ],
+      "title": "Stack Profiles",
+      "triggers": [
+        "profile pack",
+        "stack profile",
+        "stack profiles",
+        "workspace detection"
+      ]
+    },
+    {
+      "cost_hint": "medium",
+      "follow_up_paths": [],
+      "id": "visual-verification",
+      "kind": "reference",
+      "path": "references/visual-verification.md",
+      "primary_surface": "reference",
+      "related_routes": [
+        "verification"
+      ],
+      "summary": "Deterministic verification is the default closeout path for AgentiUX Dev.",
+      "tags": [
+        "helper bundle",
+        "semantic",
+        "verification",
+        "visual",
+        "visual-verification"
+      ],
+      "title": "Deterministic Verification",
+      "triggers": [
+        "helper bundle",
+        "semantic assertions",
+        "visual verification"
+      ]
+    },
+    {
+      "cost_hint": "low",
+      "follow_up_paths": [],
+      "id": "workflow-kernel",
+      "kind": "reference",
+      "path": "references/workflow-kernel.md",
+      "primary_surface": "reference",
+      "related_routes": [
+        "plugin-dev",
+        "workstream"
+      ],
+      "summary": "AgentiUX Dev combines the strongest workflow rules from the user's reference repositories into a home-local kernel.",
+      "tags": [
+        "kernel",
+        "routing",
+        "workflow",
+        "workflow-kernel",
+        "workspace"
+      ],
+      "title": "Workflow Kernel",
+      "triggers": [
+        "intent disposition",
+        "workflow kernel",
+        "workspace rules"
+      ]
+    }
+  ],
+  "entry_count": 6,
+  "plugin": {
+    "name": "agentiux-dev",
+    "version": "0.8.0"
+  },
+  "schema_version": 1
+}

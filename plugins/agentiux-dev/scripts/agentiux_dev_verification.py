@@ -143,9 +143,11 @@ def _load_json(path: Path, default: Any | None = None, *, strict: bool = False, 
 
 def _write_json(path: Path, payload: Any) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    with path.open("w") as handle:
+    temp_path = path.parent / f".{path.name}.{os.getpid()}.{time.time_ns()}.tmp"
+    with temp_path.open("w") as handle:
         json.dump(payload, handle, indent=2)
         handle.write("\n")
+    os.replace(temp_path, path)
 
 
 def _append_jsonl(path: Path, payload: dict[str, Any]) -> None:
@@ -2287,11 +2289,19 @@ def read_verification_log_tail(workspace: str | Path, run_id: str, stream: str =
 
 def wait_for_verification_run(workspace: str | Path, run_id: str, timeout_seconds: float = 60.0, workstream_id: str | None = None) -> dict[str, Any]:
     deadline = time.time() + timeout_seconds
+    missing_error: FileNotFoundError | None = None
     while time.time() < deadline:
-        run = read_verification_run(workspace, run_id, workstream_id=workstream_id)
+        try:
+            run = read_verification_run(workspace, run_id, workstream_id=workstream_id)
+        except FileNotFoundError as exc:
+            missing_error = exc
+            time.sleep(0.2)
+            continue
         if run.get("status") in TERMINAL_RUN_STATUSES:
             return run
         time.sleep(0.2)
+    if missing_error is not None:
+        raise TimeoutError(f"Verification run did not materialize before timeout: {run_id}") from missing_error
     raise TimeoutError(f"Verification run did not finish before timeout: {run_id}")
 
 

@@ -43,6 +43,7 @@ from agentiux_dev_lib import (
     detect_workspace,
     get_active_brief,
     get_state_paths,
+    HOST_SETUP_REQUIREMENT_METADATA,
     init_workspace,
     inspect_git_state,
     list_git_worktrees,
@@ -72,8 +73,11 @@ from agentiux_dev_lib import (
     read_workspace_detail,
     set_active_brief,
     show_git_workflow_advice,
+    show_host_setup_plan,
     show_host_support,
     show_upgrade_plan,
+    install_host_requirements,
+    repair_host_requirements,
     stage_git_files,
     suggest_branch_name,
     suggest_commit_message,
@@ -87,6 +91,13 @@ from agentiux_dev_lib import (
     write_reference_board,
     write_stage_register,
     repair_workspace_state,
+)
+from agentiux_dev_context import (
+    refresh_context_index,
+    search_context_index,
+    show_capability_catalog,
+    show_intent_route,
+    show_workspace_context_pack,
 )
 
 
@@ -129,6 +140,20 @@ def parse_args() -> argparse.Namespace:
 
     cmd = subparsers.add_parser("show-host-support")
     add_workspace_arg(cmd)
+
+    cmd = subparsers.add_parser("show-host-setup-plan")
+    add_workspace_arg(cmd)
+    cmd.add_argument("--requirement-id", action="append", choices=list(HOST_SETUP_REQUIREMENT_METADATA))
+
+    cmd = subparsers.add_parser("install-host-requirements")
+    add_workspace_arg(cmd)
+    cmd.add_argument("--requirement-id", action="append", choices=list(HOST_SETUP_REQUIREMENT_METADATA))
+    cmd.add_argument("--confirmed", action="store_true")
+
+    cmd = subparsers.add_parser("repair-host-requirements")
+    add_workspace_arg(cmd)
+    cmd.add_argument("--requirement-id", action="append", choices=list(HOST_SETUP_REQUIREMENT_METADATA))
+    cmd.add_argument("--confirmed", action="store_true")
 
     cmd = subparsers.add_parser("stage-register")
     add_workspace_arg(cmd)
@@ -282,6 +307,16 @@ def parse_args() -> argparse.Namespace:
 
     cmd = subparsers.add_parser("command-aliases")
 
+    cmd = subparsers.add_parser("show-capability-catalog")
+    cmd.add_argument("--kind", choices=["skill", "mcp_tool", "script", "reference"])
+    cmd.add_argument("--route-id")
+    cmd.add_argument("--query-text")
+    cmd.add_argument("--limit", type=int)
+
+    cmd = subparsers.add_parser("show-intent-route")
+    cmd.add_argument("--route-id")
+    cmd.add_argument("--request-text")
+
     cmd = subparsers.add_parser("verification-recipes")
     add_workspace_arg(cmd)
     cmd.add_argument("--workstream-id")
@@ -292,6 +327,23 @@ def parse_args() -> argparse.Namespace:
 
     cmd = subparsers.add_parser("show-verification-helper-catalog")
     add_workspace_arg(cmd)
+
+    cmd = subparsers.add_parser("show-workspace-context-pack")
+    add_workspace_arg(cmd)
+    cmd.add_argument("--request-text")
+    cmd.add_argument("--route-id")
+    cmd.add_argument("--limit", type=int)
+    cmd.add_argument("--force-refresh", action="store_true")
+
+    cmd = subparsers.add_parser("search-context-index")
+    add_workspace_arg(cmd)
+    cmd.add_argument("--query-text", required=True)
+    cmd.add_argument("--route-id")
+    cmd.add_argument("--limit", type=int)
+
+    cmd = subparsers.add_parser("refresh-context-index")
+    add_workspace_arg(cmd)
+    cmd.add_argument("--force", action="store_true")
 
     cmd = subparsers.add_parser("sync-verification-helpers")
     add_workspace_arg(cmd)
@@ -462,6 +514,12 @@ def main() -> int:
             payload = read_workspace_state(args.workspace)
         elif args.command == "show-host-support":
             payload = show_host_support(args.workspace)
+        elif args.command == "show-host-setup-plan":
+            payload = show_host_setup_plan(args.workspace, requirement_ids=args.requirement_id)
+        elif args.command == "install-host-requirements":
+            payload = install_host_requirements(args.workspace, requirement_ids=args.requirement_id, confirmed=args.confirmed)
+        elif args.command == "repair-host-requirements":
+            payload = repair_host_requirements(args.workspace, requirement_ids=args.requirement_id, confirmed=args.confirmed)
         elif args.command == "stage-register":
             payload = read_stage_register(args.workspace, workstream_id=args.workstream_id)
         elif args.command == "stages":
@@ -576,12 +634,28 @@ def main() -> int:
             payload = cache_reference_preview(args.workspace, args.source_path, args.candidate_id, workstream_id=args.workstream_id)
         elif args.command == "command-aliases":
             payload = {"command_aliases": command_aliases()}
+        elif args.command == "show-capability-catalog":
+            payload = show_capability_catalog(kind=args.kind, route_id=args.route_id, query_text=args.query_text, limit=args.limit)
+        elif args.command == "show-intent-route":
+            payload = show_intent_route(route_id=args.route_id, request_text=args.request_text)
         elif args.command == "verification-recipes":
             payload = read_verification_recipes(args.workspace, workstream_id=args.workstream_id)
         elif args.command == "audit-verification-coverage":
             payload = audit_verification_coverage(args.workspace, workstream_id=args.workstream_id)
         elif args.command == "show-verification-helper-catalog":
             payload = show_verification_helper_catalog(args.workspace)
+        elif args.command == "show-workspace-context-pack":
+            payload = show_workspace_context_pack(
+                args.workspace,
+                request_text=args.request_text,
+                route_id=args.route_id,
+                limit=args.limit,
+                force_refresh=args.force_refresh,
+            )
+        elif args.command == "search-context-index":
+            payload = search_context_index(args.workspace, args.query_text, route_id=args.route_id, limit=args.limit)
+        elif args.command == "refresh-context-index":
+            payload = refresh_context_index(args.workspace, force=args.force)
         elif args.command == "sync-verification-helpers":
             payload = sync_verification_helpers(args.workspace, force=args.force)
         elif args.command == "resolve-verification":

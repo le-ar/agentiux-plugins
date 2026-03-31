@@ -14,6 +14,7 @@ from pathlib import Path
 
 from agentiux_dev_gui import stop as stop_gui
 from agentiux_dev_lib import (
+    _host_setup_recipe_for_tool,
     apply_upgrade_plan,
     audit_repository,
     cache_reference_preview,
@@ -32,6 +33,7 @@ from agentiux_dev_lib import (
     get_active_brief,
     init_workspace,
     inspect_git_state,
+    install_host_requirements,
     list_git_worktrees,
     list_reference_boards,
     list_starter_runs,
@@ -52,10 +54,12 @@ from agentiux_dev_lib import (
     read_task,
     read_stage_register,
     read_upgrade_plan,
+    repair_host_requirements,
     repair_workspace_state,
     resolve_command_phrase,
     set_active_brief,
     show_git_workflow_advice,
+    show_host_setup_plan,
     show_host_support,
     show_upgrade_plan,
     stage_git_files,
@@ -90,6 +94,14 @@ from agentiux_dev_verification import (
     write_verification_recipes,
 )
 from install_home_local import install_plugin
+from build_context_catalogs import check_catalogs
+from agentiux_dev_context import (
+    refresh_context_index,
+    search_context_index,
+    show_capability_catalog,
+    show_intent_route,
+    show_workspace_context_pack,
+)
 
 
 def _seed_workspace(root: Path) -> None:
@@ -160,6 +172,27 @@ def _read_json_file(path: Path) -> dict:
 
 def _write_json_file(path: Path, payload: dict) -> None:
     path.write_text(json.dumps(payload, indent=2) + "\n")
+
+
+def _wait_for_run_started(
+    workspace,
+    run_id: str,
+    *,
+    workstream_id: str | None = None,
+    timeout_seconds: float = 5.0,
+) -> tuple[dict | None, dict]:
+    deadline = time.time() + timeout_seconds
+    latest_active_run = None
+    latest_events = {"events": []}
+    while time.time() < deadline:
+        latest_active_run = active_verification_run(workspace, workstream_id=workstream_id)
+        latest_events = read_verification_events(workspace, run_id, limit=20, workstream_id=workstream_id)
+        if latest_active_run is not None or any(
+            event["event_type"] == "run_started" for event in latest_events["events"]
+        ):
+            return latest_active_run, latest_events
+        time.sleep(0.1)
+    return latest_active_run, latest_events
 
 
 def _assert_no_branded_strings_in_tree(root: Path) -> None:
@@ -453,6 +486,35 @@ def _write_fake_adb(bin_dir: Path) -> None:
     adb_script.chmod(0o755)
 
 
+def _write_fake_host_setup_installer(bin_dir: Path, host_os: str) -> tuple[Path, Path | None]:
+    installer_script = bin_dir / ("brew" if host_os == "macos" else "apt-get")
+    installer_script.write_text(
+        "#!/usr/bin/env python3\n"
+        "import os, pathlib, sys\n"
+        "log_path = pathlib.Path(os.environ['AGENTIUX_DEV_HOST_SETUP_LOG'])\n"
+        "log_path.parent.mkdir(parents=True, exist_ok=True)\n"
+        "with log_path.open('a') as handle:\n"
+        "    handle.write(' '.join(sys.argv[1:]) + '\\n')\n"
+        "for env_name in ('AGENTIUX_DEV_TOOL_OVERRIDE_NODE', 'AGENTIUX_DEV_TOOL_OVERRIDE_ADB'):\n"
+        "    target = os.environ.get(env_name)\n"
+        "    if not target:\n"
+        "        continue\n"
+        "    path = pathlib.Path(target)\n"
+        "    path.write_text('#!/bin/sh\\nexit 0\\n')\n"
+        "    path.chmod(0o755)\n"
+    )
+    installer_script.chmod(0o755)
+    sudo_script: Path | None = None
+    if host_os == "linux":
+        sudo_script = bin_dir / "sudo"
+        sudo_script.write_text(
+            "#!/bin/sh\n"
+            "\"$@\"\n"
+        )
+        sudo_script.chmod(0o755)
+    return installer_script, sudo_script
+
+
 def main() -> int:
     plugin_root = Path(__file__).resolve().parents[1]
     repo_root = plugin_root.parents[1]
@@ -475,6 +537,12 @@ def main() -> int:
         _write_fake_adb(tool_bin)
         os.environ["PATH"] = f"{tool_bin}{os.pathsep}{os.environ['PATH']}"
 
+        subprocess.run(["git", "init"], cwd=workspace, check=True, capture_output=True, text=True)
+        subprocess.run(["git", "config", "user.email", "smoke@example.com"], cwd=workspace, check=True, capture_output=True, text=True)
+        subprocess.run(["git", "config", "user.name", "Smoke Test"], cwd=workspace, check=True, capture_output=True, text=True)
+        subprocess.run(["git", "add", "."], cwd=workspace, check=True, capture_output=True, text=True)
+        subprocess.run(["git", "commit", "-m", "seed workspace"], cwd=workspace, check=True, capture_output=True, text=True)
+
         _assert_clean_repo_text(repo_root, plugin_root)
 
         aliases = command_aliases()
@@ -482,6 +550,167 @@ def main() -> int:
         assert "create workstream" in aliases
         assert resolve_command_phrase("\u0438\u043d\u0438\u0446\u0438\u0430\u043b\u0438\u0437\u0438\u0440\u0443\u0439 workspace") == "initialize workspace"
         assert resolve_command_phrase("\u0441\u043e\u0437\u0434\u0430\u0439 workstream") == "create workstream"
+
+        context_catalogs = check_catalogs(plugin_root)
+        assert context_catalogs["status"] == "ok"
+        assert context_catalogs["entry_counts"]["mcp_tools"] >= 1
+        assert context_catalogs["entry_counts"]["skills"] >= 1
+
+        git_route = show_intent_route(request_text="Inspect git worktree and propose a commit message")
+        assert git_route["resolved_route"]["route_id"] == "git"
+        assert git_route["resolution_status"] == "matched"
+        verification_route = show_intent_route(request_text="Check semantic verification helper bundle drift")
+        assert verification_route["resolved_route"]["route_id"] == "verification"
+        assert verification_route["resolution_status"] == "matched"
+        unresolved_route = show_intent_route(request_text="frobnicate lattice quux")
+        assert unresolved_route["resolved_route"] is None
+        assert unresolved_route["resolution_status"] == "unresolved"
+        git_capabilities = show_capability_catalog(route_id="git", query_text="commit branch worktree", limit=12)
+        assert git_capabilities["entries"]
+        assert any(entry["id"] == "git-ops" for entry in git_capabilities["entries"])
+        assert any(entry["id"] == "inspect_git_state" for entry in git_capabilities["entries"])
+        assert all("why" in entry for entry in git_capabilities["entries"])
+
+        repo_context_refresh = refresh_context_index(repo_root)
+        assert repo_context_refresh["status"] == "refreshed"
+        assert Path(repo_context_refresh["cache_root"]).resolve().is_relative_to((state_root / "cache" / "context").resolve())
+        assert Path(repo_context_refresh["workspace_context_path"]).exists()
+        assert Path(repo_context_refresh["chunk_summaries_path"]).exists()
+        repo_context_refresh_again = refresh_context_index(repo_root)
+        assert repo_context_refresh_again["status"] == "fresh"
+        assert repo_context_refresh_again["refresh_reason"] == "manifest-match"
+        repo_context_search = search_context_index(
+            repo_root,
+            "Inspect MCP tool catalogs and the dashboard runtime for plugin development",
+            route_id="plugin-dev",
+            limit=5,
+        )
+        assert repo_context_search["resolved_route"]["route_id"] == "plugin-dev"
+        assert repo_context_search["route_resolution_status"] == "exact"
+        assert repo_context_search["index_status"] == "fresh"
+        assert repo_context_search["matches"]
+        assert any(entry["id"] == "show_capability_catalog" for entry in repo_context_search["recommended_capabilities"])
+        repo_context_pack = show_workspace_context_pack(
+            repo_root,
+            request_text="Inspect MCP tool catalogs and the dashboard runtime for plugin development",
+            route_id="plugin-dev",
+            limit=5,
+        )
+        assert repo_context_pack["cache_status"] == "miss"
+        assert repo_context_pack["index_status"] == "fresh"
+        assert repo_context_pack["context_pack"]["selected_chunks"]
+        cached_repo_context_pack = show_workspace_context_pack(
+            repo_root,
+            request_text="Inspect MCP tool catalogs and the dashboard runtime for plugin development",
+            route_id="plugin-dev",
+            limit=5,
+        )
+        assert cached_repo_context_pack["cache_status"] == "hit"
+        assert cached_repo_context_pack["context_pack"]["catalog_digest"] == repo_context_pack["workspace_context"]["catalog_digest"]
+
+        workspace_context_refresh = refresh_context_index(workspace)
+        assert workspace_context_refresh["status"] == "refreshed"
+        assert Path(workspace_context_refresh["cache_root"]).resolve().is_relative_to((state_root / "cache" / "context").resolve())
+        assert not (workspace / ".agentiux").exists()
+        assert not (workspace / ".verification" / "helpers").exists()
+        workspace_context_refresh_again = refresh_context_index(workspace)
+        assert workspace_context_refresh_again["status"] == "fresh"
+        workspace_context_pack = show_workspace_context_pack(
+            workspace,
+            request_text="Inspect docker verification setup for the workspace",
+            route_id="workstream",
+            limit=4,
+        )
+        assert workspace_context_pack["cache_status"] == "miss"
+        assert workspace_context_pack["index_status"] == "fresh"
+        assert workspace_context_pack["route_resolution_status"] == "exact"
+        cached_workspace_context_pack = show_workspace_context_pack(
+            workspace,
+            request_text="Inspect docker verification setup for the workspace",
+            route_id="workstream",
+            limit=4,
+        )
+        assert cached_workspace_context_pack["cache_status"] == "hit"
+        original_workspace_fingerprint = workspace_context_pack["workspace_context"]["workspace_fingerprint"]
+        workspace_cache_root = Path(workspace_context_refresh["cache_root"])
+        workspace_manifest_path = workspace_cache_root / "index_manifest.json"
+        workspace_context_path = workspace_cache_root / "workspace_context.json"
+        workspace_usage_path = workspace_cache_root / "usage.json"
+        (workspace / "scratch.log").write_text("unindexed dirty change\n")
+        workspace_context_refresh_after_dirty = refresh_context_index(workspace)
+        assert workspace_context_refresh_after_dirty["status"] == "context-refreshed"
+        assert workspace_context_refresh_after_dirty["refresh_reason"] == "dirty-digest"
+        assert workspace_context_refresh_after_dirty["workspace_fingerprint"] == original_workspace_fingerprint
+        assert workspace_context_refresh_after_dirty["rebuilt_chunk_count"] == 0
+        assert workspace_context_refresh_after_dirty["pruned_semantic_cache_entries"] == 0
+        dirty_workspace_context_pack = show_workspace_context_pack(
+            workspace,
+            request_text="Inspect docker verification setup for the workspace",
+            route_id="workstream",
+            limit=4,
+        )
+        assert dirty_workspace_context_pack["cache_status"] == "hit"
+        (workspace / "notes-unrelated.md").write_text("# Notes\n\nThis file should not invalidate unrelated context packs.\n")
+        workspace_context_refresh_after_unrelated = refresh_context_index(workspace)
+        assert workspace_context_refresh_after_unrelated["status"] == "refreshed"
+        assert workspace_context_refresh_after_unrelated["rebuilt_chunk_count"] >= 1
+        assert workspace_context_refresh_after_unrelated["pruned_semantic_cache_entries"] == 0
+        unrelated_workspace_context_pack = show_workspace_context_pack(
+            workspace,
+            request_text="Inspect docker verification setup for the workspace",
+            route_id="workstream",
+            limit=4,
+        )
+        assert unrelated_workspace_context_pack["cache_status"] == "hit"
+        selected_paths = {chunk["path"] for chunk in cached_workspace_context_pack["context_pack"]["selected_chunks"]}
+        assert selected_paths
+        refresh_target = "docker-compose.yml" if "docker-compose.yml" in selected_paths else next(iter(selected_paths))
+        if refresh_target == "docker-compose.yml":
+            (workspace / "docker-compose.yml").write_text(
+                "services:\n"
+                "  postgres:\n    image: postgres:16\n"
+                "  mongo:\n    image: mongo:8\n"
+                "  redis:\n    image: redis:7\n"
+                "  nats:\n    image: nats:2\n"
+                "  mailhog:\n    image: mailhog/mailhog:v1.0.1\n"
+            )
+        else:
+            (workspace / refresh_target).write_text("# Demo Workspace\n\nUpdated context for targeted invalidation.\n")
+        workspace_context_refresh_after_edit = refresh_context_index(workspace)
+        assert workspace_context_refresh_after_edit["workspace_fingerprint"] != original_workspace_fingerprint
+        assert workspace_context_refresh_after_edit["rebuilt_chunk_count"] >= 1
+        assert workspace_context_refresh_after_edit["pruned_semantic_cache_reason"] == "source-hash-drift"
+        assert workspace_context_refresh_after_edit["pruned_semantic_cache_entries"] >= 1
+        refreshed_workspace_context_pack = show_workspace_context_pack(
+            workspace,
+            request_text="Inspect docker verification setup for the workspace",
+            route_id="workstream",
+            limit=4,
+        )
+        assert refreshed_workspace_context_pack["cache_status"] == "miss"
+        manifest_payload = json.loads(workspace_manifest_path.read_text(encoding="utf-8"))
+        manifest_payload["catalog_digest"] = "outdated-catalog-digest"
+        workspace_manifest_path.write_text(json.dumps(manifest_payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+        workspace_context_payload = json.loads(workspace_context_path.read_text(encoding="utf-8"))
+        workspace_context_payload["catalog_digest"] = "outdated-catalog-digest"
+        workspace_context_path.write_text(json.dumps(workspace_context_payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+        workspace_context_refresh_after_catalog_drift = refresh_context_index(workspace)
+        assert workspace_context_refresh_after_catalog_drift["status"] == "refreshed"
+        assert workspace_context_refresh_after_catalog_drift["refresh_reason"] == "catalog-digest"
+        assert workspace_context_refresh_after_catalog_drift["pruned_semantic_cache_reason"] == "catalog-digest"
+        assert workspace_context_refresh_after_catalog_drift["pruned_semantic_cache_entries"] >= 1
+        post_drift_workspace_context_pack = show_workspace_context_pack(
+            workspace,
+            request_text="Inspect docker verification setup for the workspace",
+            route_id="workstream",
+            limit=4,
+        )
+        assert post_drift_workspace_context_pack["cache_status"] == "miss"
+        usage_payload = json.loads(workspace_usage_path.read_text(encoding="utf-8"))
+        assert usage_payload["fresh_hit_count"] >= 1
+        assert usage_payload["refresh_reason_counts"]["catalog-digest"] >= 1
+        assert usage_payload["route_resolution_counts"]["exact"] >= 1
+        assert usage_payload["last_refresh_reason"] in {"catalog-digest", "manifest-match", "indexed-file-snapshot"}
 
         preview = preview_workspace_init(workspace)
         assert preview["must_confirm_before_write"] is True
@@ -800,6 +1029,108 @@ def main() -> int:
         host_support = show_host_support(workspace)
         assert host_support["host_os"] in {"macos", "linux", "windows"}
         assert "core_runtime" in host_support["host_capabilities"]
+        assert "host_setup" in host_support
+
+        host_setup_host = host_support["host_os"]
+        if host_setup_host in {"macos", "linux"}:
+            fake_host_setup_log = temp_root / "host-setup.log"
+            fake_node = temp_root / "fake-node"
+            fake_android_adb = temp_root / "fake-android-adb"
+            fake_installer_bin = temp_root / "host-setup-bin"
+            fake_installer_bin.mkdir()
+            fake_installer, fake_sudo = _write_fake_host_setup_installer(fake_installer_bin, host_setup_host)
+            override_keys = [
+                "AGENTIUX_DEV_HOST_SETUP_LOG",
+                "AGENTIUX_DEV_TOOL_OVERRIDE_NODE",
+                "AGENTIUX_DEV_TOOL_OVERRIDE_ADB",
+                "AGENTIUX_DEV_TOOL_OVERRIDE_BREW",
+                "AGENTIUX_DEV_TOOL_OVERRIDE_APT_GET",
+                "AGENTIUX_DEV_TOOL_OVERRIDE_SUDO",
+            ]
+            override_backup = {key: os.environ.get(key) for key in override_keys}
+            os.environ["AGENTIUX_DEV_HOST_SETUP_LOG"] = str(fake_host_setup_log)
+            os.environ["AGENTIUX_DEV_TOOL_OVERRIDE_NODE"] = str(fake_node)
+            os.environ["AGENTIUX_DEV_TOOL_OVERRIDE_ADB"] = str(fake_android_adb)
+            if host_setup_host == "macos":
+                os.environ["AGENTIUX_DEV_TOOL_OVERRIDE_BREW"] = str(fake_installer)
+                os.environ.pop("AGENTIUX_DEV_TOOL_OVERRIDE_APT_GET", None)
+                os.environ.pop("AGENTIUX_DEV_TOOL_OVERRIDE_SUDO", None)
+            else:
+                os.environ["AGENTIUX_DEV_TOOL_OVERRIDE_APT_GET"] = str(fake_installer)
+                if fake_sudo is not None:
+                    os.environ["AGENTIUX_DEV_TOOL_OVERRIDE_SUDO"] = str(fake_sudo)
+                os.environ.pop("AGENTIUX_DEV_TOOL_OVERRIDE_BREW", None)
+            try:
+                repair_workspace_state(workspace)
+                host_setup_plan = show_host_setup_plan(workspace, requirement_ids=["mobile_verification_android"])
+                assert host_setup_plan["status"] == "needs_confirmation"
+                assert host_setup_plan["requires_confirmation"] is True
+                assert {step["tool_id"] for step in host_setup_plan["steps"] if step["mode"] == "automatic"} == {"adb", "node"}
+
+                try:
+                    install_host_requirements(workspace, requirement_ids=["mobile_verification_android"])
+                except ValueError as exc:
+                    assert "explicit confirmation" in str(exc)
+                else:
+                    raise AssertionError("install_host_requirements should require confirmation")
+
+                install_host_result = install_host_requirements(
+                    workspace,
+                    requirement_ids=["mobile_verification_android"],
+                    confirmed=True,
+                )
+                assert install_host_result["status"] == "completed"
+                assert fake_node.exists()
+                assert fake_android_adb.exists()
+                assert fake_host_setup_log.exists()
+
+                host_support_after_install = show_host_support(workspace)
+                assert host_support_after_install["toolchain_capabilities"]["mobile_verification_android"]["available"] is True
+                assert host_support_after_install["host_setup"]["last_operation"]["status"] == "completed"
+
+                fake_android_adb.unlink()
+                repair_host_result = repair_host_requirements(
+                    workspace,
+                    requirement_ids=["android_tooling"],
+                    confirmed=True,
+                )
+                assert repair_host_result["status"] == "completed"
+                assert fake_android_adb.exists()
+                host_support_after_repair = show_host_support(workspace)
+                assert host_support_after_repair["toolchain_capabilities"]["android_tooling"]["available"] is True
+                assert host_support_after_repair["host_setup"]["last_operation"]["operation"] == "repair_host_requirements"
+            finally:
+                for key, value in override_backup.items():
+                    if value is None:
+                        os.environ.pop(key, None)
+                    else:
+                        os.environ[key] = value
+
+        windows_override_keys = [
+            "AGENTIUX_DEV_TOOL_OVERRIDE_WINGET",
+            "AGENTIUX_DEV_TOOL_OVERRIDE_CHOCO",
+        ]
+        windows_override_backup = {key: os.environ.get(key) for key in windows_override_keys}
+        os.environ["AGENTIUX_DEV_TOOL_OVERRIDE_WINGET"] = "available"
+        os.environ["AGENTIUX_DEV_TOOL_OVERRIDE_CHOCO"] = "available"
+        try:
+            windows_node_recipe = _host_setup_recipe_for_tool("node", "windows")
+            assert windows_node_recipe["mode"] == "automatic"
+            assert windows_node_recipe["installer_available"] is True
+            assert windows_node_recipe["installer_id"] in {"winget", "choco"}
+            assert windows_node_recipe["commands"]
+            windows_adb_recipe = _host_setup_recipe_for_tool("adb", "windows")
+            assert windows_adb_recipe["mode"] == "automatic"
+            assert windows_adb_recipe["installer_available"] is True
+            assert windows_adb_recipe["installer_id"] in {"winget", "choco"}
+            assert windows_adb_recipe["commands"]
+            assert windows_adb_recipe["available_installers"]
+        finally:
+            for key, value in windows_override_backup.items():
+                if value is None:
+                    os.environ.pop(key, None)
+                else:
+                    os.environ[key] = value
 
         design_brief = write_design_brief(
             workspace,
@@ -1411,11 +1742,13 @@ def main() -> int:
         assert optional_summary["optional_failed_checks"] == ["optional-main/layout_relations"]
 
         suite_run = start_verification_suite(workspace, "full", workstream_id=verification_workstream_id)
-        time.sleep(0.5)
-        active_run = active_verification_run(workspace, workstream_id=verification_workstream_id)
-        assert active_run is not None
-        assert active_run["run_id"] == suite_run["run_id"]
-        mid_events = read_verification_events(workspace, suite_run["run_id"], limit=20, workstream_id=verification_workstream_id)
+        active_run, mid_events = _wait_for_run_started(
+            workspace,
+            suite_run["run_id"],
+            workstream_id=verification_workstream_id,
+        )
+        if active_run is not None:
+            assert active_run["run_id"] == suite_run["run_id"]
         assert any(event["event_type"] == "run_started" for event in mid_events["events"])
 
         suite_run = wait_for_verification_run(workspace, suite_run["run_id"], timeout_seconds=20, workstream_id=verification_workstream_id)
@@ -1929,6 +2262,95 @@ def main() -> int:
                 "id": 5,
                 "method": "tools/call",
                 "params": {
+                    "name": "show_capability_catalog",
+                    "arguments": {
+                        "routeId": "git",
+                        "queryText": "commit worktree branch",
+                        "limit": 6,
+                    },
+                },
+            },
+        )
+        assert response["result"]["structuredContent"]["entries"]
+        assert all("git" in entry["related_routes"] for entry in response["result"]["structuredContent"]["entries"])
+
+        response = _call_mcp(
+            plugin_root / "scripts" / "agentiux_dev_mcp.py",
+            {
+                "jsonrpc": "2.0",
+                "id": 6,
+                "method": "tools/call",
+                "params": {
+                    "name": "show_intent_route",
+                    "arguments": {
+                        "requestText": "Inspect plugin dashboard and MCP tool catalogs",
+                    },
+                },
+            },
+        )
+        assert response["result"]["structuredContent"]["resolved_route"]["route_id"] == "plugin-dev"
+
+        response = _call_mcp(
+            plugin_root / "scripts" / "agentiux_dev_mcp.py",
+            {
+                "jsonrpc": "2.0",
+                "id": 7,
+                "method": "tools/call",
+                "params": {
+                    "name": "refresh_context_index",
+                    "arguments": {
+                        "workspacePath": str(workspace),
+                    },
+                },
+            },
+        )
+        assert response["result"]["structuredContent"]["chunk_count"] >= 1
+
+        response = _call_mcp(
+            plugin_root / "scripts" / "agentiux_dev_mcp.py",
+            {
+                "jsonrpc": "2.0",
+                "id": 8,
+                "method": "tools/call",
+                "params": {
+                    "name": "search_context_index",
+                    "arguments": {
+                        "workspacePath": str(repo_root),
+                        "queryText": "Inspect MCP tool catalogs and dashboard runtime",
+                        "routeId": "plugin-dev",
+                        "limit": 5,
+                    },
+                },
+            },
+        )
+        assert response["result"]["structuredContent"]["matches"]
+
+        response = _call_mcp(
+            plugin_root / "scripts" / "agentiux_dev_mcp.py",
+            {
+                "jsonrpc": "2.0",
+                "id": 9,
+                "method": "tools/call",
+                "params": {
+                    "name": "show_workspace_context_pack",
+                    "arguments": {
+                        "workspacePath": str(repo_root),
+                        "requestText": "Inspect MCP tool catalogs and dashboard runtime",
+                        "routeId": "plugin-dev",
+                        "limit": 5,
+                    },
+                },
+            },
+        )
+        assert response["result"]["structuredContent"]["context_pack"]["selected_chunks"]
+
+        response = _call_mcp(
+            plugin_root / "scripts" / "agentiux_dev_mcp.py",
+            {
+                "jsonrpc": "2.0",
+                "id": 10,
+                "method": "tools/call",
+                "params": {
                     "name": "show_verification_helper_catalog",
                     "arguments": {
                         "workspacePath": str(workspace),
@@ -1942,7 +2364,7 @@ def main() -> int:
             plugin_root / "scripts" / "agentiux_dev_mcp.py",
             {
                 "jsonrpc": "2.0",
-                "id": 6,
+                "id": 11,
                 "method": "tools/call",
                 "params": {
                     "name": "sync_verification_helpers",
@@ -1958,7 +2380,7 @@ def main() -> int:
             plugin_root / "scripts" / "agentiux_dev_mcp.py",
             {
                 "jsonrpc": "2.0",
-                "id": 7,
+                "id": 12,
                 "method": "tools/call",
                 "params": {
                     "name": "suggest_commit_message",
@@ -1976,7 +2398,7 @@ def main() -> int:
             plugin_root / "scripts" / "agentiux_dev_mcp.py",
             {
                 "jsonrpc": "2.0",
-                "id": 6,
+                "id": 13,
                 "method": "tools/call",
                 "params": {
                     "name": "plan_git_change",

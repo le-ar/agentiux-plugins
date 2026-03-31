@@ -1,0 +1,293 @@
+{
+  "catalog": "intent_routes",
+  "entries": [
+    {
+      "cost_hint": "medium",
+      "primary_paths": [
+        "README.md",
+        "references/design-workflow.md",
+        "skills/design-orchestrator/SKILL.md"
+      ],
+      "recommended_skills": [
+        "design-orchestrator",
+        "expo-product-designer",
+        "web-product-designer",
+        "workspace-kernel"
+      ],
+      "recommended_tools": [
+        "cache_reference_preview",
+        "get_design_brief",
+        "get_design_handoff",
+        "get_reference_board",
+        "list_design_handoffs",
+        "list_reference_boards",
+        "write_design_brief",
+        "write_design_handoff",
+        "write_reference_board"
+      ],
+      "route_id": "design",
+      "summary": "Handle briefs, reference boards, handoffs, and verification hooks for design-driven work.",
+      "summary_surfaces": [
+        "get_workspace_detail",
+        "list_design_handoffs",
+        "list_reference_boards"
+      ],
+      "tags": [
+        "brief",
+        "design",
+        "handoff",
+        "reference board",
+        "ux",
+        "visual"
+      ],
+      "title": "Design Workflow",
+      "triggers": [
+        "brief",
+        "design",
+        "handoff",
+        "reference",
+        "ux",
+        "visual design"
+      ]
+    },
+    {
+      "cost_hint": "low",
+      "primary_paths": [
+        "README.md",
+        "references/command-surface.md",
+        "skills/git-ops/SKILL.md"
+      ],
+      "recommended_skills": [
+        "git-ops",
+        "workspace-kernel"
+      ],
+      "recommended_tools": [
+        "detect_commit_style",
+        "inspect_git_state",
+        "list_git_worktrees",
+        "plan_git_change",
+        "suggest_branch_name",
+        "suggest_commit_message",
+        "suggest_pr_body",
+        "suggest_pr_title"
+      ],
+      "route_id": "git",
+      "summary": "Inspect repository state, worktrees, commit conventions, and safe local git mutations.",
+      "summary_surfaces": [
+        "inspect_git_state",
+        "list_git_worktrees",
+        "show_git_workflow_advice"
+      ],
+      "tags": [
+        "branch",
+        "commit",
+        "git",
+        "pr",
+        "staging",
+        "worktree"
+      ],
+      "title": "Git Workflow",
+      "triggers": [
+        "branch",
+        "commit",
+        "git",
+        "pull request",
+        "stage files",
+        "worktree"
+      ]
+    },
+    {
+      "cost_hint": "low",
+      "primary_paths": [
+        "README.md",
+        "references/workflow-kernel.md",
+        "skills/plugin-platform/SKILL.md"
+      ],
+      "recommended_skills": [
+        "docs-sync",
+        "plugin-platform",
+        "workspace-kernel"
+      ],
+      "recommended_tools": [
+        "get_dashboard_snapshot",
+        "get_plugin_stats",
+        "refresh_context_index",
+        "search_context_index",
+        "show_capability_catalog",
+        "show_intent_route",
+        "show_workspace_context_pack"
+      ],
+      "route_id": "plugin-dev",
+      "summary": "Orient on plugin source, MCP interfaces, scripts, catalogs, and self-host development surfaces.",
+      "summary_surfaces": [
+        "get_dashboard_snapshot",
+        "get_plugin_stats",
+        "show_capability_catalog"
+      ],
+      "tags": [
+        "catalog",
+        "dashboard",
+        "mcp",
+        "plugin",
+        "python",
+        "self-host"
+      ],
+      "title": "Plugin Development",
+      "triggers": [
+        "catalog",
+        "mcp",
+        "plugin",
+        "python scripts",
+        "self-host"
+      ]
+    },
+    {
+      "cost_hint": "low",
+      "primary_paths": [
+        "README.md",
+        "references/dashboard.md",
+        "skills/plugin-platform/SKILL.md"
+      ],
+      "recommended_skills": [
+        "docs-sync",
+        "plugin-platform"
+      ],
+      "recommended_tools": [
+        "audit_repository",
+        "get_dashboard_snapshot",
+        "get_plugin_stats",
+        "install_host_requirements",
+        "repair_host_requirements",
+        "show_host_setup_plan",
+        "show_host_support"
+      ],
+      "route_id": "release",
+      "summary": "Check self-host readiness, dashboard health, smoke coverage, and public-safe packaging.",
+      "summary_surfaces": [
+        "get_dashboard_snapshot",
+        "get_plugin_stats",
+        "show_host_support"
+      ],
+      "tags": [
+        "dashboard",
+        "installer",
+        "release",
+        "self-host",
+        "smoke"
+      ],
+      "title": "Release Readiness",
+      "triggers": [
+        "dashboard",
+        "install",
+        "release",
+        "self-host",
+        "smoke"
+      ]
+    },
+    {
+      "cost_hint": "medium",
+      "primary_paths": [
+        "README.md",
+        "references/visual-verification.md",
+        "skills/deterministic-verification/SKILL.md"
+      ],
+      "recommended_skills": [
+        "deterministic-verification",
+        "stage-closeout",
+        "workspace-kernel"
+      ],
+      "recommended_tools": [
+        "approve_verification_baseline",
+        "audit_verification_coverage",
+        "list_verification_runs",
+        "resolve_verification",
+        "run_verification_case",
+        "run_verification_suite",
+        "show_host_setup_plan",
+        "show_host_support",
+        "show_verification_helper_catalog",
+        "sync_verification_helpers",
+        "update_verification_baseline"
+      ],
+      "route_id": "verification",
+      "summary": "Resolve semantic checks, helper bundle sync, verification plans, runs, baselines, and artifacts.",
+      "summary_surfaces": [
+        "audit_verification_coverage",
+        "get_workspace_detail",
+        "show_verification_helper_catalog"
+      ],
+      "tags": [
+        "baseline",
+        "helper bundle",
+        "semantic",
+        "verification",
+        "visual"
+      ],
+      "title": "Deterministic Verification",
+      "triggers": [
+        "baseline",
+        "playwright",
+        "semantic",
+        "verification",
+        "visual"
+      ]
+    },
+    {
+      "cost_hint": "low",
+      "primary_paths": [
+        "references/command-surface.md",
+        "references/workflow-kernel.md",
+        "skills/workspace-kernel/SKILL.md"
+      ],
+      "recommended_skills": [
+        "stage-closeout",
+        "stage-execution",
+        "stage-planning",
+        "workspace-kernel"
+      ],
+      "recommended_tools": [
+        "advise_workflow",
+        "audit_repository",
+        "create_task",
+        "create_workstream",
+        "get_stage_register",
+        "get_workspace_detail",
+        "init_workspace",
+        "list_tasks",
+        "list_workstreams",
+        "preview_workspace_init",
+        "show_upgrade_plan",
+        "write_stage_register"
+      ],
+      "route_id": "workstream",
+      "summary": "Route requests into workspace initialization, workstreams, tasks, stage plans, and audits.",
+      "summary_surfaces": [
+        "get_dashboard_snapshot",
+        "get_workspace_detail",
+        "list_workspaces"
+      ],
+      "tags": [
+        "brief",
+        "stage",
+        "task",
+        "workflow",
+        "workspace",
+        "workstream"
+      ],
+      "title": "Workspace Kernel",
+      "triggers": [
+        "stage plan",
+        "task",
+        "workflow",
+        "workspace",
+        "workstream"
+      ]
+    }
+  ],
+  "entry_count": 6,
+  "plugin": {
+    "name": "agentiux-dev",
+    "version": "0.8.0"
+  },
+  "schema_version": 1
+}

@@ -1,0 +1,474 @@
+{
+  "catalog": "skills",
+  "entries": [
+    {
+      "cost_hint": "low",
+      "follow_up_paths": [
+        "README.md",
+        "references/stack-profiles.md"
+      ],
+      "id": "backend-platform",
+      "kind": "skill",
+      "path": "skills/backend-platform/SKILL.md",
+      "primary_surface": "skill",
+      "related_routes": [
+        "workstream"
+      ],
+      "summary": "Use for NestJS, Rust, Postgres, MongoDB, Redis, and NATS work inside AgentiUX Dev. This skill keeps backend stage planning, Dockerized dependencies, contract checks, and repo docs synchronized.",
+      "tags": [
+        "backend",
+        "backend-platform",
+        "platform"
+      ],
+      "title": "Backend Platform",
+      "triggers": [
+        "backend platform"
+      ]
+    },
+    {
+      "cost_hint": "low",
+      "follow_up_paths": [
+        "README.md",
+        "references/dashboard.md",
+        "references/design-workflow.md",
+        "references/visual-verification.md"
+      ],
+      "id": "design-orchestrator",
+      "kind": "skill",
+      "path": "skills/design-orchestrator/SKILL.md",
+      "primary_surface": "skill",
+      "related_routes": [
+        "design"
+      ],
+      "summary": "Use when the user needs a design brief, a reference search pass, a persisted reference board, or an implementation-ready design handoff for a web or Expo surface inside AgentiUX Dev.",
+      "tags": [
+        "brief",
+        "design",
+        "design-orchestrator",
+        "handoff",
+        "orchestrator",
+        "reference board"
+      ],
+      "title": "Design Orchestrator",
+      "triggers": [
+        "design brief",
+        "design orchestrator",
+        "handoff",
+        "reference board"
+      ]
+    },
+    {
+      "cost_hint": "low",
+      "follow_up_paths": [
+        "references/stack-profiles.md",
+        "references/visual-verification.md"
+      ],
+      "id": "deterministic-verification",
+      "kind": "skill",
+      "path": "skills/deterministic-verification/SKILL.md",
+      "primary_surface": "skill",
+      "related_routes": [
+        "verification"
+      ],
+      "summary": "Use for deterministic verification and repair loops across web, React Native, Expo, Android, iOS, backend, and infrastructure work. This skill keeps verification artifacts outside the repo and prefers deterministic gates before model-assisted review.",
+      "tags": [
+        "baseline",
+        "deterministic",
+        "deterministic-verification",
+        "semantic",
+        "verification",
+        "visual"
+      ],
+      "title": "Deterministic Verification",
+      "triggers": [
+        "baseline",
+        "deterministic verification",
+        "helper bundle",
+        "semantic checks",
+        "verification"
+      ]
+    },
+    {
+      "cost_hint": "low",
+      "follow_up_paths": [
+        "README.md",
+        "references/workflow-kernel.md"
+      ],
+      "id": "docs-sync",
+      "kind": "skill",
+      "path": "skills/docs-sync/SKILL.md",
+      "primary_surface": "skill",
+      "related_routes": [
+        "plugin-dev",
+        "workstream"
+      ],
+      "summary": "Use when approved decisions or implementation work changed documented truth. This skill keeps real project docs in sync with code changes while leaving Codex-specific workflow state outside the repository.",
+      "tags": [
+        "docs",
+        "docs-sync",
+        "readme",
+        "sync",
+        "truth maintenance"
+      ],
+      "title": "Docs Sync",
+      "triggers": [
+        "docs sync",
+        "docs update",
+        "readme sync"
+      ]
+    },
+    {
+      "cost_hint": "low",
+      "follow_up_paths": [
+        "references/design-workflow.md",
+        "references/stack-profiles.md",
+        "references/visual-verification.md"
+      ],
+      "id": "expo-product-designer",
+      "kind": "skill",
+      "path": "skills/expo-product-designer/SKILL.md",
+      "primary_surface": "skill",
+      "related_routes": [
+        "design"
+      ],
+      "summary": "Use for implementation-ready Expo and React Native UI handoffs inside AgentiUX Dev after the user selects a visual direction. This skill covers Android and iOS deltas, Nativewind-friendly guidance, and deterministic mobile verification hooks.",
+      "tags": [
+        "design",
+        "designer",
+        "expo",
+        "expo-product-designer",
+        "mobile",
+        "product"
+      ],
+      "title": "Expo Product Designer",
+      "triggers": [
+        "expo design",
+        "expo product designer",
+        "mobile visual",
+        "rn product design"
+      ]
+    },
+    {
+      "cost_hint": "low",
+      "follow_up_paths": [
+        "README.md",
+        "references/workflow-kernel.md"
+      ],
+      "id": "git-ops",
+      "kind": "skill",
+      "path": "skills/git-ops/SKILL.md",
+      "primary_surface": "skill",
+      "related_routes": [
+        "git"
+      ],
+      "summary": "Use when the user asks to commit changes, prepare a commit message, or inspect repository commit conventions. This skill reads local commit history or commitlint-style config first, then suggests or creates commit messages that fit the repo.",
+      "tags": [
+        "branch",
+        "commit",
+        "git",
+        "git-ops",
+        "ops",
+        "worktree"
+      ],
+      "title": "Git Ops",
+      "triggers": [
+        "commit message",
+        "git ops",
+        "inspect git",
+        "stage files",
+        "worktree"
+      ]
+    },
+    {
+      "cost_hint": "low",
+      "follow_up_paths": [
+        "README.md",
+        "references/stack-profiles.md"
+      ],
+      "id": "local-infra",
+      "kind": "skill",
+      "path": "skills/local-infra/SKILL.md",
+      "primary_surface": "skill",
+      "related_routes": [
+        "plugin-dev",
+        "release"
+      ],
+      "summary": "Use for Docker-first local development infrastructure, service inventories, Docker Compose baselines, local env contracts, and infra smoke checks across Postgres, MongoDB, Redis, NATS, and similar supporting services.",
+      "tags": [
+        "infra",
+        "local",
+        "local-infra"
+      ],
+      "title": "Local Infra",
+      "triggers": [
+        "local infra"
+      ]
+    },
+    {
+      "cost_hint": "low",
+      "follow_up_paths": [
+        "references/stack-profiles.md",
+        "references/visual-verification.md"
+      ],
+      "id": "mobile-platform",
+      "kind": "skill",
+      "path": "skills/mobile-platform/SKILL.md",
+      "primary_surface": "skill",
+      "related_routes": [
+        "verification",
+        "workstream"
+      ],
+      "summary": "Use for React Native, Expo, Nativewind, Android, and iOS workflows inside AgentiUX Dev. This skill covers deterministic emulator and simulator strategy, mobile stage planning, and local-only mobile verification artifacts.",
+      "tags": [
+        "mobile",
+        "mobile-platform",
+        "platform"
+      ],
+      "title": "Mobile Platform",
+      "triggers": [
+        "mobile platform"
+      ]
+    },
+    {
+      "cost_hint": "low",
+      "follow_up_paths": [
+        "README.md",
+        "references/stack-profiles.md"
+      ],
+      "id": "monorepo-platform",
+      "kind": "skill",
+      "path": "skills/monorepo-platform/SKILL.md",
+      "primary_surface": "skill",
+      "related_routes": [
+        "verification",
+        "workstream"
+      ],
+      "summary": "Use for Nx-driven monorepos, affected-task scoping, graph-aware verification, Docker Compose coordination, and Docker Swarm deployment planning inside AgentiUX Dev workflows.",
+      "tags": [
+        "monorepo",
+        "monorepo-platform",
+        "platform"
+      ],
+      "title": "Monorepo Platform",
+      "triggers": [
+        "monorepo platform"
+      ]
+    },
+    {
+      "cost_hint": "low",
+      "follow_up_paths": [
+        "references/dashboard.md",
+        "references/stack-profiles.md",
+        "references/workflow-kernel.md"
+      ],
+      "id": "plugin-platform",
+      "kind": "skill",
+      "path": "skills/plugin-platform/SKILL.md",
+      "primary_surface": "skill",
+      "related_routes": [
+        "plugin-dev",
+        "release"
+      ],
+      "summary": "Use for AgentiUX Dev self-hosting work on Python scripts, MCP tooling, installer flow, release-readiness gates, and the local dashboard.",
+      "tags": [
+        "dashboard",
+        "mcp",
+        "platform",
+        "plugin",
+        "plugin-platform",
+        "release"
+      ],
+      "title": "Plugin Platform",
+      "triggers": [
+        "dashboard",
+        "mcp tool",
+        "plugin platform",
+        "plugin runtime",
+        "release readiness"
+      ]
+    },
+    {
+      "cost_hint": "low",
+      "follow_up_paths": [
+        "README.md",
+        "references/visual-verification.md",
+        "references/workflow-kernel.md"
+      ],
+      "id": "stage-closeout",
+      "kind": "skill",
+      "path": "skills/stage-closeout/SKILL.md",
+      "primary_surface": "skill",
+      "related_routes": [
+        "verification",
+        "workstream"
+      ],
+      "summary": "Use when closing the active stage or handling closeout-only work after implementation. This skill verifies docs sync and deterministic checks, updates external state, rerenders external stage docs, and advances to the next stage without starting it.",
+      "tags": [
+        "closeout",
+        "stage",
+        "stage-closeout",
+        "verification"
+      ],
+      "title": "Stage Closeout",
+      "triggers": [
+        "close stage",
+        "closeout",
+        "stage closeout",
+        "verification summary"
+      ]
+    },
+    {
+      "cost_hint": "low",
+      "follow_up_paths": [
+        "README.md",
+        "references/visual-verification.md",
+        "references/workflow-kernel.md"
+      ],
+      "id": "stage-execution",
+      "kind": "skill",
+      "path": "skills/stage-execution/SKILL.md",
+      "primary_surface": "skill",
+      "related_routes": [
+        "workstream"
+      ],
+      "summary": "Use when the user explicitly asks to execute or continue the active stage in the current workstream. This skill requires explicit execution intent, external brief generation, and stage completion through verification and docs sync unless a blocker is reached.",
+      "tags": [
+        "execution",
+        "implementation",
+        "stage",
+        "stage-execution"
+      ],
+      "title": "Stage Execution",
+      "triggers": [
+        "continue work",
+        "execute stage",
+        "stage execution"
+      ]
+    },
+    {
+      "cost_hint": "low",
+      "follow_up_paths": [
+        "README.md",
+        "references/command-surface.md",
+        "references/workflow-kernel.md"
+      ],
+      "id": "stage-planning",
+      "kind": "skill",
+      "path": "skills/stage-planning/SKILL.md",
+      "primary_surface": "skill",
+      "related_routes": [
+        "workstream"
+      ],
+      "summary": "Use when proposing, reviewing, or applying changes to the external stage plan inside the current workstream. This skill enforces explicit confirmation for unfinished stage definition changes and forbids edits to completed stages.",
+      "tags": [
+        "planning",
+        "stage",
+        "stage plan",
+        "stage-planning",
+        "workstream"
+      ],
+      "title": "Stage Planning",
+      "triggers": [
+        "plan stages",
+        "stage planning"
+      ]
+    },
+    {
+      "cost_hint": "low",
+      "follow_up_paths": [
+        "references/stack-profiles.md",
+        "references/visual-verification.md"
+      ],
+      "id": "web-platform",
+      "kind": "skill",
+      "path": "skills/web-platform/SKILL.md",
+      "primary_surface": "skill",
+      "related_routes": [
+        "verification",
+        "workstream"
+      ],
+      "summary": "Use for React, Next.js, NestJS-adjacent web surfaces, TypeScript, Tailwind, and route-level deterministic verification policy inside AgentiUX Dev stage workflows.",
+      "tags": [
+        "platform",
+        "web",
+        "web-platform"
+      ],
+      "title": "Web Platform",
+      "triggers": [
+        "web platform"
+      ]
+    },
+    {
+      "cost_hint": "low",
+      "follow_up_paths": [
+        "references/design-workflow.md",
+        "references/stack-profiles.md",
+        "references/visual-verification.md"
+      ],
+      "id": "web-product-designer",
+      "kind": "skill",
+      "path": "skills/web-product-designer/SKILL.md",
+      "primary_surface": "skill",
+      "related_routes": [
+        "design"
+      ],
+      "summary": "Use for implementation-ready web UI handoffs inside AgentiUX Dev after the user selects a visual direction. This skill covers React, Next.js, Tailwind, route-level verification hooks, and concrete component/layout guidance.",
+      "tags": [
+        "design",
+        "designer",
+        "product",
+        "ui",
+        "web",
+        "web-product-designer"
+      ],
+      "title": "Web Product Designer",
+      "triggers": [
+        "landing page",
+        "ui direction",
+        "web design",
+        "web product designer"
+      ]
+    },
+    {
+      "cost_hint": "medium",
+      "follow_up_paths": [
+        "README.md",
+        "references/command-surface.md",
+        "references/dashboard.md",
+        "references/design-workflow.md",
+        "references/stack-profiles.md",
+        "references/workflow-kernel.md"
+      ],
+      "id": "workspace-kernel",
+      "kind": "skill",
+      "path": "skills/workspace-kernel/SKILL.md",
+      "primary_surface": "skill",
+      "related_routes": [
+        "plugin-dev",
+        "workstream"
+      ],
+      "summary": "Use when working in any repository through AgentiUX Dev. This skill owns workspace initialization prompts, command-surface routing, explicit intent classification, external state paths, and handoff to the stage and stack profile skills.",
+      "tags": [
+        "kernel",
+        "routing",
+        "workflow",
+        "workspace",
+        "workspace-kernel"
+      ],
+      "title": "Workspace Kernel",
+      "triggers": [
+        "task routing",
+        "workflow advice",
+        "workspace init",
+        "workspace kernel",
+        "workstream"
+      ]
+    }
+  ],
+  "entry_count": 16,
+  "plugin": {
+    "name": "agentiux-dev",
+    "version": "0.8.0"
+  },
+  "schema_version": 1
+}

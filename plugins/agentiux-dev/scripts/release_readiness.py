@@ -12,6 +12,7 @@ from typing import Any
 
 from agentiux_dev_lib import PLUGIN_NAME, preview_workspace_init, python_launcher_string, python_launcher_tokens, python_script_command
 from agentiux_dev_verification import audit_verification_coverage
+from build_context_catalogs import check_catalogs
 
 
 DISCOVERY_EXCLUDED_DIRS = {
@@ -142,6 +143,17 @@ def python_compile(plugin_root: Path) -> dict[str, Any]:
     }
 
 
+def context_catalog_check(plugin_root: Path) -> dict[str, Any]:
+    payload = check_catalogs(plugin_root)
+    if payload["status"] != "ok":
+        raise AssertionError(f"Context catalogs are stale: {payload['issues']}")
+    return {
+        "check": "context-catalogs",
+        "catalog_root": payload["catalog_root"],
+        "entry_counts": payload["entry_counts"],
+    }
+
+
 def self_host_check(repo_root: Path, plugin_root: Path) -> dict[str, Any]:
     preview = preview_workspace_init(repo_root)
     expected_primary_root = "." if plugin_root == repo_root else str(plugin_root.relative_to(repo_root))
@@ -208,6 +220,14 @@ def mcp_check(plugin_root: Path) -> dict[str, Any]:
         "preview_repair_workspace_state",
         "repair_workspace_state",
         "show_host_support",
+        "show_host_setup_plan",
+        "install_host_requirements",
+        "repair_host_requirements",
+        "show_capability_catalog",
+        "show_intent_route",
+        "show_workspace_context_pack",
+        "search_context_index",
+        "refresh_context_index",
         "audit_verification_coverage",
         "show_verification_helper_catalog",
         "sync_verification_helpers",
@@ -302,6 +322,8 @@ def smoke(plugin_root: Path, repo_root: Path) -> dict[str, Any]:
         "status": "passed",
         "covered_features": [
             "workflow-advice",
+            "context-catalogs",
+            "context-index",
             "workstreams",
             "tasks",
             "commit-style-detection",
@@ -325,6 +347,7 @@ def run_release_readiness(repo_root: Path, plugin_root: Path, smoke_runs: int) -
     checks = [
         audit(repo_root, plugin_root),
         python_compile(plugin_root),
+        context_catalog_check(plugin_root),
         self_host_check(repo_root, plugin_root),
         verification_coverage_check(repo_root),
         mcp_check(plugin_root),

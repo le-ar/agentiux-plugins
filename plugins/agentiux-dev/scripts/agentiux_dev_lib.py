@@ -121,9 +121,17 @@ CANONICAL_COMMAND_SURFACE = [
     "audit verification coverage",
     "sync verification helpers",
     "resolve verification",
+    "show capability catalog",
+    "show intent route",
+    "show workspace context pack",
+    "search context index",
+    "refresh context index",
     "approve verification baseline",
     "update verification baseline",
     "show host support",
+    "show host setup plan",
+    "install host requirements",
+    "repair host requirements",
     "create workstream",
     "list workstreams",
     "switch workstream",
@@ -394,6 +402,26 @@ COMMAND_ALIAS_TABLE = {
         "resolve verification",
         "\u043f\u043e\u043a\u0430\u0436\u0438 verification plan",
     ],
+    "show capability catalog": [
+        "show capability catalog",
+        "\u043f\u043e\u043a\u0430\u0436\u0438 capability catalog",
+    ],
+    "show intent route": [
+        "show intent route",
+        "\u043f\u043e\u043a\u0430\u0436\u0438 intent route",
+    ],
+    "show workspace context pack": [
+        "show workspace context pack",
+        "\u043f\u043e\u043a\u0430\u0436\u0438 workspace context pack",
+    ],
+    "search context index": [
+        "search context index",
+        "\u043f\u043e\u0438\u0449\u0438 context index",
+    ],
+    "refresh context index": [
+        "refresh context index",
+        "\u043e\u0431\u043d\u043e\u0432\u0438 context index",
+    ],
     "approve verification baseline": [
         "approve verification baseline",
         "\u043f\u043e\u0434\u0442\u0432\u0435\u0440\u0434\u0438 verification baseline",
@@ -405,6 +433,18 @@ COMMAND_ALIAS_TABLE = {
     "show host support": [
         "show host support",
         "\u043f\u043e\u043a\u0430\u0436\u0438 host support",
+    ],
+    "show host setup plan": [
+        "show host setup plan",
+        "\u043f\u043e\u043a\u0430\u0436\u0438 host setup plan",
+    ],
+    "install host requirements": [
+        "install host requirements",
+        "\u0443\u0441\u0442\u0430\u043d\u043e\u0432\u0438 host requirements",
+    ],
+    "repair host requirements": [
+        "repair host requirements",
+        "\u043f\u043e\u0447\u0438\u043d\u0438 host requirements",
     ],
     "create workstream": [
         "create workstream",
@@ -943,7 +983,37 @@ def spawn_logged_process(
     )
 
 
+def _tool_override_env(command: str) -> str:
+    normalized = re.sub(r"[^A-Za-z0-9]+", "_", command).strip("_").upper()
+    return f"AGENTIUX_DEV_TOOL_OVERRIDE_{normalized}"
+
+
+def _tool_override_value(command: str) -> str | None:
+    return os.getenv(_tool_override_env(command))
+
+
+def _tool_command_path(command: str) -> str | None:
+    override = _tool_override_value(command)
+    if override is None:
+        return shutil.which(command)
+    normalized = override.strip().lower()
+    if normalized in {"0", "false", "missing", "unavailable"}:
+        return None
+    if normalized in {"1", "true", "available"}:
+        return shutil.which(command)
+    return str(Path(override).expanduser())
+
+
 def _tool_available(command: str) -> bool:
+    override = _tool_override_value(command)
+    if override is not None:
+        normalized = override.strip().lower()
+        if normalized in {"0", "false", "missing", "unavailable"}:
+            return False
+        if normalized in {"1", "true", "available"}:
+            return True
+        resolved_override = Path(override).expanduser()
+        return resolved_override.exists() and os.access(resolved_override, os.X_OK)
     return shutil.which(command) is not None
 
 
@@ -1025,6 +1095,425 @@ def _support_warnings(detected_stacks: set[str], host_os: str, toolchain: dict[s
     if any(stack in detected_stacks for stack in {"postgres", "mongodb", "redis", "nats", "docker-compose"}) and not toolchain["docker"]["available"]:
         warnings.append("Docker is not available on this host, so local infra boot paths cannot run here.")
     return warnings
+
+
+HOST_SETUP_STATUS_SCHEMA_VERSION = 1
+HOST_SETUP_REQUIREMENT_ORDER = (
+    "web_verification",
+    "mobile_verification_android",
+    "android_tooling",
+    "mobile_verification_ios",
+    "docker",
+    "backend_starters",
+)
+HOST_SETUP_REQUIREMENT_METADATA: dict[str, dict[str, Any]] = {
+    "web_verification": {
+        "title": "Web verification toolchain",
+        "tools": ["node"],
+        "relevant_stacks": {"react", "nextjs", "react-native", "expo", "nestjs"},
+    },
+    "mobile_verification_android": {
+        "title": "Android mobile verification toolchain",
+        "tools": ["node", "adb"],
+        "relevant_stacks": {"android", "expo", "react-native"},
+    },
+    "android_tooling": {
+        "title": "Android platform tooling",
+        "tools": ["adb"],
+        "relevant_stacks": {"android", "expo", "react-native"},
+    },
+    "mobile_verification_ios": {
+        "title": "iOS mobile verification toolchain",
+        "tools": ["node", "xcode_cli"],
+        "relevant_stacks": {"expo", "ios", "react-native"},
+    },
+    "docker": {
+        "title": "Local infra runtime",
+        "tools": ["docker"],
+        "relevant_stacks": {"docker-compose", "mongodb", "nats", "postgres", "redis"},
+    },
+    "backend_starters": {
+        "title": "Backend starter toolchain",
+        "tools": ["node"],
+        "relevant_stacks": {"nestjs"},
+    },
+}
+HOST_SETUP_TOOL_METADATA: dict[str, dict[str, Any]] = {
+    "node": {
+        "title": "Node.js runtime",
+        "check_command": "node",
+        "host_recipes": {
+            "macos": {
+                "mode": "automatic",
+                "installer_id": "brew",
+                "commands": [["brew", "install", "node"]],
+            },
+            "linux": {
+                "mode": "automatic",
+                "installer_id": "apt-get",
+                "commands": [["__SUDO__", "apt-get", "update"], ["__SUDO__", "apt-get", "install", "-y", "nodejs", "npm"]],
+            },
+            "windows": {
+                "mode": "automatic",
+                "installer_options": [
+                    {
+                        "installer_id": "winget",
+                        "commands": [
+                            [
+                                "winget",
+                                "install",
+                                "--exact",
+                                "--id",
+                                "OpenJS.NodeJS.LTS",
+                                "--accept-source-agreements",
+                                "--accept-package-agreements",
+                                "--disable-interactivity",
+                            ]
+                        ],
+                    },
+                    {
+                        "installer_id": "choco",
+                        "commands": [["choco", "upgrade", "nodejs-lts", "-y"]],
+                    },
+                ],
+                "manual_instructions": "Install Node.js LTS with winget, Chocolatey, or the official installer if no supported package manager is available.",
+            },
+        },
+    },
+    "adb": {
+        "title": "Android platform tools (adb)",
+        "check_command": "adb",
+        "host_recipes": {
+            "macos": {
+                "mode": "automatic",
+                "installer_id": "brew",
+                "commands": [["brew", "install", "android-platform-tools"]],
+            },
+            "linux": {
+                "mode": "automatic",
+                "installer_id": "apt-get",
+                "commands": [["__SUDO__", "apt-get", "update"], ["__SUDO__", "apt-get", "install", "-y", "adb"]],
+            },
+            "windows": {
+                "mode": "automatic",
+                "installer_options": [
+                    {
+                        "installer_id": "choco",
+                        "commands": [["choco", "upgrade", "adb", "-y"]],
+                    },
+                    {
+                        "installer_id": "winget",
+                        "commands": [
+                            [
+                                "winget",
+                                "install",
+                                "--exact",
+                                "--id",
+                                "Google.PlatformTools",
+                                "--accept-source-agreements",
+                                "--accept-package-agreements",
+                                "--disable-interactivity",
+                            ]
+                        ],
+                    },
+                ],
+                "manual_instructions": "Install Android platform tools and ensure `adb` is on PATH if no supported package manager is available.",
+            },
+        },
+    },
+    "xcode_cli": {
+        "title": "Xcode command-line tools",
+        "check_command": "xcodebuild",
+        "host_recipes": {
+            "macos": {
+                "mode": "manual",
+                "manual_instructions": "Run `xcode-select --install` and complete the macOS installer prompt.",
+            },
+            "linux": {
+                "mode": "unsupported",
+                "manual_instructions": "iOS verification is available only on macOS hosts.",
+            },
+            "windows": {
+                "mode": "unsupported",
+                "manual_instructions": "iOS verification is available only on macOS hosts.",
+            },
+        },
+    },
+    "docker": {
+        "title": "Docker runtime",
+        "check_command": "docker",
+        "host_recipes": {
+            "macos": {
+                "mode": "manual",
+                "manual_instructions": "Install Docker Desktop and start it before running local infra flows.",
+            },
+            "linux": {
+                "mode": "manual",
+                "manual_instructions": "Install Docker Engine for your distribution, then ensure the daemon is running and your user can access the socket.",
+            },
+            "windows": {
+                "mode": "manual",
+                "manual_instructions": "Install Docker Desktop and start it before running local infra flows.",
+            },
+        },
+    },
+}
+HOST_SETUP_INSTALLER_METADATA = {
+    "brew": {
+        "title": "Homebrew",
+        "command": "brew",
+        "supported_hosts": {"macos"},
+    },
+    "apt-get": {
+        "title": "APT",
+        "command": "apt-get",
+        "supported_hosts": {"linux"},
+    },
+    "winget": {
+        "title": "WinGet",
+        "command": "winget",
+        "supported_hosts": {"windows"},
+    },
+    "choco": {
+        "title": "Chocolatey",
+        "command": "choco",
+        "supported_hosts": {"windows"},
+    },
+}
+
+
+def _host_setup_installer_available(installer_id: str, host_os: str) -> tuple[bool, str | None]:
+    metadata = HOST_SETUP_INSTALLER_METADATA.get(installer_id)
+    if not metadata:
+        return False, f"Unknown installer: {installer_id}"
+    supported_hosts = metadata.get("supported_hosts")
+    if supported_hosts and host_os not in supported_hosts:
+        return False, f"{metadata['title']} automation is not supported on {host_os}."
+    command = metadata["command"]
+    if installer_id == "apt-get":
+        apt_available = _tool_available("apt-get")
+        sudo_available = (hasattr(os, "geteuid") and os.geteuid() == 0) or _tool_available("sudo")
+        if not apt_available:
+            return False, "apt-get is not available on this host."
+        if not sudo_available:
+            return False, "apt-get install requires root privileges or sudo."
+        return True, None
+    available = _tool_available(command)
+    if available:
+        return True, None
+    return False, f"{metadata['title']} is not available on this host."
+
+
+def _host_setup_requirements_for_workspace(detected_stacks: set[str], toolchain: dict[str, Any]) -> list[str]:
+    selected: list[str] = []
+    for requirement_id in HOST_SETUP_REQUIREMENT_ORDER:
+        metadata = HOST_SETUP_REQUIREMENT_METADATA[requirement_id]
+        capability = toolchain.get(requirement_id, {})
+        if not capability.get("supported", True):
+            continue
+        if detected_stacks.intersection(metadata["relevant_stacks"]):
+            selected.append(requirement_id)
+    if selected:
+        return selected
+    return [
+        requirement_id
+        for requirement_id in HOST_SETUP_REQUIREMENT_ORDER
+        if toolchain.get(requirement_id, {}).get("supported", True) and not toolchain.get(requirement_id, {}).get("available", True)
+    ]
+
+
+def _normalize_host_setup_requirements(requirement_ids: list[str] | None, detected_stacks: set[str], toolchain: dict[str, Any]) -> list[str]:
+    if not requirement_ids:
+        return _host_setup_requirements_for_workspace(detected_stacks, toolchain)
+    normalized: list[str] = []
+    for requirement_id in requirement_ids:
+        if requirement_id not in HOST_SETUP_REQUIREMENT_METADATA:
+            raise ValueError(f"Unsupported host requirement id: {requirement_id}")
+        if requirement_id not in normalized:
+            normalized.append(requirement_id)
+    return normalized
+
+
+def _render_host_setup_command(command: list[str]) -> str:
+    return " ".join(command)
+
+
+def _host_setup_recipe_for_tool(tool_id: str, host_os: str) -> dict[str, Any]:
+    tool = HOST_SETUP_TOOL_METADATA[tool_id]
+    recipe = copy.deepcopy(tool["host_recipes"].get(host_os) or {"mode": "unsupported", "manual_instructions": f"No host setup recipe exists for `{tool['title']}` on {host_os}."})
+    recipe["tool_id"] = tool_id
+    recipe["tool_title"] = tool["title"]
+    recipe["check_command"] = tool["check_command"]
+    installer_options = recipe.pop("installer_options", None)
+    if recipe.get("mode") == "automatic" and installer_options:
+        recipe["available_installers"] = []
+        chosen_option = None
+        for option in installer_options:
+            installer_id = option["installer_id"]
+            available, reason = _host_setup_installer_available(installer_id, host_os)
+            recipe["available_installers"].append(
+                {
+                    "installer_id": installer_id,
+                    "title": HOST_SETUP_INSTALLER_METADATA[installer_id]["title"],
+                    "available": available,
+                    "reason": reason,
+                }
+            )
+            if chosen_option is None and available:
+                chosen_option = option
+        if chosen_option is not None:
+            recipe["installer_id"] = chosen_option["installer_id"]
+            recipe["commands"] = chosen_option.get("commands", [])
+            recipe["installer_available"] = True
+            recipe["installer_reason"] = None
+        else:
+            recipe["installer_id"] = None
+            recipe["commands"] = []
+            recipe["installer_available"] = False
+            failure_reasons = [entry["reason"] for entry in recipe["available_installers"] if entry.get("reason")]
+            recipe["installer_reason"] = "; ".join(dict.fromkeys(failure_reasons)) or "No supported installer is available on this host."
+    elif recipe.get("mode") == "automatic":
+        installer_available, reason = _host_setup_installer_available(recipe["installer_id"], host_os)
+        recipe["installer_available"] = installer_available
+        recipe["installer_reason"] = reason
+    return recipe
+
+
+def _resolve_host_setup_commands(commands: list[list[str]]) -> list[list[str]]:
+    resolved_commands: list[list[str]] = []
+    for command in commands:
+        resolved: list[str] = []
+        for token in command:
+            if token == "__SUDO__":
+                if os.geteuid() == 0:
+                    continue
+                sudo_path = _tool_command_path("sudo")
+                if not sudo_path:
+                    raise RuntimeError("sudo is required for this host setup step but is not available.")
+                resolved.append(sudo_path)
+                continue
+            if token in {"brew", "apt-get", "winget", "choco"}:
+                command_path = _tool_command_path(token)
+                if not command_path:
+                    raise RuntimeError(f"{token} is required for this host setup step but is not available.")
+                resolved.append(command_path)
+                continue
+            resolved.append(token)
+        resolved_commands.append(resolved)
+    return resolved_commands
+
+
+def _build_host_setup_plan(workspace: str | Path, requirement_ids: list[str] | None = None) -> dict[str, Any]:
+    state = read_workspace_state(workspace)
+    detection = detect_workspace(workspace)
+    host_os = detection["host_os"]
+    detected_stacks = set(detection["detected_stacks"])
+    toolchain = detection["toolchain_capabilities"]
+    selected_requirements = _normalize_host_setup_requirements(requirement_ids, detected_stacks, toolchain)
+    requirement_summaries = []
+    tools_to_install: dict[str, dict[str, Any]] = {}
+    missing_requirements: list[str] = []
+    for requirement_id in selected_requirements:
+        capability = toolchain.get(requirement_id, {"supported": True, "available": True, "reason": None})
+        metadata = HOST_SETUP_REQUIREMENT_METADATA[requirement_id]
+        summary = {
+            "requirement_id": requirement_id,
+            "title": metadata["title"],
+            "supported": capability.get("supported", True),
+            "available": capability.get("available", True),
+            "reason": capability.get("reason"),
+            "tools": metadata["tools"],
+        }
+        requirement_summaries.append(summary)
+        if summary["supported"] and not summary["available"]:
+            missing_requirements.append(requirement_id)
+        for tool_id in metadata["tools"]:
+            tool = HOST_SETUP_TOOL_METADATA[tool_id]
+            if _tool_available(tool["check_command"]):
+                continue
+            entry = tools_to_install.setdefault(
+                tool_id,
+                {
+                    "tool_id": tool_id,
+                    "title": tool["title"],
+                    "requirement_ids": [],
+                },
+            )
+            if requirement_id not in entry["requirement_ids"]:
+                entry["requirement_ids"].append(requirement_id)
+
+    steps: list[dict[str, Any]] = []
+    automatic_steps = 0
+    manual_steps = 0
+    for tool_id in sorted(tools_to_install):
+        tool_entry = tools_to_install[tool_id]
+        recipe = _host_setup_recipe_for_tool(tool_id, host_os)
+        step = {
+            "step_id": f"install-{tool_id}",
+            "tool_id": tool_id,
+            "title": recipe["tool_title"],
+            "requirement_ids": sorted(tool_entry["requirement_ids"]),
+            "mode": recipe["mode"],
+            "installer_id": recipe.get("installer_id"),
+            "installer_title": HOST_SETUP_INSTALLER_METADATA.get(recipe.get("installer_id"), {}).get("title"),
+            "installer_available": bool(recipe.get("installer_available", False)),
+            "available_installers": recipe.get("available_installers", []),
+            "requires_confirmation": recipe["mode"] == "automatic",
+            "commands": [],
+            "command_preview": [],
+            "manual_instructions": recipe.get("manual_instructions"),
+            "status": "manual_required" if recipe["mode"] == "manual" else ("unsupported" if recipe["mode"] == "unsupported" else "planned"),
+            "reason": recipe.get("installer_reason"),
+        }
+        if recipe["mode"] == "automatic":
+            if recipe.get("installer_available"):
+                resolved_commands = _resolve_host_setup_commands(recipe.get("commands", []))
+                step["commands"] = resolved_commands
+                step["command_preview"] = [_render_host_setup_command(command) for command in resolved_commands]
+                automatic_steps += 1
+            else:
+                step["status"] = "manual_required"
+                step["manual_instructions"] = step["reason"] or step["manual_instructions"] or "A supported installer is required on this host."
+                manual_steps += 1
+        else:
+            manual_steps += 1
+        steps.append(step)
+
+    if not missing_requirements:
+        status = "ready"
+    elif automatic_steps:
+        status = "needs_confirmation"
+    elif manual_steps:
+        status = "manual_action_required"
+    else:
+        status = "unsupported"
+
+    installers = []
+    for installer_id, metadata in HOST_SETUP_INSTALLER_METADATA.items():
+        available, reason = _host_setup_installer_available(installer_id, host_os)
+        installers.append(
+            {
+                "installer_id": installer_id,
+                "title": metadata["title"],
+                "available": available,
+                "reason": reason,
+            }
+        )
+
+    return {
+        "workspace_path": state["workspace_path"],
+        "workspace_label": state.get("workspace_label"),
+        "host_os": host_os,
+        "status": status,
+        "requires_confirmation": bool(automatic_steps),
+        "selected_requirements": selected_requirements,
+        "requirement_summaries": requirement_summaries,
+        "missing_requirements": missing_requirements,
+        "automatic_step_count": automatic_steps,
+        "manual_step_count": manual_steps,
+        "supported_installers": installers,
+        "steps": steps,
+    }
 
 
 def _local_dev_policy(detected_stacks: set[str], selected_profiles: list[str]) -> dict[str, Any]:
@@ -1334,9 +1823,11 @@ def _load_json(path: Path, default: Any | None = None, *, strict: bool = False, 
 
 def _write_json(path: Path, payload: Any) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    with path.open("w") as handle:
+    temp_path = path.parent / f".{path.name}.{os.getpid()}.{time.time_ns()}.tmp"
+    with temp_path.open("w") as handle:
         json.dump(payload, handle, indent=2)
         handle.write("\n")
+    os.replace(temp_path, path)
 
 
 def _read_text(path: Path, default: str = "") -> str:
@@ -1618,6 +2109,11 @@ def _plugin_platform_detection(workspace_path: Path) -> dict[str, Any]:
             plugin_roots.add(candidate_root)
 
     ordered_plugin_roots = sorted(plugin_roots, key=lambda path: (len(_relative_path(workspace_path, path)), _relative_path(workspace_path, path)))
+    plugin_python_files = [
+        candidate
+        for candidate in python_files
+        if any(root == candidate.parent or root in candidate.parents for root in ordered_plugin_roots)
+    ]
     primary_plugin_root = _relative_path(workspace_path, ordered_plugin_roots[0]) if ordered_plugin_roots else None
     release_readiness_command = None
     host_os = current_host_os()
@@ -1629,7 +2125,7 @@ def _plugin_platform_detection(workspace_path: Path) -> dict[str, Any]:
             release_readiness_command = f"{python_launcher_string(host_os)} {relative_script}"
 
     detected_features = []
-    if python_files:
+    if plugin_python_files:
         detected_features.append("python")
     if plugin_manifests:
         detected_features.append("codex-plugin")
@@ -1639,11 +2135,11 @@ def _plugin_platform_detection(workspace_path: Path) -> dict[str, Any]:
         detected_features.append("local-dashboard")
 
     return {
-        "enabled": bool(detected_features),
+        "enabled": bool(ordered_plugin_roots or detected_features),
         "detected_features": sorted(detected_features),
         "plugin_roots": [_relative_path(workspace_path, path) for path in ordered_plugin_roots],
         "primary_plugin_root": primary_plugin_root,
-        "python_entrypoints": sorted(_relative_path(workspace_path, path) for path in python_files[:12]),
+        "python_entrypoints": sorted(_relative_path(workspace_path, path) for path in plugin_python_files[:12]),
         "codex_plugin_manifests": sorted(_relative_path(workspace_path, path) for path in plugin_manifests),
         "mcp_configs": sorted(_relative_path(workspace_path, path) for path in mcp_configs),
         "dashboard_roots": sorted(_relative_path(workspace_path, path.parent) for path in dashboard_indexes),
@@ -1671,6 +2167,7 @@ def detect_workspace(workspace: str | Path) -> dict[str, Any]:
     compose_files = _compose_files(workspace_path)
     compose_text = "\n".join(path.read_text(errors="ignore") for path in compose_files).lower()
     plugin_platform = _plugin_platform_detection(workspace_path)
+    python_files = _safe_rglob(workspace_path, "*.py")
     techs: set[str] = set()
     signals: list[str] = []
 
@@ -1694,6 +2191,7 @@ def detect_workspace(workspace: str | Path) -> dict[str, Any]:
     ios_exists = (workspace_path / "ios").exists() or (workspace_path / "Podfile").exists() or any(workspace_path.glob("*.xcodeproj"))
     docker_exists = (workspace_path / "Dockerfile").exists() or bool(compose_files)
     swarm_exists = any("stack" in path.name for path in compose_files) or ("deploy:" in compose_text and "replicas:" in compose_text)
+    python_exists = any((workspace_path / name).exists() for name in ("pyproject.toml", "requirements.txt", "setup.py")) or bool(python_files)
 
     mark("react" in packages or "react-dom" in packages, "react", "package.json:react")
     mark("next" in packages, "nextjs", "package.json:next")
@@ -1708,6 +2206,7 @@ def detect_workspace(workspace: str | Path) -> dict[str, Any]:
     mark("nativewind" in packages, "nativewind", "package.json:nativewind")
     mark("tailwindcss" in packages or tailwind_exists, "tailwind", "tailwind-config")
     mark((workspace_path / "Cargo.toml").exists(), "rust", "Cargo.toml")
+    mark(python_exists, "python", "python-signal")
     mark((workspace_path / "nx.json").exists() or "nx" in packages or "@nx/workspace" in packages, "nx", "nx-signal")
     mark(docker_exists, "docker", "dockerfile-or-compose")
     mark(bool(compose_files), "docker-compose", "compose-files")
@@ -1718,7 +2217,6 @@ def detect_workspace(workspace: str | Path) -> dict[str, Any]:
     mark("nats" in compose_text or "nats" in packages, "nats", "nats-signal")
     mark(gradle_exists, "android", "android-signal")
     mark(ios_exists, "ios", "ios-signal")
-    mark(bool(plugin_platform["python_entrypoints"]), "python", "python-entrypoints")
     mark(bool(plugin_platform["codex_plugin_manifests"]), "codex-plugin", "codex-plugin-manifest")
     mark(bool(plugin_platform["mcp_configs"]), "mcp-server", "mcp-config")
     mark(bool(plugin_platform["dashboard_roots"]), "local-dashboard", "dashboard-assets")
@@ -1734,7 +2232,7 @@ def detect_workspace(workspace: str | Path) -> dict[str, Any]:
         selected_profiles.append("local-infra")
     if "nx" in techs:
         selected_profiles.append("monorepo-platform")
-    if any(stack in techs for stack in {"python", "codex-plugin", "mcp-server", "local-dashboard"}):
+    if any(stack in techs for stack in {"codex-plugin", "mcp-server", "local-dashboard"}) or plugin_platform.get("enabled"):
         selected_profiles.append("plugin-platform")
 
     selected_profiles = sorted(set(selected_profiles))
@@ -4393,16 +4891,195 @@ def get_state_paths(workspace: str | Path) -> dict[str, Any]:
     }
 
 
+def _host_setup_runtime_paths() -> dict[str, Path]:
+    root = runtime_root() / "host-setup"
+    return {
+        "root": root,
+        "status_json": root / "status.json",
+        "history_jsonl": root / "history.jsonl",
+    }
+
+
+def _read_host_setup_runtime_status() -> dict[str, Any]:
+    return _load_json(_host_setup_runtime_paths()["status_json"], default={}) or {}
+
+
+def _write_host_setup_runtime_status(payload: dict[str, Any]) -> None:
+    paths = _host_setup_runtime_paths()
+    _write_json(paths["status_json"], payload)
+
+
+def _append_host_setup_runtime_history(payload: dict[str, Any]) -> None:
+    paths = _host_setup_runtime_paths()
+    paths["history_jsonl"].parent.mkdir(parents=True, exist_ok=True)
+    with paths["history_jsonl"].open("a") as handle:
+        handle.write(json.dumps(payload, sort_keys=True) + "\n")
+
+
+def _record_host_setup_operation(record: dict[str, Any]) -> None:
+    status_payload = {
+        "schema_version": HOST_SETUP_STATUS_SCHEMA_VERSION,
+        "updated_at": now_iso(),
+        "last_operation": record,
+    }
+    _write_host_setup_runtime_status(status_payload)
+    _append_host_setup_runtime_history(record)
+
+
+def _last_host_setup_operation_for_workspace(workspace: str | Path) -> dict[str, Any] | None:
+    last_operation = _read_host_setup_runtime_status().get("last_operation")
+    if not isinstance(last_operation, dict):
+        return None
+    try:
+        if Path(last_operation.get("workspace_path", "")).expanduser().resolve() != Path(workspace).expanduser().resolve():
+            return None
+    except OSError:
+        return None
+    return last_operation
+
+
+def show_host_setup_plan(workspace: str | Path, requirement_ids: list[str] | None = None) -> dict[str, Any]:
+    plan = _build_host_setup_plan(workspace, requirement_ids=requirement_ids)
+    return {
+        **plan,
+        "host_setup_status": _last_host_setup_operation_for_workspace(workspace),
+    }
+
+
+def _execute_host_setup_plan(workspace: str | Path, *, requirement_ids: list[str] | None, operation: str, confirmed: bool) -> dict[str, Any]:
+    if not confirmed:
+        raise ValueError(f"{operation.replace('_', ' ').title()} requires explicit confirmation.")
+    plan = _build_host_setup_plan(workspace, requirement_ids=requirement_ids)
+    before_support = show_host_support(workspace)
+    step_results: list[dict[str, Any]] = []
+    any_failures = False
+    any_auto_steps = False
+    for step in plan["steps"]:
+        if step["mode"] != "automatic" or not step["commands"]:
+            step_results.append(
+                {
+                    **step,
+                    "status": step["status"],
+                    "command_results": [],
+                }
+            )
+            continue
+        any_auto_steps = True
+        command_results = []
+        step_status = "completed"
+        for command in step["commands"]:
+            started_at = now_iso()
+            result = subprocess.run(command, capture_output=True, text=True, check=False)  # noqa: S603
+            command_results.append(
+                {
+                    "command": command,
+                    "command_preview": _render_host_setup_command(command),
+                    "started_at": started_at,
+                    "completed_at": now_iso(),
+                    "returncode": result.returncode,
+                    "stdout_tail": result.stdout.strip().splitlines()[-20:],
+                    "stderr_tail": result.stderr.strip().splitlines()[-20:],
+                }
+            )
+            if result.returncode != 0:
+                step_status = "failed"
+                any_failures = True
+                break
+        step_results.append(
+            {
+                **step,
+                "status": step_status,
+                "command_results": command_results,
+            }
+        )
+
+    repair_workspace_state(workspace)
+    after_support = show_host_support(workspace)
+    unresolved_requirements = [
+        requirement_id
+        for requirement_id in plan["missing_requirements"]
+        if not after_support["toolchain_capabilities"].get(requirement_id, {}).get("available", True)
+    ]
+    if not plan["missing_requirements"]:
+        status = "no_action_needed"
+    elif any_failures and unresolved_requirements:
+        status = "failed"
+    elif unresolved_requirements and any_auto_steps:
+        status = "partial"
+    elif unresolved_requirements:
+        status = "manual_action_required"
+    else:
+        status = "completed"
+
+    result = {
+        "workspace_path": plan["workspace_path"],
+        "workspace_label": plan.get("workspace_label"),
+        "host_os": plan["host_os"],
+        "operation": operation,
+        "confirmed": True,
+        "status": status,
+        "selected_requirements": plan["selected_requirements"],
+        "missing_requirements_before": plan["missing_requirements"],
+        "unresolved_requirements_after": unresolved_requirements,
+        "before_support": before_support,
+        "after_support": after_support,
+        "steps": step_results,
+    }
+    _record_host_setup_operation(
+        {
+            "operation": operation,
+            "workspace_path": plan["workspace_path"],
+            "workspace_label": plan.get("workspace_label"),
+            "host_os": plan["host_os"],
+            "status": status,
+            "selected_requirements": plan["selected_requirements"],
+            "missing_requirements_before": plan["missing_requirements"],
+            "unresolved_requirements_after": unresolved_requirements,
+            "updated_at": now_iso(),
+        }
+    )
+    return result
+
+
+def install_host_requirements(workspace: str | Path, requirement_ids: list[str] | None = None, confirmed: bool = False) -> dict[str, Any]:
+    return _execute_host_setup_plan(
+        workspace,
+        requirement_ids=requirement_ids,
+        operation="install_host_requirements",
+        confirmed=confirmed,
+    )
+
+
+def repair_host_requirements(workspace: str | Path, requirement_ids: list[str] | None = None, confirmed: bool = False) -> dict[str, Any]:
+    return _execute_host_setup_plan(
+        workspace,
+        requirement_ids=requirement_ids,
+        operation="repair_host_requirements",
+        confirmed=confirmed,
+    )
+
+
 def show_host_support(workspace: str | Path) -> dict[str, Any]:
     state = read_workspace_state(workspace)
     detection = detect_workspace(workspace)
+    host_setup_plan = _build_host_setup_plan(workspace)
+    host_setup_status = _last_host_setup_operation_for_workspace(workspace)
     return {
         "workspace_path": state["workspace_path"],
         "workspace_label": state.get("workspace_label"),
-        "host_os": state.get("host_os"),
+        "host_os": detection.get("host_os") or state.get("host_os"),
         "host_capabilities": state.get("host_capabilities", {}),
-        "toolchain_capabilities": state.get("toolchain_capabilities", {}),
+        "toolchain_capabilities": detection.get("toolchain_capabilities", state.get("toolchain_capabilities", {})),
         "support_warnings": detection.get("support_warnings", []),
+        "host_setup": {
+            "status": host_setup_plan["status"],
+            "requires_confirmation": host_setup_plan["requires_confirmation"],
+            "selected_requirements": host_setup_plan["selected_requirements"],
+            "missing_requirements": host_setup_plan["missing_requirements"],
+            "automatic_step_count": host_setup_plan["automatic_step_count"],
+            "manual_step_count": host_setup_plan["manual_step_count"],
+            "last_operation": host_setup_status,
+        },
     }
 
 

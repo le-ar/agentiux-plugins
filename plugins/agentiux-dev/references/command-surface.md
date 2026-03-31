@@ -19,11 +19,20 @@ AgentiUX Dev exposes a small chat-first command surface.
 - `run verification suite`
 - `show verification log`
 - `show verification recipes`
+- `show capability catalog`
+- `show intent route`
+- `show workspace context pack`
+- `search context index`
+- `refresh context index`
 - `show verification helper catalog`
 - `audit verification coverage`
 - `sync verification helpers`
 - `approve verification baseline`
 - `update verification baseline`
+- `show host support`
+- `show host setup plan`
+- `install host requirements`
+- `repair host requirements`
 - `create workstream`
 - `list workstreams`
 - `switch workstream`
@@ -60,11 +69,20 @@ AgentiUX Dev exposes a small chat-first command surface.
 - `run verification case` starts one deterministic verification case.
 - `run verification suite` starts a deterministic suite in stable case order.
 - `show verification log` reads stdout, stderr, or Android logcat from the active or selected verification run in external state.
+- `show capability catalog` returns the compact repo-tracked catalog for skills, MCP tools, scripts, and references.
+- `show intent route` resolves the low-token route family that should be used before reading large docs or Python entrypoints.
+- `show workspace context pack` returns the current global workspace context pack and optional semantic retrieval pack for a request.
+- `search context index` searches the global project context index for relevant chunks and recommended capabilities.
+- `refresh context index` rebuilds the global project context index outside the repository.
 - `show verification helper catalog` returns the versioned plugin-owned helper bundle catalog plus sync status for the current workspace.
 - `audit verification coverage` reports warning-level QA coverage gaps without mutating workspace state.
 - `sync verification helpers` materializes the generated helper bundle into `.verification/helpers/` for local imports.
 - `approve verification baseline` records approval for a project-owned baseline source path.
 - `update verification baseline` copies a selected verification artifact into a project-owned baseline path.
+- `show host support` returns current host/toolchain availability plus persisted host setup status.
+- `show host setup plan` is a read-only dry run for host-specific install and manual repair steps.
+- `install host requirements` may mutate the machine only after explicit confirmation and must refresh workspace host support after execution.
+- `repair host requirements` reruns the current missing host requirement plan only after explicit confirmation and must refresh workspace host support after execution.
 - `create workstream` creates a named workstream container with its own external state and an empty stage register that still requires explicit stage-plan confirmation.
 - `create task` creates a lightweight task for point fixes without requiring a full workstream.
 - In initialized repositories, `workflow-advice` may auto-create or reuse the active point task for narrow fixes.
@@ -72,6 +90,7 @@ AgentiUX Dev exposes a small chat-first command surface.
 - `audit repository` is read-only for repo code and produces a structured gap report.
 - `apply upgrade plan` requires explicit confirmation before creating remediation workstreams and tasks.
 - `create starter` uses the official upstream CLI only and does not initialize AgentiUX Dev state automatically.
+- Cheap summaries and catalogs should be preferred before broad manual exploration.
 - Commit requests should inspect commit history or config before a message is suggested or a commit is created.
 - `show git state` and `plan git change` are read-only.
 - `create git branch`, `stage git files`, and `create git commit` are local-only write actions and must not push or publish.

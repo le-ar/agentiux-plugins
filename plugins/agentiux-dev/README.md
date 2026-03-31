@@ -52,7 +52,23 @@ The source repo remains the place where you edit and verify the plugin. The inst
 - state repair for stale or profile-inaccurate workspace state
 - host-aware support reporting across Windows, Linux, and macOS
 - repo-aware Git workflow advice plus safe local branch, staging, and commit actions
+- repo-tracked low-token catalogs for skills, MCP tools, scripts, references, and intent routes
+- global project context indexing and semantic cache under `~/.agentiux/agentiux-dev/cache/context/`
 - a read-only local dashboard launched from chat
+
+## Low-Token Retrieval
+
+Codex should prefer the low-token retrieval ladder before reading large docs or Python entrypoints:
+
+1. existing cheap summaries such as plugin stats, dashboard snapshot, and workspace detail
+2. `show intent route`
+3. `show capability catalog`
+4. `show workspace context pack`
+5. `search context index`
+6. targeted file reads
+7. broad manual exploration only when the earlier layers are insufficient
+
+The plugin keeps canonical versioned catalogs in `catalogs/` and stores project-derived context indexes globally under `~/.agentiux/agentiux-dev/cache/context/<workspace-fingerprint>/`. No project-derived context cache is written into repositories.
 
 ## Public Command Surface
 
@@ -73,11 +89,21 @@ The source repo remains the place where you edit and verify the plugin. The inst
 - `run verification suite`
 - `show verification log`
 - `show verification recipes`
+- `show verification helper catalog`
+- `sync verification helpers`
+- `show capability catalog`
+- `show intent route`
+- `show workspace context pack`
+- `search context index`
+- `refresh context index`
 - `audit verification coverage`
 - `resolve verification`
 - `approve verification baseline`
 - `update verification baseline`
 - `show host support`
+- `show host setup plan`
+- `install host requirements`
+- `repair host requirements`
 - `create workstream`
 - `list workstreams`
 - `switch workstream`
@@ -133,6 +159,11 @@ Localized aliases are matched at runtime. The tracked source remains English-onl
 - `python3 scripts/agentiux_dev_state.py paths --workspace /path/to/repo`
 - `python3 scripts/agentiux_dev_state.py show-host-support --workspace /path/to/repo`
 - `python3 scripts/agentiux_dev_state.py workflow-advice --workspace /path/to/repo --request-text "Fix the CTA spacing"`
+- `python3 scripts/agentiux_dev_state.py show-capability-catalog --route-id git --query-text "commit worktree branch"`
+- `python3 scripts/agentiux_dev_state.py show-intent-route --request-text "Inspect plugin dashboard and MCP tool catalogs"`
+- `python3 scripts/agentiux_dev_state.py show-workspace-context-pack --workspace /path/to/repo --request-text "Inspect checkout verification" --route-id verification`
+- `python3 scripts/agentiux_dev_state.py search-context-index --workspace /path/to/repo --query-text "Detox helper bundle drift"`
+- `python3 scripts/agentiux_dev_state.py refresh-context-index --workspace /path/to/repo`
 - `python3 scripts/agentiux_dev_state.py current-workstream --workspace /path/to/repo`
 - `python3 scripts/agentiux_dev_state.py create-workstream --workspace /path/to/repo --title "Checkout Feature"`
 - `python3 scripts/agentiux_dev_state.py create-task --workspace /path/to/repo --title "Fix CTA" --objective "Tighten spacing"`
@@ -160,6 +191,10 @@ Localized aliases are matched at runtime. The tracked source remains English-onl
 - Windows, Linux, and macOS share the same core plugin runtime for state, MCP, GUI, workflow advice, audits, tasks, workstreams, and Git guidance.
 - iOS execution remains macOS-only.
 - Android, web, backend, and starter execution remain host-aware and only run when the required toolchain is present.
+- `show host setup plan` previews host-specific install or manual repair steps without mutating the machine.
+- `install host requirements` and `repair host requirements` run only after explicit confirmation and refresh `show host support` state after execution.
+- Automatic host setup currently covers the deterministic package-manager path the plugin can defend on the current host: Homebrew on macOS, APT on Linux, and WinGet or Chocolatey on Windows for supported tools such as Node.js and Android platform tools.
+- Interactive or high-risk flows such as Xcode command-line tools and Docker remain manual.
 - Installed copies normalize `.mcp.json` to a host-appropriate Python launcher during install or sync.
 
 ## Launching the GUI
@@ -195,6 +230,7 @@ The `launch` command returns the local URL, process id, and log file paths. Runt
 If the user starts with a plain request instead of a canonical phrase, the plugin should route it automatically:
 
 - propose workspace initialization immediately when the repo is unmanaged
+- resolve the low-token intent route before opening large docs or scripts
 - propose a starter when the request is greenfield
 - propose a workstream for large feature work
 - auto-create or reuse a task for small targeted fixes in initialized repositories
@@ -204,6 +240,15 @@ The runtime helper for this is:
 
 ```bash
 python3 scripts/agentiux_dev_state.py workflow-advice --workspace /path/to/repo --request-text "Implement checkout flow across web and backend"
+```
+
+The low-token retrieval helpers for the same request are:
+
+```bash
+python3 scripts/agentiux_dev_state.py show-intent-route --request-text "Implement checkout flow across web and backend"
+python3 scripts/agentiux_dev_state.py show-capability-catalog --route-id workstream
+python3 scripts/agentiux_dev_state.py show-workspace-context-pack --workspace /path/to/repo --request-text "Implement checkout flow across web and backend" --route-id workstream
+python3 scripts/agentiux_dev_state.py search-context-index --workspace /path/to/repo --query-text "checkout flow verification selectors"
 ```
 
 ## Working With Workstreams And Tasks
@@ -371,6 +416,8 @@ python3 plugins/agentiux-dev/scripts/release_readiness.py run --repo-root . --sm
 ```
 
 This gate checks public-safe source auditing, English-only tracked source, Python compile health, self-host detection, MCP handshake, dashboard health, repeated smoke runs, and the integrated v2 workflow surface including workstreams, tasks, audit, starter creation, GUI, and verification baseline lifecycle.
+
+It also validates that repo-tracked low-token catalogs are current and that the context-index surfaces stay available through the MCP server.
 
 ## State Layout
 
