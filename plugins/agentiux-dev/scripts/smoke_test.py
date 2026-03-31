@@ -3286,12 +3286,15 @@ def main() -> int:
                     dashboard_html = html_handle.read().decode("utf-8")
                 assert "AgentiUX Dev Dashboard" in dashboard_html
                 assert "/app.js" in dashboard_html
-                with urllib.request.urlopen(f"{gui_launch['url']}/api/dashboard?workspace={encoded_workspace}", timeout=20) as response_handle:
-                    payload = json.loads(response_handle.read().decode("utf-8"))
-                assert payload["workspace_detail"]["summary"]["workspace_label"] == "demo-workspace"
-                assert payload["workspace_detail"]["verification_runs"]["latest_run"]["run_id"] == suite_run["run_id"]
-                assert payload["workspace_detail"]["workstreams"]["items"]
-                assert payload["stats"]["active_verification_runs"] == 0
+                with urllib.request.urlopen(f"{gui_launch['url']}/api/dashboard", timeout=20) as response_handle:
+                    overview_payload = json.loads(response_handle.read().decode("utf-8"))
+                assert overview_payload["workspace_detail"] is None
+                assert overview_payload["stats"]["active_verification_runs"] == 0
+                with urllib.request.urlopen(f"{gui_launch['url']}/api/workspace-detail?workspace={encoded_workspace}", timeout=20) as response_handle:
+                    detail_payload = json.loads(response_handle.read().decode("utf-8"))
+                assert detail_payload["summary"]["workspace_label"] == "demo-workspace"
+                assert detail_payload["verification_runs"]["latest_run"]["run_id"] == suite_run["run_id"]
+                assert detail_payload["workstreams"]["items"]
             finally:
                 stop_gui()
         else:

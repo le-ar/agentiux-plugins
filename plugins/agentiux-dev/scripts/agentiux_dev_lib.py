@@ -6614,6 +6614,10 @@ def list_workspaces() -> dict[str, Any]:
 
 def plugin_stats() -> dict[str, Any]:
     workspaces = list_workspaces()["workspaces"]
+    return _plugin_stats_from_workspaces(workspaces)
+
+
+def _plugin_stats_from_workspaces(workspaces: list[dict[str, Any]]) -> dict[str, Any]:
     blocked = sum(1 for workspace in workspaces if workspace["stage_status"] == "blocked")
     ready = sum(1 for workspace in workspaces if workspace["stage_status"] == "ready_for_closeout")
     plugin_platform_workspaces = sum(1 for workspace in workspaces if workspace.get("plugin_platform", {}).get("enabled"))
@@ -6632,6 +6636,149 @@ def plugin_stats() -> dict[str, Any]:
         "starter_runs": list_starter_runs(limit=None)["run_count"],
         "gui_status": gui_runtime.get("status", "stopped"),
         "generated_at": now_iso(),
+    }
+
+
+def _dashboard_workspace_summary(workspace: str | Path) -> dict[str, Any]:
+    paths = _ensure_workspace_initialized(workspace)
+    workspace_state = read_workspace_state(workspace)
+    counts = _workspace_counts(paths)
+    register = None
+    workstream_id = workspace_state.get("current_workstream_id")
+    if workstream_id:
+        try:
+            register = read_stage_register(workspace, workstream_id=workstream_id)
+        except Exception:  # noqa: BLE001
+            register = None
+    return {
+        "workspace_path": paths["workspace_path"],
+        "workspace_label": workspace_state.get("workspace_label"),
+        "workspace_slug": workspace_state.get("workspace_slug"),
+        "workspace_mode": workspace_state.get("workspace_mode"),
+        "current_workstream_id": workspace_state.get("current_workstream_id"),
+        "current_task_id": workspace_state.get("current_task_id"),
+        "updated_at": workspace_state.get("updated_at"),
+        "plan_status": register.get("plan_status") if register else None,
+        "current_stage": register.get("current_stage") if register else None,
+        "stage_status": register.get("stage_status") if register else None,
+        "summary_counts": counts,
+        "plugin_platform": workspace_state.get("plugin_platform", {"enabled": False}),
+    }
+
+
+def list_dashboard_workspaces() -> dict[str, Any]:
+    registry = _load_registry()
+    workspace_states = sorted((state_root() / "workspaces").glob("*/workspace.json"))
+    workspaces = []
+    for state_file in workspace_states:
+        payload = _load_json(state_file, default={}) or {}
+        workspace_path = payload.get("workspace_path")
+        if not workspace_path:
+            continue
+        try:
+            workspaces.append(_dashboard_workspace_summary(workspace_path))
+        except FileNotFoundError:
+            continue
+    workspaces.sort(key=lambda item: item.get("updated_at") or "", reverse=True)
+    return {
+        "plugin": plugin_info(),
+        "registry_updated_at": registry.get("updated_at"),
+        "workspace_count": len(workspaces),
+        "workspaces": workspaces,
+    }
+
+
+def _dashboard_task_card(task: dict[str, Any] | None) -> dict[str, Any] | None:
+    if not task:
+        return None
+    return {
+        "task_id": task.get("task_id"),
+        "title": task.get("title"),
+        "status": task.get("status"),
+        "linked_workstream_id": task.get("linked_workstream_id"),
+        "stage_id": task.get("stage_id"),
+    }
+
+
+def _dashboard_task_list(workspace: str | Path) -> dict[str, Any]:
+    tasks = list_tasks(workspace)
+    return {
+        "workspace_path": tasks["workspace_path"],
+        "current_task_id": tasks.get("current_task_id"),
+        "items": [card for card in (_dashboard_task_card(item) for item in tasks.get("items", [])) if card],
+    }
+
+
+def _dashboard_starter_runs(workspace: str | Path) -> list[dict[str, Any]]:
+    workspace_path = str(Path(workspace).expanduser().resolve())
+    return [
+        {
+            "run_id": run.get("run_id"),
+            "preset_id": run.get("preset_id"),
+            "status": run.get("status"),
+            "project_root": run.get("project_root"),
+        }
+        for run in list_starter_runs(limit=20)["runs"]
+        if run.get("workspace_initialized") and run.get("project_root") == workspace_path
+    ]
+
+
+def dashboard_overview_snapshot() -> dict[str, Any]:
+    overview = list_dashboard_workspaces()
+    return {
+        "schema_version": 2,
+        "generated_at": now_iso(),
+        "plugin": plugin_info(),
+        "stats": _plugin_stats_from_workspaces(overview["workspaces"]),
+        "gui": read_gui_runtime(),
+        "overview": overview,
+        "starter_runs": list_starter_runs(limit=10),
+        "workspace_detail": None,
+    }
+
+
+def read_workspace_dashboard_detail(workspace: str | Path | None) -> dict[str, Any] | None:
+    from agentiux_dev_verification import (
+        list_verification_runs,
+        read_verification_log_tail,
+        read_verification_recipes,
+        recent_verification_events,
+        resolve_verification_selection,
+    )
+    from agentiux_dev_youtrack import workspace_youtrack_dashboard_detail
+
+    if not workspace:
+        return None
+    paths = _ensure_workspace_initialized(workspace)
+    workspace_state = read_workspace_state(workspace)
+    has_workstream = bool(workspace_state.get("current_workstream_id"))
+    current_task_payload = current_task(workspace)
+    verification_runs = list_verification_runs(workspace, limit=10) if has_workstream else _empty_verification_runs_payload(workspace)
+    current_log_run = verification_runs["active_run"] or verification_runs["latest_run"]
+    return {
+        "summary": workspace_summary(workspace),
+        "paths": get_state_paths(workspace)["paths"],
+        "workspace_state": workspace_state,
+        "workstreams": list_workstreams(workspace),
+        "tasks": _dashboard_task_list(workspace),
+        "current_task": _dashboard_task_card(current_task_payload),
+        "stage_register": read_stage_register(workspace) if has_workstream else None,
+        "design_brief": read_design_brief(workspace) if has_workstream else None,
+        "current_reference_board": read_reference_board(workspace) if has_workstream else None,
+        "current_design_handoff": read_design_handoff(workspace) if has_workstream else None,
+        "verification_recipes": read_verification_recipes(workspace) if has_workstream else None,
+        "verification_selection": resolve_verification_selection(workspace) if (has_workstream or current_task_payload) else None,
+        "verification_runs": verification_runs,
+        "latest_verification_run": verification_runs["latest_run"],
+        "latest_completed_verification_run": verification_runs["latest_completed_run"],
+        "recent_verification_events": recent_verification_events(workspace, limit=12) if has_workstream else _empty_recent_verification_events_payload(workspace),
+        "active_verification_stdout": read_verification_log_tail(workspace, current_log_run["run_id"], "stdout", 20) if current_log_run else None,
+        "active_verification_stderr": read_verification_log_tail(workspace, current_log_run["run_id"], "stderr", 20) if current_log_run else None,
+        "active_verification_logcat": read_verification_log_tail(workspace, current_log_run["run_id"], "logcat", 20) if current_log_run else None,
+        "current_audit": read_current_audit(workspace),
+        "current_upgrade_plan": read_upgrade_plan(workspace),
+        "youtrack": workspace_youtrack_dashboard_detail(workspace),
+        "recent_starter_runs": _dashboard_starter_runs(workspace),
     }
 
 

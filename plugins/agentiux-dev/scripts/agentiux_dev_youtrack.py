@@ -2291,3 +2291,57 @@ def workspace_youtrack_detail(workspace: str | Path) -> dict[str, Any]:
         "current_plan": plan,
         "current_workstream_issues": workstream_issue_cards(workspace, workstream_id=workstream_id),
     }
+
+
+def _dashboard_search_session_summary(search_session: dict[str, Any] | None) -> dict[str, Any] | None:
+    if not search_session:
+        return None
+    shortlist_page = search_session.get("shortlist_page") or {}
+    return {
+        "session_id": search_session.get("session_id"),
+        "resolved_query": search_session.get("resolved_query"),
+        "result_count": search_session.get("result_count"),
+        "result_count_exact": search_session.get("result_count_exact"),
+        "shortlist_count": len(search_session.get("shortlist") or []),
+        "selected_issue_count": len(search_session.get("selected_issue_ids") or []),
+        "shortlist_page": {
+            "skip": shortlist_page.get("skip"),
+            "page_size": shortlist_page.get("page_size"),
+            "returned": shortlist_page.get("returned"),
+        },
+        "updated_at": search_session.get("updated_at"),
+    }
+
+
+def _dashboard_plan_summary(plan: dict[str, Any] | None) -> dict[str, Any] | None:
+    if not plan:
+        return None
+    return {
+        "plan_id": plan.get("plan_id"),
+        "status": plan.get("status"),
+        "selected_issue_count": len(plan.get("selected_issue_ids") or []),
+        "stage_count": len(plan.get("stages") or []),
+        "task_proposal_count": len(plan.get("task_proposals") or []),
+        "applied_workstream_id": plan.get("applied_workstream_id"),
+        "updated_at": plan.get("updated_at"),
+    }
+
+
+def workspace_youtrack_dashboard_detail(workspace: str | Path) -> dict[str, Any]:
+    paths = _youtrack_paths(workspace)
+    connections = list_youtrack_connections(workspace)
+    current_search = _load_json(Path(paths["current_search"]), default={}, strict=False) or {}
+    current_plan = _load_json(Path(paths["current_plan"]), default={}, strict=False) or {}
+    search_session = _maybe_read_search_session(paths, current_search.get("session_id"))
+    plan = _maybe_read_plan_draft(paths, current_plan.get("plan_id"))
+    workstream_id = None
+    try:
+        workstream_id = current_workstream(workspace).get("workstream_id")
+    except Exception:
+        workstream_id = None
+    return {
+        "connections": connections,
+        "current_search_session": _dashboard_search_session_summary(search_session),
+        "current_plan": _dashboard_plan_summary(plan),
+        "current_workstream_issues": workstream_issue_cards(workspace, workstream_id=workstream_id),
+    }

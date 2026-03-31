@@ -22,18 +22,19 @@ else:
     import fcntl
 
 from agentiux_dev_lib import (
-    dashboard_snapshot,
+    dashboard_overview_snapshot,
     get_state_paths,
     gui_runtime_path,
     now_iso,
     plugin_info,
     process_status,
+    read_workspace_dashboard_detail,
     read_gui_runtime,
-    read_workspace_detail,
     state_root,
     start_logged_python_process,
     stop_process,
 )
+from agentiux_dev_verification import audit_verification_coverage
 from agentiux_dev_youtrack import (
     connect_youtrack,
     list_youtrack_connections,
@@ -266,10 +267,16 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 self._send_json({"ok": True, "generated_at": now_iso()})
                 return
             if parsed.path == "/api/dashboard":
-                self._send_json(dashboard_snapshot(workspace))
+                self._send_json(dashboard_overview_snapshot())
                 return
             if parsed.path == "/api/workspace-detail":
-                self._send_json(read_workspace_detail(workspace))
+                self._send_json(read_workspace_dashboard_detail(workspace))
+                return
+            if parsed.path == "/api/verification-coverage":
+                if not workspace:
+                    self._send_json({"error": "workspace query parameter is required"}, status=400)
+                    return
+                self._send_json(audit_verification_coverage(workspace))
                 return
             if parsed.path == "/api/state-paths":
                 if not workspace:

@@ -279,10 +279,10 @@ function renderYouTrack(detail) {
           <pre>${escapeHtml(
             [
               currentSearch
-                ? `Search ${currentSearch.session_id}: ${currentSearch.resolved_query} -> results ${currentSearch.result_count ?? "unknown"}, shortlist ${currentSearch.shortlist?.length || 0}, page ${currentSearch.shortlist_page?.skip || 0}/${currentSearch.shortlist_page?.page_size || 0}`
+                ? `Search ${currentSearch.session_id}: ${currentSearch.resolved_query} -> results ${currentSearch.result_count ?? "unknown"}, shortlist ${(currentSearch.shortlist_count ?? currentSearch.shortlist?.length) || 0}, page ${currentSearch.shortlist_page?.skip || 0}/${currentSearch.shortlist_page?.page_size || 0}`
                 : "No persisted search session.",
               currentPlan
-                ? `Plan ${currentPlan.plan_id}: ${currentPlan.status} / selected issues ${currentPlan.selected_issue_ids?.length || 0}`
+                ? `Plan ${currentPlan.plan_id}: ${currentPlan.status} / selected issues ${(currentPlan.selected_issue_count ?? currentPlan.selected_issue_ids?.length) || 0}`
                 : "No persisted YouTrack plan.",
             ].join("\n"),
           )}</pre>
@@ -320,16 +320,47 @@ function renderYouTrack(detail) {
   `;
 }
 
+async function loadVerificationCoverage(workspacePath) {
+  if (!workspacePath) return;
+  try {
+    const response = await fetch(`/api/verification-coverage?workspace=${encodeURIComponent(workspacePath)}`, {
+      cache: "no-store",
+    });
+    if (!response.ok) return;
+    const payload = await response.json();
+    if (!state.snapshot?.workspace_detail || state.selectedWorkspace !== workspacePath) {
+      return;
+    }
+    state.snapshot.workspace_detail.verification_coverage_audit = payload;
+    render();
+  } catch (error) {
+    if (!state.snapshot?.workspace_detail || state.selectedWorkspace !== workspacePath) {
+      return;
+    }
+    state.snapshot.workspace_detail.verification_coverage_audit_error = error.message;
+    render();
+  }
+}
+
 async function fetchSnapshot(workspacePath, options = {}) {
   const requestedWorkspace = workspacePath || null;
   const historyMode = options.historyMode || "skip";
   state.loading = true;
   render();
-  const query = requestedWorkspace ? `?workspace=${encodeURIComponent(requestedWorkspace)}` : "";
   try {
-    const response = await fetch(`/api/dashboard${query}`, { cache: "no-store" });
-    if (!response.ok) throw new Error(`Dashboard request failed with ${response.status}`);
-    const snapshot = await response.json();
+    const detailQuery = requestedWorkspace ? `?workspace=${encodeURIComponent(requestedWorkspace)}` : "";
+    const [snapshotResponse, detailResponse] = await Promise.all([
+      fetch("/api/dashboard", { cache: "no-store" }),
+      requestedWorkspace ? fetch(`/api/workspace-detail${detailQuery}`, { cache: "no-store" }) : Promise.resolve(null),
+    ]);
+    if (!snapshotResponse.ok) throw new Error(`Dashboard request failed with ${snapshotResponse.status}`);
+    if (detailResponse && !detailResponse.ok) throw new Error(`Workspace detail request failed with ${detailResponse.status}`);
+    const snapshot = await snapshotResponse.json();
+    snapshot.workspace_detail = detailResponse ? await detailResponse.json() : null;
+    if (snapshot.workspace_detail) {
+      snapshot.workspace_detail.verification_coverage_audit = null;
+      snapshot.workspace_detail.verification_coverage_audit_error = null;
+    }
     state.snapshot = snapshot;
     state.selectedWorkspace = requestedWorkspace
       ? snapshot.workspace_detail?.summary?.workspace_path || requestedWorkspace
@@ -353,6 +384,9 @@ async function fetchSnapshot(workspacePath, options = {}) {
   } finally {
     state.loading = false;
     render();
+    if (requestedWorkspace && state.selectedWorkspace) {
+      loadVerificationCoverage(state.selectedWorkspace);
+    }
   }
 }
 
@@ -498,6 +532,8 @@ function renderDetail(detail) {
   const currentAudit = detail.current_audit || null;
   const currentUpgradePlan = detail.current_upgrade_plan || null;
   const recentStarterRuns = detail.recent_starter_runs || [];
+  const coverageAudit = detail.verification_coverage_audit;
+  const coverageAuditError = detail.verification_coverage_audit_error;
 
   return `
     <div class="hero-card">
@@ -729,9 +765,13 @@ function renderDetail(detail) {
           <div class="section-row">
             <strong>Coverage audit</strong>
             <pre>${escapeHtml(
-              (detail.verification_coverage_audit?.gaps || [])
-                .map((gap) => `${gap.gap_id}: ${gap.title}`)
-                .join("\n") || "No verification coverage warnings.",
+              coverageAuditError
+                ? `Coverage audit failed: ${coverageAuditError}`
+                : coverageAudit === null
+                  ? "Coverage audit is loading..."
+                  : (coverageAudit?.gaps || [])
+                      .map((gap) => `${gap.gap_id}: ${gap.title}`)
+                      .join("\n") || "No verification coverage warnings.",
             )}</pre>
           </div>
           <div class="section-row">
