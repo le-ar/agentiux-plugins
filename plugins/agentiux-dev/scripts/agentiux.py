@@ -13,14 +13,14 @@ os.environ.setdefault("AGENTIUX_DEV_PLUGIN_ROOT", str(Path(__file__).resolve().p
 from agentiux_dev_gui import launch as launch_gui
 from agentiux_dev_gui import status as gui_status
 from agentiux_dev_gui import stop as stop_gui
-from agentiux_dev_lib import list_workspaces, sanitize_identifier
+from agentiux_dev_lib import list_workspaces, plugin_info, sanitize_identifier
 
 
 class WorkspaceSelectionError(ValueError):
     pass
 
 
-WEB_ACTIONS = {"launch", "start", "status", "stop", "url"}
+WEB_ACTIONS = {"launch", "start", "status", "stop", "url", "restart"}
 
 
 def _workspace_entries() -> list[dict[str, Any]]:
@@ -170,11 +170,39 @@ def _emit_payload(payload: dict[str, Any], *, json_output: bool, url_only: bool 
     return 0 if status == "running" or payload.get("last_url") else 1
 
 
+def _delegate_to_source_checkout_if_needed() -> None:
+    if os.getenv("AGENTIUX_DEV_SOURCE_DELEGATED") == "1":
+        return
+    info = plugin_info()
+    if not info.get("installed_copy"):
+        return
+    current_root = Path(str(info["current_root"])).resolve()
+    source_root = Path(str(info["source_root"])).resolve()
+    if current_root == source_root or not source_root.exists():
+        return
+    cwd = Path.cwd().resolve()
+    try:
+        cwd.relative_to(source_root)
+    except ValueError:
+        return
+    source_script = source_root / "scripts" / "agentiux.py"
+    if not source_script.exists() or source_script.resolve() == Path(__file__).resolve():
+        return
+    env = os.environ.copy()
+    env["AGENTIUX_DEV_PLUGIN_ROOT"] = str(source_root)
+    env["AGENTIUX_DEV_SOURCE_DELEGATED"] = "1"
+    os.execvpe(sys.executable, [sys.executable, str(source_script), *sys.argv[1:]], env)
+
+
 def run_web_command(args: argparse.Namespace) -> int:
     action, selector = _normalize_web_action(args.action_or_selector, args.selector)
-    if action == "launch":
+    if action in {"launch", "start"}:
         workspace = resolve_workspace_selector(selector, Path.cwd())
         payload = launch_gui(args.host, args.port, workspace)
+        return _emit_payload(payload, json_output=args.json_output)
+    if action == "restart":
+        workspace = resolve_workspace_selector(selector, Path.cwd())
+        payload = launch_gui(args.host, args.port, workspace, force_restart=True)
         return _emit_payload(payload, json_output=args.json_output)
     if action == "status":
         return _emit_payload(gui_status(), json_output=args.json_output)
@@ -201,6 +229,7 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def main() -> int:
+    _delegate_to_source_checkout_if_needed()
     parser = build_parser()
     args = parser.parse_args()
     try:

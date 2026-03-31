@@ -2866,6 +2866,21 @@ def main() -> int:
             assert yt_snapshot["workspace_detail"]["summary"]["youtrack"]["connection_count"] == 1
             assert yt_snapshot["workspace_detail"]["youtrack"]["current_plan"]["plan_id"] == refreshed_plan["plan_id"]
             assert yt_snapshot["workspace_detail"]["youtrack"]["current_workstream_issues"]["items"]
+            issue_card = next(
+                item
+                for item in yt_snapshot["workspace_detail"]["youtrack"]["current_workstream_issues"]["items"]
+                if item["issue_key"] == "SL-4591"
+            )
+            assert isinstance(issue_card["hover_summary"], dict)
+            assert issue_card["hover_summary"]["excerpt"]
+            assert issue_card["hover_summary"]["source"] in {
+                "description",
+                "external_reference",
+                "comment",
+                "related_issue",
+                "summary",
+            }
+            assert "SL-4592" in issue_card["hover_summary"]["related_issue_keys"]
 
             imported_tasks = [
                 item for item in list_tasks(youtrack_workspace)["items"] if (item.get("external_issue") or {}).get("issue_key")
@@ -3075,6 +3090,7 @@ def main() -> int:
         cli_reuse_payload = json.loads(cli_reuse.stdout)
         assert cli_reuse_payload["pid"] == cli_launch_payload["pid"]
         assert cli_reuse_payload["url"] == cli_launch_payload["url"]
+        assert cli_reuse_payload["launch_action"] == "reused"
         cli_switch = subprocess.run(
             [*cli_command, "web", legacy_workspace.name, "--json"],
             cwd=temp_root,
@@ -3087,6 +3103,32 @@ def main() -> int:
         assert cli_switch_payload["pid"] == cli_launch_payload["pid"]
         assert cli_switch_payload["url"] == cli_launch_payload["url"]
         assert cli_switch_payload["default_workspace"] == str(legacy_workspace.resolve())
+        assert cli_switch_payload["launch_action"] == "reused"
+        cli_restart = subprocess.run(
+            [*cli_command, "web", "restart", legacy_workspace.name, "--json"],
+            cwd=temp_root,
+            env=cli_env,
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        cli_restart_payload = json.loads(cli_restart.stdout)
+        assert cli_restart_payload["status"] == "running"
+        assert cli_restart_payload["launch_action"] == "restarted"
+        assert "forced" in cli_restart_payload["restart_reasons"]
+        assert cli_restart_payload["default_workspace"] == str(legacy_workspace.resolve())
+        cli_source_launch = subprocess.run(
+            [*cli_command, "web", workspace.name, "--json"],
+            cwd=plugin_root,
+            env=cli_env,
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        cli_source_payload = json.loads(cli_source_launch.stdout)
+        assert cli_source_payload["status"] == "running"
+        assert cli_source_payload["plugin"]["current_root"] == str(plugin_root.resolve())
+        assert cli_source_payload["default_workspace"] == str(workspace.resolve())
         cli_url = subprocess.run(
             [*cli_command, "web", "url"],
             cwd=temp_root,
@@ -3095,7 +3137,7 @@ def main() -> int:
             capture_output=True,
             text=True,
         )
-        assert cli_url.stdout.strip() == cli_launch_payload["url"]
+        assert cli_url.stdout.strip() == cli_source_payload["url"]
         cli_stop = subprocess.run(
             [*cli_command, "web", "stop", "--json"],
             cwd=temp_root,

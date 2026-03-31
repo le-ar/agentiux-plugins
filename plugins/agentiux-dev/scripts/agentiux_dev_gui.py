@@ -43,9 +43,15 @@ from agentiux_dev_youtrack import (
     update_youtrack_connection,
 )
 
+WATCHED_DASHBOARD_SUFFIXES = {".py", ".js", ".css", ".html"}
+
 
 def dashboard_root() -> Path:
     return Path(__file__).resolve().parents[1] / "dashboard"
+
+
+def _script_root() -> Path:
+    return Path(__file__).resolve().parent
 
 
 def _write_runtime(payload: dict[str, Any]) -> None:
@@ -96,6 +102,62 @@ def _runtime_payload(status: str, **kwargs: Any) -> dict[str, Any]:
     return payload
 
 
+def _dashboard_source_state() -> dict[str, Any]:
+    current_root = Path(str(plugin_info()["current_root"])).resolve()
+    latest_path = None
+    latest_mtime_ns = 0
+    file_count = 0
+    for root in (dashboard_root(), _script_root()):
+        if not root.exists():
+            continue
+        for candidate in root.rglob("*"):
+            if not candidate.is_file() or candidate.suffix.lower() not in WATCHED_DASHBOARD_SUFFIXES:
+                continue
+            file_count += 1
+            try:
+                mtime_ns = candidate.stat().st_mtime_ns
+            except OSError:
+                continue
+            if mtime_ns >= latest_mtime_ns:
+                latest_mtime_ns = mtime_ns
+                try:
+                    latest_path = str(candidate.resolve().relative_to(current_root))
+                except ValueError:
+                    latest_path = candidate.name
+    signature = f"{latest_mtime_ns}:{file_count}:{latest_path or 'none'}"
+    return {
+        "current_root": str(current_root),
+        "latest_path": latest_path,
+        "latest_mtime_ns": latest_mtime_ns,
+        "file_count": file_count,
+        "signature": signature,
+    }
+
+
+def _runtime_restart_reasons(
+    current: dict[str, Any],
+    *,
+    desired_host: str,
+    desired_port: int | None,
+    expected_source_state: dict[str, Any],
+    force_restart: bool,
+) -> list[str]:
+    reasons: list[str] = []
+    current_plugin_root = str(((current.get("plugin") or {}).get("current_root")) or "")
+    if current_plugin_root != expected_source_state["current_root"]:
+        reasons.append("plugin_root_changed")
+    current_source_state = current.get("source_state") or {}
+    if current_source_state.get("signature") != expected_source_state["signature"]:
+        reasons.append("source_changed")
+    if desired_host and current.get("host") and current.get("host") != desired_host:
+        reasons.append("host_changed")
+    if desired_port is not None and current.get("port") and current.get("port") != desired_port:
+        reasons.append("port_changed")
+    if force_restart:
+        reasons.append("forced")
+    return list(dict.fromkeys(reasons))
+
+
 def _status_unlocked() -> dict[str, Any]:
     payload = read_gui_runtime()
     pid = payload.get("pid")
@@ -139,17 +201,57 @@ def _wait_for_health(url: str, timeout_seconds: float = 5.0) -> None:
     raise RuntimeError(f"GUI did not become ready at {url}")
 
 
-def launch(host: str, port: int | None, workspace: str | None) -> dict[str, Any]:
+def _stop_unlocked(payload: dict[str, Any]) -> dict[str, Any]:
+    pid = payload.get("pid")
+    if payload.get("status") != "running" or not isinstance(pid, int):
+        return payload
+    stop_payload = stop_process(pid)
+    time.sleep(0.2)
+    stopped = _runtime_payload(
+        "stopped",
+        last_pid=pid,
+        last_url=payload.get("url"),
+        log_path=payload.get("log_path"),
+        error_log_path=payload.get("error_log_path"),
+        stopped_at=now_iso(),
+        process_stop=stop_payload,
+        plugin=payload.get("plugin") or plugin_info(),
+        source_state=payload.get("source_state"),
+    )
+    _write_runtime(stopped)
+    return stopped
+
+
+def launch(host: str, port: int | None, workspace: str | None, *, force_restart: bool = False) -> dict[str, Any]:
     with _runtime_lock():
         current = _status_unlocked()
+        expected_source_state = _dashboard_source_state()
         if current.get("status") == "running":
-            if workspace and current.get("default_workspace") != workspace:
+            restart_reasons = _runtime_restart_reasons(
+                current,
+                desired_host=host,
+                desired_port=port,
+                expected_source_state=expected_source_state,
+                force_restart=force_restart,
+            )
+            if not restart_reasons:
                 updated = dict(current)
-                updated["default_workspace"] = workspace
-                updated["updated_at"] = now_iso()
+                if workspace and current.get("default_workspace") != workspace:
+                    updated["default_workspace"] = workspace
+                    updated["updated_at"] = now_iso()
+                updated["launch_action"] = "reused"
+                updated["restart_reasons"] = []
                 _write_runtime(updated)
                 return updated
-            return current
+            current = _stop_unlocked(current)
+            host = current.get("host") or host
+            if port is None:
+                port = current.get("port")
+            workspace = workspace or current.get("default_workspace")
+            launch_action = "restarted"
+        else:
+            restart_reasons = []
+            launch_action = "started"
 
         runtime_dir = gui_runtime_path().parent
         runtime_dir.mkdir(parents=True, exist_ok=True)
@@ -189,6 +291,9 @@ def launch(host: str, port: int | None, workspace: str | None) -> dict[str, Any]
             log_path=str(log_path),
             error_log_path=str(error_log_path),
             started_at=now_iso(),
+            source_state=expected_source_state,
+            launch_action=launch_action,
+            restart_reasons=restart_reasons,
         )
         _write_runtime(payload)
         return payload
@@ -197,22 +302,7 @@ def launch(host: str, port: int | None, workspace: str | None) -> dict[str, Any]
 def stop() -> dict[str, Any]:
     with _runtime_lock():
         payload = _status_unlocked()
-        pid = payload.get("pid")
-        if payload.get("status") != "running" or not isinstance(pid, int):
-            return payload
-        stop_payload = stop_process(pid)
-        time.sleep(0.2)
-        stopped = _runtime_payload(
-            "stopped",
-            last_pid=pid,
-            last_url=payload.get("url"),
-            log_path=payload.get("log_path"),
-            error_log_path=payload.get("error_log_path"),
-            stopped_at=now_iso(),
-            process_stop=stop_payload,
-        )
-        _write_runtime(stopped)
-        return stopped
+        return _stop_unlocked(payload)
 
 
 class DashboardHandler(BaseHTTPRequestHandler):
@@ -397,6 +487,7 @@ def serve(host: str, port: int, workspace: str | None) -> int:
         started_at=runtime.get("started_at") or now_iso(),
         log_path=runtime.get("log_path"),
         error_log_path=runtime.get("error_log_path"),
+        source_state=_dashboard_source_state(),
     )
     _write_runtime(payload)
     server = ThreadingHTTPServer((host, port), DashboardHandler)
@@ -422,9 +513,14 @@ def parse_args() -> argparse.Namespace:
     launch_parser.add_argument("--host", default="127.0.0.1")
     launch_parser.add_argument("--port", type=int)
     launch_parser.add_argument("--workspace")
+    launch_parser.add_argument("--restart", action="store_true")
 
     subparsers.add_parser("stop")
     subparsers.add_parser("status")
+    restart_parser = subparsers.add_parser("restart")
+    restart_parser.add_argument("--host", default="127.0.0.1")
+    restart_parser.add_argument("--port", type=int)
+    restart_parser.add_argument("--workspace")
     return parser.parse_args()
 
 
@@ -433,7 +529,10 @@ def main() -> int:
     if args.command == "serve":
         return serve(args.host, args.port, args.workspace)
     if args.command == "launch":
-        print(json.dumps(launch(args.host, args.port, args.workspace), indent=2))
+        print(json.dumps(launch(args.host, args.port, args.workspace, force_restart=args.restart), indent=2))
+        return 0
+    if args.command == "restart":
+        print(json.dumps(launch(args.host, args.port, args.workspace, force_restart=True), indent=2))
         return 0
     if args.command == "stop":
         print(json.dumps(stop(), indent=2))

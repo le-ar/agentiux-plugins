@@ -2775,6 +2775,83 @@ def apply_youtrack_workstream_plan(
     }
 
 
+def _dashboard_issue_text_excerpt(text: str | None, *, limit: int = 220) -> str | None:
+    raw = str(text or "")
+    if not raw.strip():
+        return None
+    without_urls = URL_PATTERN.sub(" ", raw)
+    normalized = re.sub(r"\s+", " ", without_urls).strip(" \t\r\n-:;,")
+    return _excerpt_text(normalized, limit=limit)
+
+
+def _dashboard_reference_excerpt(reference: dict[str, Any]) -> str | None:
+    summary = _excerpt_text(reference.get("summary"), limit=220)
+    if not summary:
+        return None
+    title = _excerpt_text(reference.get("title"), limit=80)
+    if title and summary.lower().startswith(title.lower()):
+        return summary
+    return _excerpt_text(f"{title}: {summary}" if title else summary, limit=220)
+
+
+def _dashboard_issue_hover_summary(snapshot: dict[str, Any]) -> dict[str, Any]:
+    payload = copy.deepcopy(snapshot or {})
+    ticket_overview = payload.get("ticket_overview") or {}
+    openable_references = [
+        item for item in (payload.get("external_references") or []) if item.get("openable") and item.get("summary")
+    ]
+    related_issue_summaries = payload.get("related_issue_summaries") or []
+    excerpt = None
+    source = None
+
+    description_excerpt = _dashboard_issue_text_excerpt(payload.get("description"))
+    if description_excerpt and len(description_excerpt) >= 48:
+        excerpt = description_excerpt
+        source = "description"
+    if excerpt is None and openable_references:
+        excerpt = _dashboard_reference_excerpt(openable_references[0])
+        source = "external_reference" if excerpt else None
+    if excerpt is None and description_excerpt:
+        excerpt = description_excerpt
+        source = "description"
+    if excerpt is None:
+        for comment in payload.get("comments") or []:
+            excerpt = _dashboard_issue_text_excerpt(comment.get("text") or comment.get("textPreview"))
+            if excerpt:
+                source = "comment"
+                break
+    if excerpt is None:
+        for item in related_issue_summaries:
+            related_excerpt = _dashboard_issue_text_excerpt(item.get("description_excerpt"))
+            if related_excerpt:
+                issue_key = item.get("issue_key")
+                excerpt = _excerpt_text(f"{issue_key}: {related_excerpt}" if issue_key else related_excerpt, limit=220)
+                source = "related_issue"
+                break
+    if excerpt is None:
+        excerpt = _excerpt_text(payload.get("summary"), limit=220)
+        source = "summary" if excerpt else None
+
+    related_issue_keys: list[str] = []
+    for item in related_issue_summaries:
+        issue_key = str(item.get("issue_key") or "").strip()
+        if issue_key and issue_key not in related_issue_keys:
+            related_issue_keys.append(issue_key)
+
+    return {
+        "excerpt": excerpt,
+        "source": source,
+        "comment_count": ticket_overview.get("comment_count", len(payload.get("comments") or [])),
+        "linked_issue_count": ticket_overview.get("linked_issue_count", len(payload.get("issue_links") or [])),
+        "external_reference_count": ticket_overview.get("external_reference_count", len(payload.get("external_references") or [])),
+        "openable_external_reference_count": ticket_overview.get("openable_external_reference_count", len(openable_references)),
+        "related_issue_count": ticket_overview.get("related_issue_count", len(related_issue_summaries)),
+        "warning_count": len(ticket_overview.get("warnings") or []),
+        "reference_titles": [item.get("title") for item in openable_references if item.get("title")][:2],
+        "related_issue_keys": related_issue_keys[:4],
+    }
+
+
 def workstream_issue_cards(workspace: str | Path, workstream_id: str | None = None) -> dict[str, Any]:
     tasks_index = _load_tasks_index(workspace_paths(workspace))
     items = []
@@ -2786,6 +2863,8 @@ def workstream_issue_cards(workspace: str | Path, workstream_id: str | None = No
         if workstream_id and task.get("linked_workstream_id") != workstream_id:
             continue
         ledger = read_issue_ledger(workspace, connection_id=external_issue["connection_id"], issue_id=external_issue["issue_id"])
+        latest_snapshot = (ledger or {}).get("latest_snapshot") or {}
+        hover_snapshot = _merged_issue_snapshot(external_issue, latest_snapshot)
         items.append(
             {
                 "task_id": task.get("task_id"),
@@ -2800,6 +2879,7 @@ def workstream_issue_cards(workspace: str | Path, workstream_id: str | None = No
                 "youtrack_spent_minutes": (ledger or {}).get("youtrack_spent_minutes") or external_issue.get("youtrack_spent_minutes"),
                 "codex_spent_minutes": (ledger or {}).get("codex_total_minutes", 0),
                 "latest_commit": (ledger or {}).get("latest_commit") or task.get("latest_commit"),
+                "hover_summary": _dashboard_issue_hover_summary(hover_snapshot),
             }
         )
     return {"items": items}

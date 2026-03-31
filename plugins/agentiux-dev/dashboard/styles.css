@@ -314,6 +314,85 @@ pre,
   background: rgba(8, 18, 32, 0.64);
 }
 
+.issue-link-wrap {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  max-width: 100%;
+}
+
+.issue-link-trigger {
+  text-decoration: none;
+}
+
+.issue-link-trigger:hover,
+.issue-link-trigger:focus-visible {
+  text-decoration: underline;
+}
+
+.issue-link-wrap {
+  position: relative;
+}
+
+.issue-popover {
+  position: absolute;
+  left: 0;
+  top: calc(100% + 8px);
+  z-index: 8;
+  width: min(360px, calc(100vw - 92px));
+  padding: 14px 16px;
+  border-radius: 18px;
+  border: 1px solid rgba(56, 189, 248, 0.24);
+  background:
+    linear-gradient(180deg, rgba(8, 18, 32, 0.98), rgba(5, 13, 24, 0.98)),
+    linear-gradient(135deg, rgba(56, 189, 248, 0.12), transparent 55%);
+  box-shadow: 0 24px 40px rgba(0, 0, 0, 0.34);
+  opacity: 0;
+  pointer-events: none;
+  transform: translateY(8px) scale(0.98);
+  transition: opacity 140ms ease, transform 140ms ease;
+}
+
+.issue-link-wrap:hover .issue-popover,
+.issue-link-wrap:focus-within .issue-popover {
+  opacity: 1;
+  transform: translateY(0) scale(1);
+}
+
+.issue-popover-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  margin-bottom: 8px;
+}
+
+.issue-popover-title {
+  font-size: 14px;
+  font-weight: 600;
+  line-height: 1.45;
+}
+
+.issue-popover-text {
+  margin: 10px 0 0;
+  color: var(--muted);
+  line-height: 1.55;
+}
+
+.issue-popover-stats {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 12px;
+}
+
+.issue-popover-note {
+  margin-top: 10px;
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.45;
+}
+
 .path-block {
   color: var(--muted);
   padding: 14px 16px;
@@ -333,5 +412,9 @@ pre,
   .sidebar {
     border-right: 0;
     border-bottom: 1px solid var(--border);
+  }
+
+  .issue-popover {
+    width: min(320px, calc(100vw - 72px));
   }
 }

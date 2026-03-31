@@ -189,6 +189,69 @@ function renderPluginPlatform(pluginPlatform) {
   `;
 }
 
+function issueSummarySourceLabel(source) {
+  switch (source) {
+    case "description":
+      return "Description";
+    case "external_reference":
+      return "Doc preview";
+    case "comment":
+      return "Comment";
+    case "related_issue":
+      return "Related issue";
+    case "summary":
+      return "Issue summary";
+    default:
+      return "";
+  }
+}
+
+function renderIssueHoverSummary(item) {
+  const preview = item?.hover_summary || null;
+  if (!preview) {
+    return "";
+  }
+  const sourceLabel = issueSummarySourceLabel(preview.source);
+  const stats = [
+    preview.comment_count > 0 ? `${preview.comment_count} comments` : null,
+    preview.linked_issue_count > 0 ? `${preview.linked_issue_count} links` : null,
+    preview.openable_external_reference_count > 0
+      ? `${preview.openable_external_reference_count} docs`
+      : preview.external_reference_count > 0
+        ? `${preview.external_reference_count} refs`
+        : null,
+    preview.related_issue_count > 0 ? `${preview.related_issue_count} related` : null,
+    preview.warning_count > 0 ? `${preview.warning_count} warnings` : null,
+  ].filter(Boolean);
+  const referenceTitles = (preview.reference_titles || []).filter(Boolean);
+  const relatedIssueKeys = (preview.related_issue_keys || []).filter(Boolean);
+  return `
+    <div class="issue-popover" role="tooltip">
+      <div class="issue-popover-header">
+        <strong>${escapeHtml(item.issue_key || "issue")}</strong>
+        ${sourceLabel ? `<span class="chip">${escapeHtml(sourceLabel)}</span>` : ""}
+      </div>
+      <div class="issue-popover-title">${escapeHtml(item.title || "Untitled issue")}</div>
+      <p class="issue-popover-text">${escapeHtml(preview.excerpt || "No extra context collected yet.")}</p>
+      ${
+        stats.length
+          ? `<div class="issue-popover-stats">${stats.map((stat) => `<span class="chip">${escapeHtml(stat)}</span>`).join("")}</div>`
+          : ""
+      }
+      ${
+        referenceTitles.length
+          ? `<div class="issue-popover-note">Docs: ${escapeHtml(referenceTitles.join(", "))}</div>`
+          : ""
+      }
+      ${
+        relatedIssueKeys.length
+          ? `<div class="issue-popover-note">Related: ${escapeHtml(relatedIssueKeys.join(", "))}</div>`
+          : ""
+      }
+    </div>
+  `;
+}
+
 function renderYouTrack(detail) {
   const youtrack = detail.youtrack || {};
   const connections = youtrack.connections?.items || [];
@@ -294,7 +357,14 @@ function renderYouTrack(detail) {
               .map(
                 (item) => `
                   <div class="stage-item">
-                    <div><strong><a href="${escapeHtml(item.issue_url)}" target="_blank" rel="noreferrer">${escapeHtml(item.issue_key)}</a></strong></div>
+                    <div>
+                      <strong>
+                        <span class="issue-link-wrap">
+                          <a class="issue-link-trigger" href="${escapeHtml(item.issue_url)}" target="_blank" rel="noreferrer">${escapeHtml(item.issue_key)}</a>
+                          ${renderIssueHoverSummary(item)}
+                        </span>
+                      </strong>
+                    </div>
                     <div class="muted">${escapeHtml(item.title)}</div>
                     <div class="workspace-meta">
                       <span class="chip ${statusChip(item.task_status)}">${escapeHtml(item.task_status || "planned")}</span>
