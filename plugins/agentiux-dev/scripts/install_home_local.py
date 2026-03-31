@@ -3,11 +3,20 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
+import shlex
 import shutil
+import subprocess
 from pathlib import Path
 from typing import Any
 
-from agentiux_dev_lib import PLUGIN_NAME, marketplace_path, now_iso, python_launcher_tokens
+from agentiux_dev_lib import (
+    PLUGIN_NAME,
+    current_host_os,
+    marketplace_path,
+    now_iso,
+    python_launcher_tokens,
+)
 
 
 def source_plugin_root() -> Path:
@@ -16,6 +25,122 @@ def source_plugin_root() -> Path:
 
 def default_install_root() -> Path:
     return (Path.home() / "plugins" / PLUGIN_NAME).resolve()
+
+
+def launcher_name(host_os: str | None = None) -> str:
+    return "agentiux.cmd" if (host_os or current_host_os()) == "windows" else "agentiux"
+
+
+def install_bin_root(destination: Path) -> Path:
+    return destination / "bin"
+
+
+def _path_entries(path_env: str | None = None) -> list[Path]:
+    entries: list[Path] = []
+    for raw_entry in (path_env or os.environ.get("PATH", "")).split(os.pathsep):
+        if not raw_entry:
+            continue
+        candidate = Path(raw_entry).expanduser()
+        if candidate not in entries:
+            entries.append(candidate)
+    return entries
+
+
+def _is_writable_directory(path: Path) -> bool:
+    return path.exists() and path.is_dir() and os.access(path, os.W_OK)
+
+
+def _is_ephemeral_directory(path: Path) -> bool:
+    resolved = path.expanduser().resolve()
+    home = Path.home().resolve()
+    ephemeral_roots = [
+        home / ".codex" / "tmp",
+        Path("/tmp"),
+        Path("/var/folders"),
+    ]
+    return any(resolved == root or root in resolved.parents for root in ephemeral_roots)
+
+
+def discover_global_bin_dir(path_env: str | None = None) -> Path | None:
+    home = Path.home().resolve()
+    for entry in _path_entries(path_env):
+        resolved_entry = entry.resolve()
+        try:
+            resolved_entry.relative_to(home)
+        except ValueError:
+            continue
+        if _is_ephemeral_directory(resolved_entry):
+            continue
+        if _is_writable_directory(resolved_entry):
+            return resolved_entry
+    return None
+
+
+def _launcher_script(script_path: Path, plugin_root: Path, host_os: str | None = None) -> str:
+    resolved_host = host_os or current_host_os()
+    launcher_tokens = python_launcher_tokens(resolved_host)
+    if resolved_host == "windows":
+        command = subprocess.list2cmdline([*launcher_tokens, str(script_path.resolve())])
+        return (
+            "@echo off\r\n"
+            f'set "AGENTIUX_DEV_PLUGIN_ROOT={plugin_root.resolve()}"\r\n'
+            f"{command} %*\r\n"
+        )
+    command = shlex.join([*launcher_tokens, str(script_path.resolve())])
+    return (
+        "#!/bin/sh\n"
+        f"export AGENTIUX_DEV_PLUGIN_ROOT={shlex.quote(str(plugin_root.resolve()))}\n"
+        f'exec {command} "$@"\n'
+    )
+
+
+def write_launcher(target_path: Path, script_path: Path, plugin_root: Path, host_os: str | None = None) -> Path:
+    target_path.parent.mkdir(parents=True, exist_ok=True)
+    target_path.write_text(_launcher_script(script_path, plugin_root, host_os=host_os))
+    if (host_os or current_host_os()) != "windows":
+        target_path.chmod(0o755)
+    return target_path.resolve()
+
+
+def install_launchers(destination: Path, bin_dir: Path | None = None, *, install_global_command: bool = True) -> dict[str, Any]:
+    host_os = current_host_os()
+    script_path = destination / "scripts" / "agentiux.py"
+    local_launcher_path = write_launcher(
+        install_bin_root(destination) / launcher_name(host_os),
+        script_path,
+        destination,
+        host_os=host_os,
+    )
+
+    global_launcher_path: Path | None = None
+    global_command_status = "skipped"
+    global_command_reason = "Global command installation was disabled."
+    selected_bin_dir: Path | None = None
+
+    if install_global_command:
+        selected_bin_dir = (bin_dir or discover_global_bin_dir())
+        if selected_bin_dir is None:
+            global_command_status = "not_installed"
+            global_command_reason = "No writable user PATH directory was detected. Re-run with --bin-dir <dir-in-PATH>."
+        else:
+            selected_bin_dir.mkdir(parents=True, exist_ok=True)
+            global_launcher_path = write_launcher(
+                selected_bin_dir / launcher_name(host_os),
+                script_path,
+                destination,
+                host_os=host_os,
+            )
+            global_command_status = "installed"
+            global_command_reason = None
+
+    return {
+        "installed_launcher_path": str(local_launcher_path),
+        "global_command_name": "agentiux.cmd" if host_os == "windows" else "agentiux",
+        "global_command_bin_dir": str(selected_bin_dir.resolve()) if selected_bin_dir else None,
+        "global_launcher_path": str(global_launcher_path) if global_launcher_path else None,
+        "global_command_status": global_command_status,
+        "global_command_reason": global_command_reason,
+    }
 
 
 def _copy_plugin(source: Path, destination: Path) -> None:
@@ -111,11 +236,19 @@ def _update_marketplace(path: Path) -> dict[str, Any]:
     return payload
 
 
-def install_plugin(source: Path, destination: Path, marketplace: Path) -> dict[str, Any]:
+def install_plugin(
+    source: Path,
+    destination: Path,
+    marketplace: Path,
+    *,
+    bin_dir: Path | None = None,
+    install_global_command: bool = True,
+) -> dict[str, Any]:
     destination.parent.mkdir(parents=True, exist_ok=True)
     _copy_plugin(source, destination)
     _write_install_metadata(destination, source, marketplace)
     _write_installed_mcp(destination)
+    launcher_payload = install_launchers(destination, bin_dir=bin_dir, install_global_command=install_global_command)
     marketplace_payload = _update_marketplace(marketplace)
     return {
         "plugin_name": PLUGIN_NAME,
@@ -124,6 +257,7 @@ def install_plugin(source: Path, destination: Path, marketplace: Path) -> dict[s
         "marketplace_path": str(marketplace.resolve()),
         "installed_at": now_iso(),
         "marketplace_plugin_count": len(marketplace_payload.get("plugins", [])),
+        **launcher_payload,
     }
 
 
@@ -132,6 +266,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--source-plugin-root", default=str(source_plugin_root()))
     parser.add_argument("--install-root", default=str(default_install_root()))
     parser.add_argument("--marketplace-path", default=str(marketplace_path()))
+    parser.add_argument("--bin-dir", help="Install the global `agentiux` launcher into this directory.")
+    parser.add_argument("--skip-global-command", action="store_true")
     return parser.parse_args()
 
 
@@ -141,6 +277,8 @@ def main() -> int:
         Path(args.source_plugin_root).expanduser().resolve(),
         Path(args.install_root).expanduser().resolve(),
         Path(args.marketplace_path).expanduser().resolve(),
+        bin_dir=Path(args.bin_dir).expanduser().resolve() if args.bin_dir else None,
+        install_global_command=not args.skip_global_command,
     )
     print(json.dumps(payload, indent=2))
     return 0

@@ -128,11 +128,14 @@ textarea {
 }
 
 .workspace-card {
+  display: block;
   padding: 14px 16px;
   border: 1px solid var(--border);
   border-radius: 18px;
   background: rgba(9, 19, 33, 0.72);
+  color: inherit;
   cursor: pointer;
+  text-decoration: none;
   transition: transform 140ms ease, border-color 140ms ease, background 140ms ease;
 }
 

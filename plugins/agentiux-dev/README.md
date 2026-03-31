@@ -19,6 +19,12 @@ Sync the source plugin into the home-local installed copy:
 python3 scripts/install_home_local.py
 ```
 
+If the installer finds a writable user directory that is already in `PATH`, it also installs a short `agentiux` launcher there. Otherwise re-run with an explicit bin directory:
+
+```bash
+python3 scripts/install_home_local.py --bin-dir /path/already/in/PATH
+```
+
 The source repo remains the place where you edit and verify the plugin. The installed copy under `~/plugins/agentiux-dev` is the runtime snapshot that Codex loads for day-to-day use.
 
 ## Core Rules
@@ -32,7 +38,7 @@ The source repo remains the place where you edit and verify the plugin. The inst
 
 - Small targeted fix: initialize the repo, let `workflow-advice` create or reuse a task, then run targeted verification.
 - Large feature or epic: create a workstream, confirm the stage plan, execute, and close stages explicitly.
-- YouTrack triage: connect a token-scoped tracker, persist a search session, shortlist issues, draft a workstream plan, and apply it only after explicit confirmation.
+- YouTrack triage: connect a token-scoped tracker, inspect shortlisted issues with description, work items, comments, recent activity, and linked-issue context, draft a workstream plan, and apply it only after explicit confirmation.
 - Existing repo hardening: initialize, audit the repository, inspect the upgrade plan, then apply only confirmed items.
 - Greenfield work: choose a starter preset, run the upstream CLI through the plugin, then initialize the new workspace explicitly.
 - Self-hosting this plugin: run the same workflow on this repository and let the `plugin-platform` profile route the work.
@@ -53,7 +59,7 @@ The source repo remains the place where you edit and verify the plugin. The inst
 - state repair for stale or profile-inaccurate workspace state
 - host-aware support reporting across Windows, Linux, and macOS
 - repo-aware Git workflow advice plus safe local branch, staging, and commit actions
-- workspace-scoped YouTrack integration with permanent-token connections, persisted search sessions, plan drafts, and issue-ledger aggregation
+- workspace-scoped YouTrack integration with permanent-token connections, persisted search sessions, richer issue context plus linked-issue analysis for planning, idempotent plan apply, and issue-ledger aggregation
 - repo-tracked low-token catalogs for skills, MCP tools, scripts, references, and intent routes
 - global project context indexing and semantic cache under `~/.agentiux/agentiux-dev/cache/context/`
 - a local-only dashboard launched from chat, with dashboard writes limited to YouTrack integration management
@@ -200,6 +206,7 @@ Localized aliases are matched at runtime. The tracked source remains English-onl
 - `python3 scripts/release_readiness.py run --repo-root /path/to/repo`
 - `python3 scripts/agentiux_dev_gui.py launch`
 - `python3 scripts/agentiux_dev_gui.py stop`
+- `python3 scripts/agentiux.py web`
 - `python3 scripts/install_home_local.py`
 - `python3 scripts/smoke_test.py`
 
@@ -215,6 +222,18 @@ Localized aliases are matched at runtime. The tracked source remains English-onl
 - Installed copies normalize `.mcp.json` to a host-appropriate Python launcher during install or sync.
 
 ## Launching the GUI
+
+After `install_home_local.py` installs the global launcher, you can start or reuse the dashboard singleton from any directory:
+
+```bash
+agentiux web
+agentiux web demo-workspace
+agentiux web status
+agentiux web url
+agentiux web stop
+```
+
+`agentiux web <workspace-selector>` accepts an initialized workspace path, a path inside the workspace, or a short selector such as the workspace slug or name. Repeated launch commands reuse the existing server process and only update the default workspace selection when needed.
 
 Start the local dashboard from the plugin root:
 
@@ -241,6 +260,12 @@ python3 scripts/agentiux_dev_gui.py stop
 ```
 
 The `launch` command returns the local URL, process id, and log file paths. Runtime state is stored under `~/.agentiux/agentiux-dev/runtime/dashboard.json`.
+
+The dashboard now uses browser routing:
+
+- `/` shows the global overview without forcing a workspace detail panel
+- `/workspaces/<url-encoded-workspace-path>` opens a specific workspace detail view and survives browser refresh or direct open
+- legacy `?workspace=/path/to/repo` links remain accepted and are rewritten to the canonical workspace route after load
 
 ## Automatic Routing
 

@@ -153,6 +153,46 @@
       ]
     },
     {
+      "common_flags": [
+        "web",
+        "gui",
+        "status",
+        "stop",
+        "url",
+        "--json"
+      ],
+      "cost_hint": "low",
+      "follow_up_paths": [
+        "README.md",
+        "references/dashboard.md"
+      ],
+      "id": "agentiux_cli",
+      "kind": "script",
+      "path": "scripts/agentiux.py",
+      "primary_surface": "shell-cli",
+      "produced_artifacts": [
+        "runtime/dashboard.json",
+        "global command launcher"
+      ],
+      "related_routes": [
+        "plugin-dev",
+        "release"
+      ],
+      "safe_usage": "Matches initialized workspaces by path or slug and reuses the existing dashboard process instead of spawning duplicates.",
+      "summary": "Installs and exposes a short `agentiux` command for launching or reusing the dashboard singleton from any directory.",
+      "tags": [
+        "cli",
+        "dashboard",
+        "launcher"
+      ],
+      "title": "Public Shell CLI",
+      "triggers": [
+        "agentiux web",
+        "dashboard singleton",
+        "global launcher"
+      ]
+    },
+    {
       "common_flags": [],
       "cost_hint": "medium",
       "follow_up_paths": [
@@ -268,9 +308,11 @@
     },
     {
       "common_flags": [
-        "--plugin-root",
+        "--source-plugin-root",
         "--install-root",
-        "--marketplace-path"
+        "--marketplace-path",
+        "--bin-dir",
+        "--skip-global-command"
       ],
       "cost_hint": "low",
       "follow_up_paths": [
@@ -284,14 +326,15 @@
       "produced_artifacts": [
         "installed plugin copy",
         "install-metadata.json",
-        "marketplace.json"
+        "marketplace.json",
+        "agentiux launcher"
       ],
       "related_routes": [
         "plugin-dev",
         "release"
       ],
-      "safe_usage": "Copies tracked plugin files to the install root and updates local marketplace metadata.",
-      "summary": "Installs the plugin into a home-local plugins directory and updates marketplace metadata.",
+      "safe_usage": "Copies tracked plugin files to the install root, updates local marketplace metadata, and optionally writes a user-local command shim.",
+      "summary": "Installs the plugin into a home-local plugins directory, updates marketplace metadata, and can place a global `agentiux` launcher into PATH.",
       "tags": [
         "install",
         "marketplace",
@@ -305,7 +348,7 @@
       ]
     }
   ],
-  "entry_count": 8,
+  "entry_count": 9,
   "plugin": {
     "name": "agentiux-dev",
     "version": "0.8.0"

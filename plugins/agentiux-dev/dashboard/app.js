@@ -8,6 +8,45 @@ const state = {
   editingConnection: null,
 };
 
+function workspaceRoute(workspacePath) {
+  return workspacePath ? `/workspaces/${encodeURIComponent(workspacePath)}` : "/";
+}
+
+function parseRoute() {
+  const legacyWorkspace = new URLSearchParams(window.location.search).get("workspace");
+  const match = window.location.pathname.match(/^\/workspaces\/(.+)$/);
+  if (match) {
+    return {
+      workspacePath: decodeURIComponent(match[1]),
+      source: "path",
+    };
+  }
+  if (legacyWorkspace) {
+    return {
+      workspacePath: legacyWorkspace,
+      source: "legacy-query",
+    };
+  }
+  return {
+    workspacePath: null,
+    source: "overview",
+  };
+}
+
+function updateRoute(workspacePath, mode = "push") {
+  const target = workspaceRoute(workspacePath);
+  const current = `${window.location.pathname}${window.location.search}`;
+  if (current === target) {
+    return;
+  }
+  const payload = { workspacePath: workspacePath || null };
+  if (mode === "replace") {
+    window.history.replaceState(payload, "", target);
+    return;
+  }
+  window.history.pushState(payload, "", target);
+}
+
 function escapeHtml(value) {
   return String(value ?? "")
     .replaceAll("&", "&amp;")
@@ -281,23 +320,32 @@ function renderYouTrack(detail) {
   `;
 }
 
-async function fetchSnapshot(workspacePath) {
+async function fetchSnapshot(workspacePath, options = {}) {
+  const requestedWorkspace = workspacePath || null;
+  const historyMode = options.historyMode || "skip";
   state.loading = true;
   render();
-  const query = workspacePath ? `?workspace=${encodeURIComponent(workspacePath)}` : "";
+  const query = requestedWorkspace ? `?workspace=${encodeURIComponent(requestedWorkspace)}` : "";
   try {
     const response = await fetch(`/api/dashboard${query}`, { cache: "no-store" });
     if (!response.ok) throw new Error(`Dashboard request failed with ${response.status}`);
     const snapshot = await response.json();
     state.snapshot = snapshot;
-    state.selectedWorkspace =
-      snapshot.workspace_detail?.summary?.workspace_path ||
-      snapshot.overview?.workspaces?.[0]?.workspace_path ||
-      null;
-    const knownConnections = snapshot.workspace_detail?.youtrack?.connections?.items || [];
+    state.selectedWorkspace = requestedWorkspace
+      ? snapshot.workspace_detail?.summary?.workspace_path || requestedWorkspace
+      : null;
+    const knownConnections = state.selectedWorkspace
+      ? snapshot.workspace_detail?.youtrack?.connections?.items || []
+      : [];
     if (state.editingConnection) {
       state.editingConnection =
         knownConnections.find((item) => item.connection_id === state.editingConnection.connection_id) || null;
+    }
+    if (!state.selectedWorkspace) {
+      state.editingConnection = null;
+    }
+    if (historyMode !== "skip") {
+      updateRoute(state.selectedWorkspace, historyMode);
     }
     state.error = null;
   } catch (error) {
@@ -310,7 +358,12 @@ async function fetchSnapshot(workspacePath) {
 
 function selectWorkspace(workspacePath) {
   state.selectedWorkspace = workspacePath;
-  fetchSnapshot(workspacePath);
+  fetchSnapshot(workspacePath, { historyMode: "push" });
+}
+
+function clearSelection() {
+  state.selectedWorkspace = null;
+  fetchSnapshot(null, { historyMode: "push" });
 }
 
 function renderSidebar(snapshot) {
@@ -366,8 +419,9 @@ function renderSidebar(snapshot) {
           .map((workspace) => {
             const active = workspace.workspace_path === state.selectedWorkspace ? "active" : "";
             const workspaceArg = JSON.stringify(workspace.workspace_path);
+            const href = workspaceRoute(workspace.workspace_path);
             return `
-              <div class="workspace-card ${active}" onclick='window.__agentiux.selectWorkspace(${workspaceArg})'>
+              <a class="workspace-card ${active}" href="${escapeHtml(href)}" onclick='window.__agentiux.selectWorkspace(${workspaceArg}); return false;'>
                 <h3>${escapeHtml(workspace.workspace_label)}</h3>
                 <div class="muted">${escapeHtml(workspace.workspace_path)}</div>
                 <div class="workspace-meta">
@@ -376,7 +430,7 @@ function renderSidebar(snapshot) {
                   <span class="chip">${escapeHtml(workspace.summary_counts.workstreams)} workstreams</span>
                   <span class="chip">${escapeHtml(workspace.summary_counts.tasks)} tasks</span>
                 </div>
-              </div>
+              </a>
             `;
           })
           .join("")}
@@ -796,15 +850,15 @@ function render() {
       ${renderSidebar(snapshot)}
       <main class="main">
         ${renderOverview(snapshot)}
-        ${renderDetail(snapshot.workspace_detail)}
+        ${renderDetail(state.selectedWorkspace ? snapshot.workspace_detail : null)}
       </main>
     </div>
   `;
 }
 
 window.__agentiux = {
-  refresh: () => fetchSnapshot(state.selectedWorkspace),
-  clearSelection: () => fetchSnapshot(null),
+  refresh: () => fetchSnapshot(state.selectedWorkspace, { historyMode: "replace" }),
+  clearSelection,
   selectWorkspace,
   submitYouTrackConnection,
   clearYouTrackForm,
@@ -814,4 +868,12 @@ window.__agentiux = {
   editYouTrackConnection,
 };
 
-fetchSnapshot();
+window.addEventListener("popstate", () => {
+  const route = parseRoute();
+  fetchSnapshot(route.workspacePath, { historyMode: "skip" });
+});
+
+const initialRoute = parseRoute();
+fetchSnapshot(initialRoute.workspacePath, {
+  historyMode: initialRoute.source === "legacy-query" ? "replace" : "skip",
+});

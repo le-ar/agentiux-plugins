@@ -2133,10 +2133,11 @@ def _compose_files(workspace_path: Path) -> list[Path]:
 
 def _safe_rglob(workspace_path: Path, pattern: str) -> list[Path]:
     matches: list[Path] = []
-    for candidate in workspace_path.rglob(pattern):
-        if any(part in DISCOVERY_EXCLUDED_DIRS for part in candidate.parts):
-            continue
-        matches.append(candidate)
+    for root, dirnames, filenames in os.walk(workspace_path):
+        dirnames[:] = sorted(dirname for dirname in dirnames if dirname not in DISCOVERY_EXCLUDED_DIRS)
+        for filename in sorted(filenames):
+            if Path(filename).match(pattern):
+                matches.append((Path(root) / filename).resolve())
     return matches
 
 
@@ -5914,6 +5915,7 @@ def create_task(
     codex_estimate_minutes: int | None = None,
     task_id: str | None = None,
     make_current: bool = True,
+    sync_issue_ledger: bool = True,
 ) -> dict[str, Any]:
     paths = _ensure_workspace_initialized(workspace)
     previous_task = _deactivate_current_task(workspace, next_status="planned") if make_current else None
@@ -5952,7 +5954,8 @@ def create_task(
         state["current_task_id"] = target_id
         state["workspace_mode"] = "task"
     _persist_workspace_state(workspace, state)
-    _sync_linked_issue_ledger(workspace, payload)
+    if sync_issue_ledger:
+        _sync_linked_issue_ledger(workspace, payload)
     return {
         "workspace_path": paths["workspace_path"],
         "created_task_id": target_id,
@@ -6483,6 +6486,28 @@ def list_starter_runs(limit: int | None = 10) -> dict[str, Any]:
     }
 
 
+def _empty_verification_runs_payload(workspace: str | Path) -> dict[str, Any]:
+    return {
+        "workspace_path": str(Path(workspace).expanduser().resolve()),
+        "workstream_id": None,
+        "run_count": 0,
+        "runs": [],
+        "recent_runs": [],
+        "active_run": None,
+        "latest_run": None,
+        "latest_completed_run": None,
+    }
+
+
+def _empty_recent_verification_events_payload(workspace: str | Path) -> dict[str, Any]:
+    return {
+        "workspace_path": str(Path(workspace).expanduser().resolve()),
+        "workstream_id": None,
+        "run_id": None,
+        "events": [],
+    }
+
+
 def workspace_summary(workspace: str | Path) -> dict[str, Any]:
     from agentiux_dev_verification import list_verification_runs, recent_verification_events, resolve_verification_selection
     from agentiux_dev_youtrack import workspace_youtrack_summary
@@ -6490,13 +6515,14 @@ def workspace_summary(workspace: str | Path) -> dict[str, Any]:
     paths = _ensure_workspace_initialized(workspace)
     workspace_state = read_workspace_state(workspace)
     counts = _workspace_counts(paths)
-    verification_runs = list_verification_runs(workspace, limit=5)
+    task = current_task(workspace)
+    has_workstream = bool(workspace_state.get("current_workstream_id"))
+    workstream = current_workstream(workspace) if has_workstream else None
+    verification_runs = list_verification_runs(workspace, limit=5) if has_workstream else _empty_verification_runs_payload(workspace)
     active_run = verification_runs["active_run"]
     latest_run = verification_runs["latest_run"]
     latest_completed_run = verification_runs["latest_completed_run"]
-    recent_events = recent_verification_events(workspace, limit=5)
-    task = current_task(workspace)
-    workstream = current_workstream(workspace) if workspace_state.get("current_workstream_id") else None
+    recent_events = recent_verification_events(workspace, limit=5) if has_workstream else _empty_recent_verification_events_payload(workspace)
     register = workstream["register"] if workstream else None
     brief = get_active_brief(workspace) if (task or workstream) else {"markdown": ""}
     board = read_reference_board(workspace, workstream_id=workspace_state["current_workstream_id"]) if workstream else None
@@ -6646,7 +6672,8 @@ def read_workspace_detail(workspace: str | Path | None) -> dict[str, Any] | None
     paths = _ensure_workspace_initialized(workspace)
     workspace_state = read_workspace_state(workspace)
     has_workstream = bool(workspace_state.get("current_workstream_id"))
-    verification_runs = list_verification_runs(workspace, limit=10)
+    current_task_payload = current_task(workspace)
+    verification_runs = list_verification_runs(workspace, limit=10) if has_workstream else _empty_verification_runs_payload(workspace)
     current_log_run = verification_runs["active_run"] or verification_runs["latest_run"]
     return {
         "summary": workspace_summary(workspace),
@@ -6655,21 +6682,21 @@ def read_workspace_detail(workspace: str | Path | None) -> dict[str, Any] | None
         "workstreams": list_workstreams(workspace),
         "current_workstream": current_workstream(workspace) if has_workstream else None,
         "tasks": list_tasks(workspace),
-        "current_task": current_task(workspace),
+        "current_task": current_task_payload,
         "stage_register": read_stage_register(workspace) if has_workstream else None,
-        "active_brief": get_active_brief(workspace) if (has_workstream or current_task(workspace)) else None,
+        "active_brief": get_active_brief(workspace) if (has_workstream or current_task_payload) else None,
         "design_brief": read_design_brief(workspace) if has_workstream else None,
         "reference_boards": list_reference_boards(workspace) if has_workstream else {"workspace_path": paths["workspace_path"], "items": []},
         "current_reference_board": read_reference_board(workspace) if has_workstream else None,
         "design_handoffs": list_design_handoffs(workspace) if has_workstream else {"workspace_path": paths["workspace_path"], "items": []},
         "current_design_handoff": read_design_handoff(workspace) if has_workstream else None,
         "verification_recipes": read_verification_recipes(workspace) if has_workstream else None,
-        "verification_selection": resolve_verification_selection(workspace) if (has_workstream or current_task(workspace)) else None,
+        "verification_selection": resolve_verification_selection(workspace) if (has_workstream or current_task_payload) else None,
         "verification_runs": verification_runs,
         "active_verification_run": verification_runs["active_run"],
         "latest_verification_run": verification_runs["latest_run"],
         "latest_completed_verification_run": verification_runs["latest_completed_run"],
-        "recent_verification_events": recent_verification_events(workspace, limit=12),
+        "recent_verification_events": recent_verification_events(workspace, limit=12) if has_workstream else _empty_recent_verification_events_payload(workspace),
         "active_verification_stdout": read_verification_log_tail(workspace, current_log_run["run_id"], "stdout", 20) if current_log_run else None,
         "active_verification_stderr": read_verification_log_tail(workspace, current_log_run["run_id"], "stderr", 20) if current_log_run else None,
         "active_verification_logcat": read_verification_log_tail(workspace, current_log_run["run_id"], "logcat", 20) if current_log_run else None,

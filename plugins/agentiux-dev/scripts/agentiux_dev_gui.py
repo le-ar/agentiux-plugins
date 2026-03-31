@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import argparse
+from contextlib import contextmanager
 import json
 import mimetypes
 import os
@@ -14,6 +15,11 @@ import urllib.request
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any
+
+if os.name == "nt":
+    import msvcrt
+else:
+    import fcntl
 
 from agentiux_dev_lib import (
     dashboard_snapshot,
@@ -47,6 +53,33 @@ def _write_runtime(payload: dict[str, Any]) -> None:
     path.write_text(json.dumps(payload, indent=2) + "\n")
 
 
+def _lock_path() -> Path:
+    return gui_runtime_path().with_suffix(".lock")
+
+
+@contextmanager
+def _runtime_lock() -> Any:
+    lock_path = _lock_path()
+    lock_path.parent.mkdir(parents=True, exist_ok=True)
+    with lock_path.open("a+", encoding="utf-8") as handle:
+        if os.name == "nt":
+            if lock_path.stat().st_size == 0:
+                handle.write("0")
+                handle.flush()
+            handle.seek(0)
+            msvcrt.locking(handle.fileno(), msvcrt.LK_LOCK, 1)
+        else:
+            fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
+        try:
+            yield
+        finally:
+            if os.name == "nt":
+                handle.seek(0)
+                msvcrt.locking(handle.fileno(), msvcrt.LK_UNLCK, 1)
+            else:
+                fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+
+
 def _process_running(pid: int | None) -> bool:
     return process_status(pid).get("running", False)
 
@@ -62,7 +95,7 @@ def _runtime_payload(status: str, **kwargs: Any) -> dict[str, Any]:
     return payload
 
 
-def _status() -> dict[str, Any]:
+def _status_unlocked() -> dict[str, Any]:
     payload = read_gui_runtime()
     pid = payload.get("pid")
     running = _process_running(pid if isinstance(pid, int) else None)
@@ -80,6 +113,11 @@ def _status() -> dict[str, Any]:
         _write_runtime(stopped)
         return stopped
     return payload
+
+
+def status() -> dict[str, Any]:
+    with _runtime_lock():
+        return _status_unlocked()
 
 
 def _find_free_port(host: str) -> int:
@@ -101,71 +139,79 @@ def _wait_for_health(url: str, timeout_seconds: float = 5.0) -> None:
 
 
 def launch(host: str, port: int | None, workspace: str | None) -> dict[str, Any]:
-    current = _status()
-    if current.get("status") == "running":
-        return current
+    with _runtime_lock():
+        current = _status_unlocked()
+        if current.get("status") == "running":
+            if workspace and current.get("default_workspace") != workspace:
+                updated = dict(current)
+                updated["default_workspace"] = workspace
+                updated["updated_at"] = now_iso()
+                _write_runtime(updated)
+                return updated
+            return current
 
-    runtime_dir = gui_runtime_path().parent
-    runtime_dir.mkdir(parents=True, exist_ok=True)
-    chosen_port = port or _find_free_port(host)
-    url = f"http://{host}:{chosen_port}"
-    log_path = runtime_dir / "dashboard.log"
-    error_log_path = runtime_dir / "dashboard.err.log"
+        runtime_dir = gui_runtime_path().parent
+        runtime_dir.mkdir(parents=True, exist_ok=True)
+        chosen_port = port or _find_free_port(host)
+        url = f"http://{host}:{chosen_port}"
+        log_path = runtime_dir / "dashboard.log"
+        error_log_path = runtime_dir / "dashboard.err.log"
 
-    env = os.environ.copy()
-    env.setdefault("AGENTIUX_DEV_PLUGIN_ROOT", str(Path(__file__).resolve().parents[1]))
-    script_args = [
-        "serve",
-        "--host",
-        host,
-        "--port",
-        str(chosen_port),
-    ]
-    if workspace:
-        script_args.extend(["--workspace", workspace])
-    process = start_logged_python_process(
-        Path(__file__).resolve(),
-        log_path,
-        error_log_path,
-        script_args=script_args,
-        env=env,
-        start_new_session=True,
-    )
+        env = os.environ.copy()
+        env.setdefault("AGENTIUX_DEV_PLUGIN_ROOT", str(Path(__file__).resolve().parents[1]))
+        script_args = [
+            "serve",
+            "--host",
+            host,
+            "--port",
+            str(chosen_port),
+        ]
+        if workspace:
+            script_args.extend(["--workspace", workspace])
+        process = start_logged_python_process(
+            Path(__file__).resolve(),
+            log_path,
+            error_log_path,
+            script_args=script_args,
+            env=env,
+            start_new_session=True,
+        )
 
-    _wait_for_health(url)
-    payload = _runtime_payload(
-        "running",
-        pid=process.pid,
-        host=host,
-        port=chosen_port,
-        url=url,
-        default_workspace=workspace,
-        log_path=str(log_path),
-        error_log_path=str(error_log_path),
-        started_at=now_iso(),
-    )
-    _write_runtime(payload)
-    return payload
+        _wait_for_health(url)
+        payload = _runtime_payload(
+            "running",
+            pid=process.pid,
+            host=host,
+            port=chosen_port,
+            url=url,
+            default_workspace=workspace,
+            log_path=str(log_path),
+            error_log_path=str(error_log_path),
+            started_at=now_iso(),
+        )
+        _write_runtime(payload)
+        return payload
 
 
 def stop() -> dict[str, Any]:
-    payload = _status()
-    pid = payload.get("pid")
-    if payload.get("status") != "running" or not isinstance(pid, int):
-        return payload
-    stop_payload = stop_process(pid)
-    time.sleep(0.2)
-    stopped = _runtime_payload(
-        "stopped",
-        last_pid=pid,
-        last_url=payload.get("url"),
-        log_path=payload.get("log_path"),
-        error_log_path=payload.get("error_log_path"),
-        stopped_at=now_iso(),
-        process_stop=stop_payload,
-    )
-    _write_runtime(stopped)
-    return stopped
+    with _runtime_lock():
+        payload = _status_unlocked()
+        pid = payload.get("pid")
+        if payload.get("status") != "running" or not isinstance(pid, int):
+            return payload
+        stop_payload = stop_process(pid)
+        time.sleep(0.2)
+        stopped = _runtime_payload(
+            "stopped",
+            last_pid=pid,
+            last_url=payload.get("url"),
+            log_path=payload.get("log_path"),
+            error_log_path=payload.get("error_log_path"),
+            stopped_at=now_iso(),
+            process_stop=stop_payload,
+        )
+        _write_runtime(stopped)
+        return stopped
 
 
 class DashboardHandler(BaseHTTPRequestHandler):
@@ -386,7 +432,7 @@ def main() -> int:
         print(json.dumps(stop(), indent=2))
         return 0
     if args.command == "status":
-        print(json.dumps(_status(), indent=2))
+        print(json.dumps(status(), indent=2))
         return 0
     raise ValueError(f"Unsupported command: {args.command}")
 

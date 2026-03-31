@@ -15,10 +15,12 @@ import urllib.request
 from datetime import datetime, timedelta, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
+from unittest import mock
 
 from agentiux_dev_gui import stop as stop_gui
 from agentiux_dev_lib import (
     _host_setup_recipe_for_tool,
+    _safe_rglob,
     apply_upgrade_plan,
     audit_repository,
     cache_reference_preview,
@@ -173,6 +175,27 @@ class _FakeYouTrackHandler(BaseHTTPRequestHandler):
             issue_id = issue_match.group(1).upper() if issue_match else None
             self._send_json(fixtures["work_items"].get(issue_id, []))
             return
+        links_match = re.fullmatch(r"/api/issues/([^/]+)/links", parsed.path)
+        if links_match:
+            issue_resource_id = urllib.parse.unquote(links_match.group(1))
+            self._send_json(fixtures["links"].get(issue_resource_id, []))
+            return
+        comments_match = re.fullmatch(r"/api/issues/([^/]+)/comments", parsed.path)
+        if comments_match:
+            issue_resource_id = urllib.parse.unquote(comments_match.group(1))
+            top = int(query.get("$top", ["42"])[0])
+            self._send_json(fixtures["comments"].get(issue_resource_id, [])[:top])
+            return
+        activities_match = re.fullmatch(r"/api/issues/([^/]+)/activities", parsed.path)
+        if activities_match:
+            issue_resource_id = urllib.parse.unquote(activities_match.group(1))
+            top = int(query.get("$top", ["42"])[0])
+            reverse = query.get("reverse", ["false"])[0].lower() == "true"
+            items = list(fixtures["activities"].get(issue_resource_id, []))
+            if reverse:
+                items.reverse()
+            self._send_json(items[:top])
+            return
         self._send_json({"error": "not found", "path": parsed.path}, status=404)
 
 
@@ -266,6 +289,179 @@ class _FakeYouTrackServer:
                 "SL-4592": [{"id": "w2", "duration": {"minutes": 45, "presentation": "45m"}, "date": 1, "text": "investigation"}],
                 "SL-4593": [],
                 "APP-100": [{"id": "w4", "duration": {"minutes": 30, "presentation": "30m"}, "date": 1, "text": "triage"}],
+            },
+            "comments": {
+                "2-1": [
+                    {
+                        "id": "c-1",
+                        "text": "Banner should stay hidden when retry succeeds.",
+                        "textPreview": "Banner should stay hidden when retry succeeds.",
+                        "deleted": False,
+                        "created": 11,
+                        "updated": 12,
+                        "author": {"id": "1-2", "login": "alex", "name": "Alex"},
+                    }
+                ],
+                "2-2": [
+                    {
+                        "id": "c-2",
+                        "text": "Mismatch seems related to stale tax cache on checkout refresh.",
+                        "textPreview": "Mismatch seems related to stale tax cache on checkout refresh.",
+                        "deleted": False,
+                        "created": 21,
+                        "updated": 22,
+                        "author": {"id": "1-3", "login": "sam", "name": "Sam"},
+                    },
+                    {
+                        "id": "c-3",
+                        "text": "Please verify backend totals and frontend rounding separately.",
+                        "textPreview": "Please verify backend totals and frontend rounding separately.",
+                        "deleted": False,
+                        "created": 23,
+                        "updated": 24,
+                        "author": {"id": "1-2", "login": "alex", "name": "Alex"},
+                    },
+                ],
+                "2-3": [],
+                "2-4": [],
+            },
+            "activities": {
+                "2-1": [
+                    {
+                        "id": "a-1",
+                        "timestamp": 31,
+                        "targetMember": "description",
+                        "author": {"id": "1-2", "login": "alex", "name": "Alex"},
+                        "category": {"id": "cat-1", "name": "DescriptionCategory"},
+                        "field": {"name": "Description"},
+                    },
+                    {
+                        "id": "a-2",
+                        "timestamp": 32,
+                        "targetMember": "comments",
+                        "author": {"id": "1-3", "login": "sam", "name": "Sam"},
+                        "category": {"id": "cat-2", "name": "CommentsCategory"},
+                        "field": {"name": "Comments"},
+                    },
+                ],
+                "2-2": [
+                    {
+                        "id": "a-3",
+                        "timestamp": 41,
+                        "targetMember": "State",
+                        "author": {"id": "1-2", "login": "alex", "name": "Alex"},
+                        "category": {"id": "cat-3", "name": "StateCategory"},
+                        "field": {"name": "State"},
+                    },
+                    {
+                        "id": "a-4",
+                        "timestamp": 42,
+                        "targetMember": "Estimation",
+                        "author": {"id": "1-4", "login": "pat", "name": "Pat"},
+                        "category": {"id": "cat-4", "name": "CustomFieldCategory"},
+                        "field": {"name": "Estimation"},
+                    },
+                ],
+                "2-3": [
+                    {
+                        "id": "a-5",
+                        "timestamp": 51,
+                        "targetMember": "summary",
+                        "author": {"id": "1-2", "login": "alex", "name": "Alex"},
+                        "category": {"id": "cat-5", "name": "SummaryCategory"},
+                        "field": {"name": "Summary"},
+                    }
+                ],
+                "2-4": [],
+            },
+            "links": {
+                "2-1": [
+                    {
+                        "direction": "OUTWARD",
+                        "linkType": {
+                            "name": "Depend",
+                            "sourceToTarget": "is required for",
+                            "targetToSource": "depends on",
+                            "localizedSourceToTarget": "is required for",
+                            "localizedTargetToSource": "depends on",
+                        },
+                        "issues": [
+                            {
+                                "id": "2-2",
+                                "idReadable": "SL-4592",
+                                "summary": "Investigate checkout tax mismatch",
+                                "resolved": None,
+                                "updated": 2,
+                                "project": {"id": "0-0", "shortName": "SL", "name": "Shop Lab"},
+                            }
+                        ],
+                    },
+                    {
+                        "direction": "INWARD",
+                        "linkType": {
+                            "name": "Duplicate",
+                            "sourceToTarget": "duplicates",
+                            "targetToSource": "is duplicated by",
+                            "localizedSourceToTarget": "duplicates",
+                            "localizedTargetToSource": "is duplicated by",
+                        },
+                        "issues": [
+                            {
+                                "id": "2-3",
+                                "idReadable": "SL-4593",
+                                "summary": "Fix small cart icon overlap",
+                                "resolved": None,
+                                "updated": 3,
+                                "project": {"id": "0-0", "shortName": "SL", "name": "Shop Lab"},
+                            }
+                        ],
+                    },
+                ],
+                "2-2": [
+                    {
+                        "direction": "INWARD",
+                        "linkType": {
+                            "name": "Depend",
+                            "sourceToTarget": "is required for",
+                            "targetToSource": "depends on",
+                            "localizedSourceToTarget": "is required for",
+                            "localizedTargetToSource": "depends on",
+                        },
+                        "issues": [
+                            {
+                                "id": "2-1",
+                                "idReadable": "SL-4591",
+                                "summary": "Fix payment retry banner",
+                                "resolved": None,
+                                "updated": 1,
+                                "project": {"id": "0-0", "shortName": "SL", "name": "Shop Lab"},
+                            }
+                        ],
+                    }
+                ],
+                "2-3": [
+                    {
+                        "direction": "OUTWARD",
+                        "linkType": {
+                            "name": "Duplicate",
+                            "sourceToTarget": "duplicates",
+                            "targetToSource": "is duplicated by",
+                            "localizedSourceToTarget": "duplicates",
+                            "localizedTargetToSource": "is duplicated by",
+                        },
+                        "issues": [
+                            {
+                                "id": "2-1",
+                                "idReadable": "SL-4591",
+                                "summary": "Fix payment retry banner",
+                                "resolved": None,
+                                "updated": 1,
+                                "project": {"id": "0-0", "shortName": "SL", "name": "Shop Lab"},
+                            }
+                        ],
+                    }
+                ],
+                "2-4": [],
             },
         }
         self.httpd: ThreadingHTTPServer | None = None
@@ -754,6 +950,24 @@ def main() -> int:
         assert context_catalogs["entry_counts"]["mcp_tools"] >= 1
         assert context_catalogs["entry_counts"]["skills"] >= 1
 
+        scan_workspace = temp_root / "scan-workspace"
+        (scan_workspace / "src").mkdir(parents=True)
+        (scan_workspace / "src" / "main.py").write_text("print('ok')\n")
+        (scan_workspace / "node_modules" / "vendor").mkdir(parents=True)
+        (scan_workspace / "node_modules" / "vendor" / "ignored.py").write_text("print('skip')\n")
+        scanned_roots: list[str] = []
+        real_scandir = os.scandir
+
+        def _recording_scandir(path: str | os.PathLike[str] = "."):
+            scanned_roots.append(str(Path(path).resolve()))
+            return real_scandir(path)
+
+        with mock.patch("os.scandir", side_effect=_recording_scandir):
+            safe_rglob_matches = _safe_rglob(scan_workspace, "*.py")
+        resolved_scan_workspace = scan_workspace.resolve()
+        assert [path.relative_to(resolved_scan_workspace).as_posix() for path in safe_rglob_matches] == ["src/main.py"]
+        assert str((resolved_scan_workspace / "node_modules").resolve()) not in scanned_roots
+
         git_route = show_intent_route(request_text="Inspect git worktree and propose a commit message")
         assert git_route["resolved_route"]["route_id"] == "git"
         assert git_route["resolution_status"] == "matched"
@@ -992,6 +1206,12 @@ def main() -> int:
         backend_workspace.mkdir()
         _seed_backend_workspace(backend_workspace, with_infra=True)
         init_workspace(backend_workspace)
+        backend_overview = list_workspaces()
+        assert any(item["workspace_path"] == str(backend_workspace.resolve()) for item in backend_overview["workspaces"])
+        backend_snapshot = dashboard_snapshot(backend_workspace)
+        assert backend_snapshot["workspace_detail"]["summary"]["workspace_path"] == str(backend_workspace.resolve())
+        assert backend_snapshot["workspace_detail"]["verification_runs"]["run_count"] == 0
+        assert backend_snapshot["workspace_detail"]["recent_verification_events"]["events"] == []
         backend_coverage = audit_verification_coverage(backend_workspace)
         assert backend_coverage["status"] == "warning"
         assert backend_coverage["warning_count"] >= 1
@@ -2387,6 +2607,12 @@ def main() -> int:
             assert search_session["result_count"] == 3
             assert search_session["result_count_exact"] is True
             assert all(item["issue_key"].startswith("SL-") for item in search_session["shortlist"])
+            assert search_session["shortlist"][0]["issue_entity_id"].startswith("2-")
+            assert isinstance(search_session["shortlist"][0]["comments"], list)
+            assert isinstance(search_session["shortlist"][0]["recent_activities"], list)
+            assert isinstance(search_session["shortlist"][0]["issue_links"], list)
+            assert search_session["shortlist"][0]["link_summary"]["linked_issue_count"] >= 1
+            assert search_session["shortlist"][0]["ticket_overview"]["comment_count"] >= 0
             queue = show_youtrack_issue_queue(youtrack_workspace, search_session_id=search_session["session_id"])
             assert queue["search_session"]["session_id"] == search_session["session_id"]
             assert queue["connection"]["connection_id"] == "primary-tracker"
@@ -2414,6 +2640,28 @@ def main() -> int:
             assert proposed_plan["task_proposals"]
             assert len(proposed_plan["stages"]) >= 2
             assert proposed_plan["status"] == "needs_user_confirmation"
+            assert proposed_plan["selection_analysis"]["ordered_issue_ids"] == ["SL-4591", "SL-4592", "SL-4593"]
+            assert any(
+                edge["from_issue_id"] == "SL-4591" and edge["to_issue_id"] == "SL-4592"
+                for edge in proposed_plan["selection_analysis"]["dependency_edges"]
+            )
+            assert proposed_plan["task_proposals"][0]["description"]
+            assert isinstance(proposed_plan["task_proposals"][0]["work_items"], list)
+            assert isinstance(proposed_plan["task_proposals"][0]["comments"], list)
+            assert isinstance(proposed_plan["task_proposals"][0]["recent_activities"], list)
+            assert isinstance(proposed_plan["task_proposals"][0]["issue_links"], list)
+            assert isinstance(proposed_plan["task_proposals"][0]["link_summary"], dict)
+            assert isinstance(proposed_plan["task_proposals"][0]["plan_link_analysis"], dict)
+            assert proposed_plan["task_proposals"][0]["ticket_overview"]["work_item_count"] >= 0
+            assert proposed_plan["task_proposals"][0]["external_issue"]["description"]
+            assert isinstance(proposed_plan["task_proposals"][0]["external_issue"]["work_items"], list)
+            assert isinstance(proposed_plan["task_proposals"][0]["external_issue"]["comments"], list)
+            assert isinstance(proposed_plan["task_proposals"][0]["external_issue"]["recent_activities"], list)
+            assert isinstance(proposed_plan["task_proposals"][0]["external_issue"]["issue_links"], list)
+            assert isinstance(proposed_plan["task_proposals"][0]["external_issue"]["plan_link_analysis"], dict)
+            assert proposed_plan["stages"][0]["planning_signals"]["selected_dependency_issue_ids"] == []
+            assert proposed_plan["stages"][1]["planning_signals"]["selected_dependency_issue_ids"] == ["SL-4591"]
+            assert proposed_plan["task_proposals"][2]["plan_link_analysis"]["selected_duplicate_of_issue_ids"] == ["SL-4591"]
             assert not [
                 item for item in list_tasks(youtrack_workspace)["items"] if (item.get("external_issue") or {}).get("issue_key")
             ]
@@ -2452,16 +2700,110 @@ def main() -> int:
             assert applied_plan["status"] == "applied"
             assert applied_plan["created_task_ids"]
             assert current_workstream(youtrack_workspace)["source_context"]["plan_id"] == proposed_plan["plan_id"]
+            workstream_count_before_reapply = len(list_workstreams(youtrack_workspace)["items"])
+            task_count_before_reapply = len(_read_json_file(Path(workspace_paths(youtrack_workspace)["tasks_index"]))["items"])
+            plan_path = Path(workspace_paths(youtrack_workspace)["youtrack_plans_dir"]) / f"{proposed_plan['plan_id']}.json"
+            plan_payload = _read_json_file(plan_path)
+            plan_payload["status"] = "needs_user_confirmation"
+            plan_payload["applied_workstream_id"] = None
+            plan_payload["created_task_ids"] = []
+            _write_json_file(plan_path, plan_payload)
+            recovered_apply = apply_youtrack_workstream_plan(
+                youtrack_workspace,
+                plan_id=proposed_plan["plan_id"],
+                confirmed=True,
+            )
+            assert recovered_apply["plan"]["status"] == "applied"
+            assert recovered_apply["plan"]["applied_workstream_id"] == applied_plan["applied_workstream_id"]
+            assert len(list_workstreams(youtrack_workspace)["items"]) == workstream_count_before_reapply
+            assert len(_read_json_file(Path(workspace_paths(youtrack_workspace)["tasks_index"]))["items"]) == task_count_before_reapply
+
+            for stale_task in [
+                item for item in list_tasks(youtrack_workspace)["items"] if (item.get("external_issue") or {}).get("issue_key")
+            ]:
+                stale_task_path = Path(workspace_paths(youtrack_workspace, task_id=stale_task["task_id"])["current_task_record"])
+                stale_task_payload = _read_json_file(stale_task_path)
+                thin_external_issue = {
+                    "connection_id": stale_task_payload["external_issue"]["connection_id"],
+                    "issue_id": stale_task_payload["external_issue"]["issue_id"],
+                    "issue_key": stale_task_payload["external_issue"]["issue_key"],
+                    "issue_url": stale_task_payload["external_issue"]["issue_url"],
+                    "summary": stale_task_payload["external_issue"]["summary"],
+                    "youtrack_estimate_minutes": stale_task_payload["external_issue"].get("youtrack_estimate_minutes"),
+                    "youtrack_spent_minutes": stale_task_payload["external_issue"].get("youtrack_spent_minutes"),
+                }
+                stale_task_payload["external_issue"] = thin_external_issue
+                _write_json_file(stale_task_path, stale_task_payload)
+            stale_tasks_index = _read_json_file(Path(workspace_paths(youtrack_workspace)["tasks_index"]))
+            for item in stale_tasks_index["items"]:
+                external_issue = item.get("external_issue") or {}
+                if not external_issue.get("issue_key"):
+                    continue
+                item["external_issue"] = {
+                    "connection_id": external_issue["connection_id"],
+                    "issue_id": external_issue["issue_id"],
+                    "issue_key": external_issue["issue_key"],
+                    "issue_url": external_issue["issue_url"],
+                    "summary": external_issue["summary"],
+                    "youtrack_estimate_minutes": external_issue.get("youtrack_estimate_minutes"),
+                    "youtrack_spent_minutes": external_issue.get("youtrack_spent_minutes"),
+                }
+            _write_json_file(Path(workspace_paths(youtrack_workspace)["tasks_index"]), stale_tasks_index)
+
+            current_workstream_payload = current_workstream(youtrack_workspace)
+            workstreams_index_path = Path(workspace_paths(youtrack_workspace)["workstreams_index"])
+            workstreams_index_payload = _read_json_file(workstreams_index_path)
+            for item in workstreams_index_payload["items"]:
+                if item["workstream_id"] == current_workstream_payload["workstream_id"]:
+                    item["source_context"] = {
+                        "provider": "youtrack",
+                        "connection_id": proposed_plan["connection_id"],
+                        "search_session_id": proposed_plan["search_session_id"],
+                        "plan_id": proposed_plan["plan_id"],
+                    }
+                    break
+            _write_json_file(workstreams_index_path, workstreams_index_payload)
+
+            refreshed_plan = propose_youtrack_workstream_plan(
+                youtrack_workspace,
+                search_session_id=search_session["session_id"],
+                selected_issue_ids=selected_issue_ids,
+                workstream_title="YouTrack checkout queue",
+            )["plan"]
+            refreshed_apply = apply_youtrack_workstream_plan(
+                youtrack_workspace,
+                plan_id=refreshed_plan["plan_id"],
+                confirmed=True,
+                reuse_current_workstream=True,
+            )
+            assert refreshed_apply["plan"]["applied_workstream_id"] == applied_plan["applied_workstream_id"]
+            assert len(list_workstreams(youtrack_workspace)["items"]) == workstream_count_before_reapply
+            assert len(_read_json_file(Path(workspace_paths(youtrack_workspace)["tasks_index"]))["items"]) == task_count_before_reapply
+            assert current_workstream(youtrack_workspace)["source_context"]["plan_id"] == refreshed_plan["plan_id"]
+            refreshed_tasks = [
+                item for item in list_tasks(youtrack_workspace)["items"] if (item.get("external_issue") or {}).get("issue_key")
+            ]
+            assert refreshed_tasks[0]["external_issue"]["description"]
+            assert isinstance(refreshed_tasks[0]["external_issue"]["comments"], list)
+            assert isinstance(refreshed_tasks[0]["external_issue"]["recent_activities"], list)
+            assert isinstance(refreshed_tasks[0]["external_issue"]["issue_links"], list)
+            assert isinstance(refreshed_tasks[0]["external_issue"]["plan_link_analysis"], dict)
 
             yt_snapshot = dashboard_snapshot(youtrack_workspace)
             assert yt_snapshot["workspace_detail"]["summary"]["youtrack"]["connection_count"] == 1
-            assert yt_snapshot["workspace_detail"]["youtrack"]["current_plan"]["plan_id"] == proposed_plan["plan_id"]
+            assert yt_snapshot["workspace_detail"]["youtrack"]["current_plan"]["plan_id"] == refreshed_plan["plan_id"]
             assert yt_snapshot["workspace_detail"]["youtrack"]["current_workstream_issues"]["items"]
 
             imported_tasks = [
                 item for item in list_tasks(youtrack_workspace)["items"] if (item.get("external_issue") or {}).get("issue_key")
             ]
             assert imported_tasks
+            assert imported_tasks[0]["external_issue"]["description"]
+            assert isinstance(imported_tasks[0]["external_issue"]["work_items"], list)
+            assert isinstance(imported_tasks[0]["external_issue"]["comments"], list)
+            assert isinstance(imported_tasks[0]["external_issue"]["recent_activities"], list)
+            assert isinstance(imported_tasks[0]["external_issue"]["issue_links"], list)
+            assert isinstance(imported_tasks[0]["external_issue"]["plan_link_analysis"], dict)
             activated_task = switch_task(youtrack_workspace, imported_tasks[0]["task_id"])
             assert activated_task["status"] == "active"
             issue_key = activated_task["external_issue"]["issue_key"]
@@ -2624,11 +2966,71 @@ def main() -> int:
         assert Path(legacy_fixture["paths"]["workspace_state"]).exists()
         assert Path(legacy_fixture["paths"]["workstreams_index"]).exists()
 
-        install_result = install_plugin(plugin_root, install_root, marketplace)
+        command_bin = temp_root / "command-bin"
+        command_bin.mkdir()
+        install_result = install_plugin(plugin_root, install_root, marketplace, bin_dir=command_bin)
         assert Path(install_result["install_root"]).exists()
+        assert Path(install_result["installed_launcher_path"]).exists()
+        assert install_result["global_command_status"] == "installed"
+        assert Path(install_result["global_launcher_path"]).exists()
         installed_mcp = json.loads((install_root / ".mcp.json").read_text())
         mcp_args = installed_mcp["mcpServers"]["agentiux-dev-state"]["args"]
         assert str((install_root / "scripts" / "agentiux_dev_mcp.py").resolve()) in mcp_args
+        cli_env = os.environ.copy()
+        cli_command = [str(Path(install_result["global_launcher_path"]))]
+        cli_launch = subprocess.run(
+            [*cli_command, "web", workspace.name, "--json"],
+            cwd=temp_root,
+            env=cli_env,
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        cli_launch_payload = json.loads(cli_launch.stdout)
+        assert cli_launch_payload["status"] == "running"
+        assert cli_launch_payload["default_workspace"] == str(workspace.resolve())
+        cli_reuse = subprocess.run(
+            [*cli_command, "web", workspace.name, "--json"],
+            cwd=temp_root,
+            env=cli_env,
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        cli_reuse_payload = json.loads(cli_reuse.stdout)
+        assert cli_reuse_payload["pid"] == cli_launch_payload["pid"]
+        assert cli_reuse_payload["url"] == cli_launch_payload["url"]
+        cli_switch = subprocess.run(
+            [*cli_command, "web", legacy_workspace.name, "--json"],
+            cwd=temp_root,
+            env=cli_env,
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        cli_switch_payload = json.loads(cli_switch.stdout)
+        assert cli_switch_payload["pid"] == cli_launch_payload["pid"]
+        assert cli_switch_payload["url"] == cli_launch_payload["url"]
+        assert cli_switch_payload["default_workspace"] == str(legacy_workspace.resolve())
+        cli_url = subprocess.run(
+            [*cli_command, "web", "url"],
+            cwd=temp_root,
+            env=cli_env,
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        assert cli_url.stdout.strip() == cli_launch_payload["url"]
+        cli_stop = subprocess.run(
+            [*cli_command, "web", "stop", "--json"],
+            cwd=temp_root,
+            env=cli_env,
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        cli_stop_payload = json.loads(cli_stop.stdout)
+        assert cli_stop_payload["status"] == "stopped"
         assert marketplace.exists()
         marketplace.write_text(
             json.dumps(
@@ -2641,7 +3043,7 @@ def main() -> int:
             )
             + "\n"
         )
-        install_result = install_plugin(plugin_root, install_root, marketplace)
+        install_result = install_plugin(plugin_root, install_root, marketplace, bin_dir=command_bin)
         marketplace_payload = json.loads(marketplace.read_text())
         assert marketplace_payload["name"] == "local-plugins"
         assert marketplace_payload["interface"]["displayName"] == "Local Plugins"
@@ -2880,6 +3282,10 @@ def main() -> int:
             gui_launch = json.loads(gui_launch_process.stdout)
             try:
                 encoded_workspace = urllib.parse.quote(str(workspace.resolve()), safe="")
+                with urllib.request.urlopen(f"{gui_launch['url']}/workspaces/{encoded_workspace}", timeout=20) as html_handle:
+                    dashboard_html = html_handle.read().decode("utf-8")
+                assert "AgentiUX Dev Dashboard" in dashboard_html
+                assert "/app.js" in dashboard_html
                 with urllib.request.urlopen(f"{gui_launch['url']}/api/dashboard?workspace={encoded_workspace}", timeout=20) as response_handle:
                     payload = json.loads(response_handle.read().decode("utf-8"))
                 assert payload["workspace_detail"]["summary"]["workspace_label"] == "demo-workspace"

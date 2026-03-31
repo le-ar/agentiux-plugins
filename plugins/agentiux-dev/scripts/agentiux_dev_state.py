@@ -419,6 +419,7 @@ def parse_args() -> argparse.Namespace:
     cmd.add_argument("--plan-id")
     cmd.add_argument("--confirmed", action="store_true")
     cmd.add_argument("--activate-first-task", action="store_true")
+    cmd.add_argument("--reuse-current-workstream", action="store_true")
 
     cmd = subparsers.add_parser("sync-verification-helpers")
     add_workspace_arg(cmd)
@@ -789,6 +790,7 @@ def main() -> int:
                 plan_id=args.plan_id,
                 confirmed=args.confirmed,
                 activate_first_task=args.activate_first_task,
+                reuse_current_workstream=args.reuse_current_workstream,
             )
         elif args.command == "sync-verification-helpers":
             payload = sync_verification_helpers(args.workspace, force=args.force)

@@ -16,16 +16,22 @@ from agentiux_dev_lib import (
     _ensure_workspace_initialized,
     _load_json,
     _load_tasks_index,
+    _load_workstreams_index,
     _normalize_task_payload,
+    _persist_task_record,
+    _save_workstreams_index,
+    _workstream_record_by_id,
     _write_json,
     create_task,
     create_workstream,
     current_workstream,
+    list_workstreams,
     now_iso,
     read_stage_register,
     sanitize_identifier,
     set_active_brief,
     slugify,
+    switch_workstream,
     workspace_paths,
     write_stage_register,
 )
@@ -54,6 +60,27 @@ ISSUE_FIELDS = ",".join(
         "resolved",
         "project(id,shortName,name)",
         "customFields(name,value(name,fullName,localizedName,presentation,text,minutes,id),projectCustomField(field(name)))",
+    ]
+)
+ISSUE_COMMENT_FIELDS = "id,text,textPreview,deleted,created,updated,author(id,login,name)"
+ISSUE_ACTIVITY_FIELDS = "id,timestamp,targetMember,author(id,login,name),category(id,name),field(name)"
+ISSUE_ACTIVITY_CATEGORIES = [
+    "IssueCreatedCategory",
+    "CommentsCategory",
+    "SummaryCategory",
+    "DescriptionCategory",
+    "CustomFieldCategory",
+    "StateCategory",
+    "LinksCategory",
+    "WorkItemCategory",
+]
+ISSUE_COMMENTS_LIMIT = 20
+ISSUE_ACTIVITY_LIMIT = 20
+ISSUE_LINK_FIELDS = ",".join(
+    [
+        "direction",
+        "linkType(name,sourceToTarget,targetToSource,localizedSourceToTarget,localizedTargetToSource)",
+        "issues(id,idReadable,summary,resolved,updated,project(id,shortName,name))",
     ]
 )
 
@@ -526,6 +553,7 @@ def _normalize_issue(connection: dict[str, Any], issue: dict[str, Any], field_ma
     custom_fields = _custom_field_map(issue)
     metrics = _extract_issue_metrics(custom_fields, field_mapping)
     normalized = {
+        "issue_entity_id": issue.get("id"),
         "issue_id": issue.get("idReadable") or issue.get("id"),
         "issue_key": issue.get("idReadable") or issue.get("id"),
         "issue_url": f"{connection['base_url'].rstrip('/')}/issue/{issue.get('idReadable') or issue.get('id')}",
@@ -556,6 +584,14 @@ def _normalize_issue(connection: dict[str, Any], issue: dict[str, Any], field_ma
     return normalized
 
 
+def _issue_resource_id(issue_payload: dict[str, Any]) -> str | None:
+    for key in ("issue_entity_id", "entity_id", "issue_id"):
+        value = issue_payload.get(key)
+        if value:
+            return str(value)
+    return None
+
+
 def _attach_spent_minutes(connection: dict[str, Any], token: str, issue_payload: dict[str, Any]) -> dict[str, Any]:
     issue_key = issue_payload["issue_key"]
     items = _request_json(
@@ -575,6 +611,284 @@ def _attach_spent_minutes(connection: dict[str, Any], token: str, issue_payload:
     enriched = copy.deepcopy(issue_payload)
     enriched["youtrack_spent_minutes"] = total_minutes
     enriched["work_items"] = items
+    return enriched
+
+
+def _attach_comments(connection: dict[str, Any], token: str, issue_payload: dict[str, Any]) -> dict[str, Any]:
+    resource_id = _issue_resource_id(issue_payload)
+    if not resource_id:
+        return copy.deepcopy(issue_payload)
+    items = _request_json(
+        connection,
+        token,
+        "GET",
+        f"/api/issues/{urllib.parse.quote(resource_id, safe='')}/comments",
+        params={
+            "$top": ISSUE_COMMENTS_LIMIT,
+            "fields": ISSUE_COMMENT_FIELDS,
+        },
+    ) or []
+    enriched = copy.deepcopy(issue_payload)
+    enriched["comments"] = items
+    return enriched
+
+
+def _attach_recent_activity(connection: dict[str, Any], token: str, issue_payload: dict[str, Any]) -> dict[str, Any]:
+    resource_id = _issue_resource_id(issue_payload)
+    if not resource_id:
+        return copy.deepcopy(issue_payload)
+    page = _request_json(
+        connection,
+        token,
+        "GET",
+        f"/api/issues/{urllib.parse.quote(resource_id, safe='')}/activities",
+        params={
+            "$top": ISSUE_ACTIVITY_LIMIT,
+            "reverse": "true",
+            "categories": ISSUE_ACTIVITY_CATEGORIES,
+            "fields": ISSUE_ACTIVITY_FIELDS,
+        },
+    ) or []
+    enriched = copy.deepcopy(issue_payload)
+    enriched["recent_activities"] = page
+    enriched["recent_activity_page"] = {
+        "returned_count": len(page),
+        "limit": ISSUE_ACTIVITY_LIMIT,
+    }
+    return enriched
+
+
+def _normalized_relation_text(value: Any) -> str:
+    return re.sub(r"\s+", " ", str(value or "").strip().lower())
+
+
+def _relation_label(link_type: dict[str, Any], direction: str) -> str:
+    if direction == "INWARD":
+        return str(
+            link_type.get("targetToSource")
+            or link_type.get("sourceToTarget")
+            or link_type.get("localizedTargetToSource")
+            or link_type.get("sourceToTarget")
+            or link_type.get("localizedSourceToTarget")
+            or link_type.get("name")
+            or "related"
+        )
+    return str(
+        link_type.get("sourceToTarget")
+        or link_type.get("targetToSource")
+        or link_type.get("localizedSourceToTarget")
+        or link_type.get("targetToSource")
+        or link_type.get("localizedTargetToSource")
+        or link_type.get("name")
+        or "related"
+    )
+
+
+def _inverse_relation_label(link_type: dict[str, Any], direction: str) -> str:
+    if direction == "INWARD":
+        return str(
+            link_type.get("sourceToTarget")
+            or link_type.get("targetToSource")
+            or link_type.get("localizedSourceToTarget")
+            or link_type.get("targetToSource")
+            or link_type.get("localizedTargetToSource")
+            or link_type.get("name")
+            or "related"
+        )
+    return str(
+        link_type.get("targetToSource")
+        or link_type.get("sourceToTarget")
+        or link_type.get("localizedTargetToSource")
+        or link_type.get("sourceToTarget")
+        or link_type.get("localizedSourceToTarget")
+        or link_type.get("name")
+        or "related"
+    )
+
+
+def _classify_issue_link(link_type: dict[str, Any], relation_label: str) -> tuple[str, str]:
+    relation_text = _normalized_relation_text(relation_label)
+    combined = " | ".join(
+        _normalized_relation_text(part)
+        for part in (
+            link_type.get("name"),
+            link_type.get("sourceToTarget"),
+            link_type.get("targetToSource"),
+            relation_label,
+        )
+        if part
+    )
+    if "duplicate" in combined:
+        if any(token in relation_text for token in ("duplicated by", "is duplicated by")):
+            return "duplicate", "duplicated_by"
+        return "duplicate", "duplicate_of"
+    if any(token in combined for token in ("depend", "require", "block")):
+        if any(
+            token in relation_text
+            for token in (
+                "is required for",
+                "required for",
+                "blocks",
+                "needed for",
+            )
+        ):
+            return "dependency", "prerequisite_for"
+        return "dependency", "blocked_by"
+    if any(token in combined for token in ("subtask", "parent", "part of", "contains")):
+        if any(
+            token in relation_text
+            for token in (
+                "parent for",
+                "has subtask",
+                "contains",
+                "includes",
+            )
+        ):
+            return "hierarchy", "parent_of"
+        return "hierarchy", "child_of"
+    if "relate" in combined:
+        return "related", "related_to"
+    return "other", "other"
+
+
+def _issue_link_sort_key(item: dict[str, Any]) -> tuple[int, str, str]:
+    role_order = {
+        "blocked_by": 0,
+        "prerequisite_for": 1,
+        "duplicate_of": 2,
+        "duplicated_by": 3,
+        "child_of": 4,
+        "parent_of": 5,
+        "related_to": 6,
+        "other": 7,
+    }
+    return (
+        role_order.get(item.get("planning_role") or "other", 99),
+        str(item.get("issue_key") or item.get("issue_id") or ""),
+        str(item.get("relation_label") or ""),
+    )
+
+
+def _issue_link_summary(issue_links: list[dict[str, Any]]) -> dict[str, Any]:
+    return {
+        "linked_issue_count": len(issue_links),
+        "open_linked_issue_count": sum(1 for item in issue_links if not item.get("resolved")),
+        "blocking_link_count": sum(1 for item in issue_links if item.get("relation_kind") == "dependency"),
+        "blocked_by_count": sum(1 for item in issue_links if item.get("planning_role") == "blocked_by"),
+        "prerequisite_for_count": sum(1 for item in issue_links if item.get("planning_role") == "prerequisite_for"),
+        "duplicate_count": sum(1 for item in issue_links if item.get("relation_kind") == "duplicate"),
+        "duplicate_of_count": sum(1 for item in issue_links if item.get("planning_role") == "duplicate_of"),
+        "duplicated_by_count": sum(1 for item in issue_links if item.get("planning_role") == "duplicated_by"),
+        "hierarchy_count": sum(1 for item in issue_links if item.get("relation_kind") == "hierarchy"),
+        "related_count": sum(1 for item in issue_links if item.get("relation_kind") == "related"),
+    }
+
+
+def _attach_issue_links(connection: dict[str, Any], token: str, issue_payload: dict[str, Any]) -> dict[str, Any]:
+    resource_id = _issue_resource_id(issue_payload)
+    if not resource_id:
+        return copy.deepcopy(issue_payload)
+    items = _request_json(
+        connection,
+        token,
+        "GET",
+        f"/api/issues/{urllib.parse.quote(resource_id, safe='')}/links",
+        params={
+            "fields": ISSUE_LINK_FIELDS,
+        },
+    ) or []
+    normalized_links: list[dict[str, Any]] = []
+    current_issue_id = str(issue_payload.get("issue_id") or "")
+    current_entity_id = str(issue_payload.get("issue_entity_id") or "")
+    for item in items:
+        link_type = copy.deepcopy(item.get("linkType") or {})
+        direction = str(item.get("direction") or "OUTWARD").upper()
+        relation_label = _relation_label(link_type, direction)
+        inverse_relation = _inverse_relation_label(link_type, direction)
+        relation_kind, planning_role = _classify_issue_link(link_type, relation_label)
+        for linked_issue in item.get("issues") or []:
+            linked_issue_id = linked_issue.get("idReadable") or linked_issue.get("id")
+            linked_entity_id = linked_issue.get("id")
+            if not linked_issue_id:
+                continue
+            if str(linked_issue_id) == current_issue_id or str(linked_entity_id or "") == current_entity_id:
+                continue
+            normalized_links.append(
+                {
+                    "direction": direction,
+                    "link_type_name": link_type.get("name"),
+                    "relation_label": relation_label,
+                    "inverse_relation_label": inverse_relation,
+                    "relation_kind": relation_kind,
+                    "planning_role": planning_role,
+                    "issue_entity_id": linked_entity_id,
+                    "issue_id": linked_issue_id,
+                    "issue_key": linked_issue_id,
+                    "issue_url": f"{connection['base_url'].rstrip('/')}/issue/{linked_issue_id}",
+                    "summary": linked_issue.get("summary") or linked_issue_id,
+                    "resolved": linked_issue.get("resolved"),
+                    "updated": linked_issue.get("updated"),
+                    "project": copy.deepcopy(linked_issue.get("project") or {}),
+                }
+            )
+    deduped: dict[tuple[str, str, str], dict[str, Any]] = {}
+    for item in normalized_links:
+        key = (
+            str(item.get("issue_id") or ""),
+            str(item.get("planning_role") or ""),
+            str(item.get("relation_label") or ""),
+        )
+        deduped[key] = item
+    issue_links = sorted(deduped.values(), key=_issue_link_sort_key)
+    enriched = copy.deepcopy(issue_payload)
+    enriched["issue_links"] = issue_links
+    enriched["link_summary"] = _issue_link_summary(issue_links)
+    return enriched
+
+
+def _issue_context_complete(issue_payload: dict[str, Any]) -> bool:
+    return all(key in issue_payload for key in ("work_items", "comments", "recent_activities", "issue_links", "link_summary"))
+
+
+def _ticket_overview(issue_payload: dict[str, Any], *, warnings: list[str] | None = None) -> dict[str, Any]:
+    comments = issue_payload.get("comments") or []
+    work_items = issue_payload.get("work_items") or []
+    recent_activities = issue_payload.get("recent_activities") or []
+    link_summary = copy.deepcopy(issue_payload.get("link_summary") or _issue_link_summary(issue_payload.get("issue_links") or []))
+    return {
+        "has_description": bool(issue_payload.get("description")),
+        "comment_count": len(comments),
+        "work_item_count": len(work_items),
+        "recent_activity_count": len(recent_activities),
+        "linked_issue_count": link_summary.get("linked_issue_count", 0),
+        "blocking_link_count": link_summary.get("blocking_link_count", 0),
+        "duplicate_link_count": link_summary.get("duplicate_count", 0),
+        "hierarchy_link_count": link_summary.get("hierarchy_count", 0),
+        "spent_minutes": issue_payload.get("youtrack_spent_minutes") or 0,
+        "warnings": copy.deepcopy(warnings or []),
+    }
+
+
+def _attach_ticket_context(connection: dict[str, Any], token: str, issue_payload: dict[str, Any]) -> dict[str, Any]:
+    if _issue_context_complete(issue_payload) and issue_payload.get("ticket_overview"):
+        return copy.deepcopy(issue_payload)
+    enriched = _attach_spent_minutes(connection, token, issue_payload)
+    warnings: list[str] = []
+    try:
+        enriched = _attach_comments(connection, token, enriched)
+    except Exception as exc:
+        warnings.append(f"comments: {exc}")
+    try:
+        enriched = _attach_recent_activity(connection, token, enriched)
+    except Exception as exc:
+        warnings.append(f"activities: {exc}")
+    try:
+        enriched = _attach_issue_links(connection, token, enriched)
+    except Exception as exc:
+        warnings.append(f"links: {exc}")
+    if warnings:
+        enriched["context_fetch_warnings"] = warnings
+    enriched["ticket_overview"] = _ticket_overview(enriched, warnings=warnings)
     return enriched
 
 
@@ -907,30 +1221,61 @@ def read_issue_ledger(workspace: str | Path, *, connection_id: str, issue_id: st
     return _load_json(_issue_ledger_path(paths, connection_id, issue_id), default=None, strict=False)
 
 
-def recompute_issue_ledger(workspace: str | Path, *, connection_id: str, issue_id: str) -> dict[str, Any]:
-    paths = _youtrack_paths(workspace)
-    existing = _load_json(_issue_ledger_path(paths, connection_id, issue_id), default={}, strict=False) or {}
-    tasks_index = _load_tasks_index(workspace_paths(workspace))
-    linked_tasks = []
-    time_entries = []
-    codex_total_minutes = 0
-    codex_estimate_minutes = None
-    latest_commit = None
-    latest_task_timestamp = ""
-    latest_commit_timestamp = ""
+def _issue_ledger_targets(tasks_index: dict[str, Any], requested: list[tuple[str, str]] | None = None) -> list[tuple[str, str]]:
+    if requested is not None:
+        return list(dict.fromkeys((connection_id, issue_id) for connection_id, issue_id in requested if connection_id and issue_id))
+    discovered: list[tuple[str, str]] = []
     for item in tasks_index.get("items", []):
         task = _normalize_task_payload(item)
         external_issue = task.get("external_issue") or {}
-        if external_issue.get("connection_id") != connection_id or external_issue.get("issue_id") != issue_id:
+        connection_id = external_issue.get("connection_id")
+        issue_id = external_issue.get("issue_id")
+        if connection_id and issue_id:
+            discovered.append((connection_id, issue_id))
+    return list(dict.fromkeys(discovered))
+
+
+def recompute_issue_ledgers(
+    workspace: str | Path,
+    *,
+    targets: list[tuple[str, str]] | None = None,
+) -> dict[tuple[str, str], dict[str, Any]]:
+    paths = _youtrack_paths(workspace)
+    tasks_index = _load_tasks_index(workspace_paths(workspace))
+    target_pairs = _issue_ledger_targets(tasks_index, targets)
+    if not target_pairs:
+        return {}
+    target_set = set(target_pairs)
+    state: dict[tuple[str, str], dict[str, Any]] = {}
+    for connection_id, issue_id in target_pairs:
+        existing = _load_json(_issue_ledger_path(paths, connection_id, issue_id), default={}, strict=False) or {}
+        state[(connection_id, issue_id)] = {
+            "existing": existing,
+            "linked_task_ids": [],
+            "time_entries": [],
+            "codex_total_minutes": 0,
+            "codex_estimate_minutes": existing.get("codex_estimate_minutes"),
+            "latest_commit": None,
+            "latest_task_timestamp": "",
+            "latest_commit_timestamp": "",
+        }
+    for item in tasks_index.get("items", []):
+        task = _normalize_task_payload(item)
+        external_issue = task.get("external_issue") or {}
+        target = (external_issue.get("connection_id"), external_issue.get("issue_id"))
+        if target not in target_set:
             continue
-        linked_tasks.append(task["task_id"])
+        accumulator = state[target]
+        accumulator["linked_task_ids"].append(task["task_id"])
         task_timestamp = str(task.get("updated_at") or task.get("created_at") or "")
-        if task.get("codex_estimate_minutes") is not None and task_timestamp >= latest_task_timestamp:
-            codex_estimate_minutes = task.get("codex_estimate_minutes")
-            latest_task_timestamp = task_timestamp
-        if task.get("latest_commit") and str(task["latest_commit"].get("recorded_at") or "") >= latest_commit_timestamp:
-            latest_commit = task["latest_commit"]
-            latest_commit_timestamp = str(task["latest_commit"].get("recorded_at") or "")
+        if task.get("codex_estimate_minutes") is not None and task_timestamp >= accumulator["latest_task_timestamp"]:
+            accumulator["codex_estimate_minutes"] = task.get("codex_estimate_minutes")
+            accumulator["latest_task_timestamp"] = task_timestamp
+        latest_commit = task.get("latest_commit")
+        latest_commit_timestamp = str((latest_commit or {}).get("recorded_at") or "")
+        if latest_commit and latest_commit_timestamp >= accumulator["latest_commit_timestamp"]:
+            accumulator["latest_commit"] = latest_commit
+            accumulator["latest_commit_timestamp"] = latest_commit_timestamp
         tracking = task.get("time_tracking") or {}
         for entry in tracking.get("entries", []):
             normalized_entry = {
@@ -942,28 +1287,44 @@ def recompute_issue_ledger(workspace: str | Path, *, connection_id: str, issue_i
                 "task_id": task.get("task_id"),
                 "stage_id": task.get("stage_id"),
             }
-            codex_total_minutes += normalized_entry["minutes"]
-            time_entries.append(normalized_entry)
-    time_entries.sort(key=lambda item: (item.get("started_at") or "", item.get("ended_at") or "", item.get("task_id") or ""))
-    latest_snapshot = copy.deepcopy(existing.get("latest_snapshot") or {})
-    ledger = {
-        "schema_version": YOUTRACK_ISSUE_LEDGER_SCHEMA_VERSION,
-        "connection_id": connection_id,
-        "issue_id": issue_id,
-        "issue_key": existing.get("issue_key") or latest_snapshot.get("issue_key") or issue_id,
-        "issue_url": existing.get("issue_url") or latest_snapshot.get("issue_url"),
-        "latest_snapshot": latest_snapshot,
-        "youtrack_estimate_minutes": existing.get("youtrack_estimate_minutes") or latest_snapshot.get("youtrack_estimate_minutes"),
-        "youtrack_spent_minutes": existing.get("youtrack_spent_minutes") or latest_snapshot.get("youtrack_spent_minutes"),
-        "codex_estimate_minutes": codex_estimate_minutes if codex_estimate_minutes is not None else existing.get("codex_estimate_minutes"),
-        "codex_total_minutes": codex_total_minutes,
-        "time_entries": time_entries,
-        "linked_task_ids": linked_tasks,
-        "latest_commit": latest_commit,
-        "updated_at": now_iso(),
-    }
-    _write_json(_issue_ledger_path(paths, connection_id, issue_id), ledger)
-    return ledger
+            accumulator["codex_total_minutes"] += normalized_entry["minutes"]
+            accumulator["time_entries"].append(normalized_entry)
+    ledgers: dict[tuple[str, str], dict[str, Any]] = {}
+    for connection_id, issue_id in target_pairs:
+        accumulator = state[(connection_id, issue_id)]
+        existing = accumulator["existing"]
+        time_entries = sorted(
+            accumulator["time_entries"],
+            key=lambda item: (item.get("started_at") or "", item.get("ended_at") or "", item.get("task_id") or ""),
+        )
+        latest_snapshot = copy.deepcopy(existing.get("latest_snapshot") or {})
+        ledger = {
+            "schema_version": YOUTRACK_ISSUE_LEDGER_SCHEMA_VERSION,
+            "connection_id": connection_id,
+            "issue_id": issue_id,
+            "issue_key": existing.get("issue_key") or latest_snapshot.get("issue_key") or issue_id,
+            "issue_url": existing.get("issue_url") or latest_snapshot.get("issue_url"),
+            "latest_snapshot": latest_snapshot,
+            "youtrack_estimate_minutes": existing.get("youtrack_estimate_minutes") or latest_snapshot.get("youtrack_estimate_minutes"),
+            "youtrack_spent_minutes": existing.get("youtrack_spent_minutes") or latest_snapshot.get("youtrack_spent_minutes"),
+            "codex_estimate_minutes": (
+                accumulator["codex_estimate_minutes"]
+                if accumulator["codex_estimate_minutes"] is not None
+                else existing.get("codex_estimate_minutes")
+            ),
+            "codex_total_minutes": accumulator["codex_total_minutes"],
+            "time_entries": time_entries,
+            "linked_task_ids": accumulator["linked_task_ids"],
+            "latest_commit": accumulator["latest_commit"],
+            "updated_at": now_iso(),
+        }
+        _write_json(_issue_ledger_path(paths, connection_id, issue_id), ledger)
+        ledgers[(connection_id, issue_id)] = ledger
+    return ledgers
+
+
+def recompute_issue_ledger(workspace: str | Path, *, connection_id: str, issue_id: str) -> dict[str, Any]:
+    return recompute_issue_ledgers(workspace, targets=[(connection_id, issue_id)])[(connection_id, issue_id)]
 
 
 def _fetch_matching_issues(
@@ -1021,6 +1382,21 @@ def _session_issue_payloads(session: dict[str, Any]) -> dict[str, dict[str, Any]
     return payloads
 
 
+def _update_session_issue_payloads(session: dict[str, Any], issues: list[dict[str, Any]]) -> dict[str, Any]:
+    by_issue_id = {item["issue_id"]: copy.deepcopy(item) for item in issues}
+    shortlist = []
+    for item in session.get("shortlist") or []:
+        shortlist.append(copy.deepcopy(by_issue_id.get(item["issue_id"], item)))
+    session["shortlist"] = shortlist
+    shortlist_page = copy.deepcopy(session.get("shortlist_page") or {})
+    page_items = []
+    for item in shortlist_page.get("items") or []:
+        page_items.append(copy.deepcopy(by_issue_id.get(item["issue_id"], item)))
+    shortlist_page["items"] = page_items
+    session["shortlist_page"] = shortlist_page
+    return session
+
+
 def search_youtrack_issues(
     workspace: str | Path,
     *,
@@ -1052,7 +1428,7 @@ def search_youtrack_issues(
     shortlist_ids = {item["issue_id"] for item in page_items[:safe_shortlist_size]}
     for issue_payload in page_items:
         if issue_payload["issue_id"] in shortlist_ids:
-            enriched = _attach_spent_minutes(connection, secret["token"], issue_payload)
+            enriched = _attach_ticket_context(connection, secret["token"], issue_payload)
             shortlist.append(enriched)
             update_issue_snapshot(workspace, enriched, connection_id=resolved_connection_id)
     page_payloads = []
@@ -1086,6 +1462,7 @@ def search_youtrack_issues(
         "shortlist": shortlist,
         "selected_issue_ids": [],
         "rejected_issue_ids": [],
+        "selection_analysis": None,
         "scoring_metadata": {
             "field_mapping": field_catalog.get("field_mapping") or {},
             "strategy": "priority-severity-risk-estimate heuristic",
@@ -1123,19 +1500,184 @@ def _selected_issue_payloads(paths: dict[str, Any], session: dict[str, Any], sel
     payloads = _session_issue_payloads(session)
     selected: list[dict[str, Any]] = []
     for issue_id in selected_issue_ids:
-        if issue_id in payloads:
-            selected.append(copy.deepcopy(payloads[issue_id]))
-            continue
         ledger = _issue_snapshot(paths, session["connection_id"], issue_id) or {}
-        snapshot = copy.deepcopy((ledger.get("latest_snapshot") or {}))
-        if snapshot:
-            snapshot["youtrack_estimate_minutes"] = ledger.get("youtrack_estimate_minutes", snapshot.get("youtrack_estimate_minutes"))
-            snapshot["youtrack_spent_minutes"] = ledger.get("youtrack_spent_minutes", snapshot.get("youtrack_spent_minutes"))
-            snapshot["codex_estimate_minutes"] = ledger.get("codex_estimate_minutes", snapshot.get("codex_estimate_minutes"))
-            selected.append(snapshot)
+        snapshot = copy.deepcopy(ledger.get("latest_snapshot") or {})
+        payload = _merged_issue_snapshot(snapshot, payloads.get(issue_id) or {})
+        if payload:
+            payload["youtrack_estimate_minutes"] = ledger.get("youtrack_estimate_minutes", payload.get("youtrack_estimate_minutes"))
+            payload["youtrack_spent_minutes"] = ledger.get("youtrack_spent_minutes", payload.get("youtrack_spent_minutes"))
+            payload["codex_estimate_minutes"] = ledger.get("codex_estimate_minutes", payload.get("codex_estimate_minutes"))
+            if "ticket_overview" not in payload:
+                payload["ticket_overview"] = _ticket_overview(payload)
+            selected.append(payload)
             continue
         raise FileNotFoundError(f"Issue `{issue_id}` is not available in the cached search snapshot for session `{session['session_id']}`.")
     return selected
+
+
+def _unique_issue_ids(issue_links: list[dict[str, Any]], *, role: str | None = None, selected_only: bool | None = None) -> list[str]:
+    values: list[str] = []
+    for item in issue_links:
+        if role and item.get("planning_role") != role:
+            continue
+        if selected_only is not None and bool(item.get("selected_in_plan")) is not selected_only:
+            continue
+        issue_id = item.get("issue_id")
+        if issue_id:
+            values.append(str(issue_id))
+    return list(dict.fromkeys(values))
+
+
+def _plan_link_analysis(issue: dict[str, Any]) -> dict[str, Any]:
+    issue_links = issue.get("issue_links") or []
+    open_external_blockers = [
+        item for item in issue_links if item.get("planning_role") == "blocked_by" and not item.get("selected_in_plan") and not item.get("resolved")
+    ]
+    planner_notes: list[str] = []
+    selected_blocked_by = _unique_issue_ids(issue_links, role="blocked_by", selected_only=True)
+    external_blocked_by = [item["issue_id"] for item in open_external_blockers if item.get("issue_id")]
+    selected_duplicates = _unique_issue_ids(issue_links, role="duplicate_of", selected_only=True)
+    external_duplicates = _unique_issue_ids(issue_links, role="duplicate_of", selected_only=False)
+    selected_children = _unique_issue_ids(issue_links, role="child_of", selected_only=True)
+    selected_parents = _unique_issue_ids(issue_links, role="parent_of", selected_only=True)
+    if selected_blocked_by:
+        planner_notes.append(f"Depends on selected issues: {', '.join(selected_blocked_by)}.")
+    if external_blocked_by:
+        planner_notes.append(f"Depends on external issues outside this plan: {', '.join(external_blocked_by)}.")
+    if selected_duplicates:
+        planner_notes.append(f"Potential duplicate of selected issues: {', '.join(selected_duplicates)}.")
+    elif external_duplicates:
+        planner_notes.append(f"Potential duplicate of external issues: {', '.join(external_duplicates)}.")
+    if selected_children:
+        planner_notes.append(f"Has parent or container issues in this plan: {', '.join(selected_children)}.")
+    if selected_parents:
+        planner_notes.append(f"Has child issues in this plan: {', '.join(selected_parents)}.")
+    return {
+        "selected_linked_issue_ids": _unique_issue_ids(issue_links, selected_only=True),
+        "external_linked_issue_ids": _unique_issue_ids(issue_links, selected_only=False),
+        "selected_blocked_by_issue_ids": selected_blocked_by,
+        "external_blocked_by_issue_ids": list(dict.fromkeys(external_blocked_by)),
+        "selected_prerequisite_for_issue_ids": _unique_issue_ids(issue_links, role="prerequisite_for", selected_only=True),
+        "external_prerequisite_for_issue_ids": _unique_issue_ids(issue_links, role="prerequisite_for", selected_only=False),
+        "selected_duplicate_of_issue_ids": selected_duplicates,
+        "external_duplicate_of_issue_ids": external_duplicates,
+        "selected_duplicated_by_issue_ids": _unique_issue_ids(issue_links, role="duplicated_by", selected_only=True),
+        "external_duplicated_by_issue_ids": _unique_issue_ids(issue_links, role="duplicated_by", selected_only=False),
+        "selected_parent_issue_ids": selected_children,
+        "selected_child_issue_ids": selected_parents,
+        "selected_related_issue_ids": _unique_issue_ids(issue_links, role="related_to", selected_only=True),
+        "external_related_issue_ids": _unique_issue_ids(issue_links, role="related_to", selected_only=False),
+        "planner_notes": planner_notes,
+    }
+
+
+def _issue_execution_sort_key(issue: dict[str, Any]) -> tuple[int, int, int, int, str]:
+    analysis = issue.get("plan_link_analysis") or {}
+    has_external_blockers = 1 if analysis.get("external_blocked_by_issue_ids") else 0
+    has_duplicate_warning = 1 if analysis.get("selected_duplicate_of_issue_ids") or analysis.get("external_duplicate_of_issue_ids") else 0
+    return (
+        has_external_blockers,
+        has_duplicate_warning,
+        -(issue.get("score") or 0),
+        issue.get("codex_estimate_minutes") or 99999,
+        str(issue.get("issue_key") or issue.get("issue_id") or ""),
+    )
+
+
+def _selection_link_analysis(selected_issues: list[dict[str, Any]]) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    selected_issue_ids = {issue["issue_id"] for issue in selected_issues}
+    annotated: list[dict[str, Any]] = []
+    for issue in selected_issues:
+        payload = copy.deepcopy(issue)
+        annotated_links = []
+        for link in payload.get("issue_links") or []:
+            enriched_link = copy.deepcopy(link)
+            enriched_link["selected_in_plan"] = enriched_link.get("issue_id") in selected_issue_ids
+            annotated_links.append(enriched_link)
+        payload["issue_links"] = sorted(annotated_links, key=_issue_link_sort_key)
+        payload["plan_link_analysis"] = _plan_link_analysis(payload)
+        payload["ticket_overview"] = _ticket_overview(payload, warnings=payload.get("context_fetch_warnings") or [])
+        annotated.append(payload)
+    base_sorted = sorted(annotated, key=_issue_execution_sort_key)
+    issue_by_id = {issue["issue_id"]: issue for issue in base_sorted}
+    base_order = {issue["issue_id"]: index for index, issue in enumerate(base_sorted)}
+    adjacency: dict[str, set[str]] = {issue["issue_id"]: set() for issue in base_sorted}
+    dependency_edges: list[dict[str, Any]] = []
+    for issue in base_sorted:
+        for blocker_id in issue["plan_link_analysis"].get("selected_blocked_by_issue_ids") or []:
+            if blocker_id in adjacency and blocker_id != issue["issue_id"] and issue["issue_id"] not in adjacency[blocker_id]:
+                adjacency[blocker_id].add(issue["issue_id"])
+                dependency_edges.append(
+                    {
+                        "from_issue_id": blocker_id,
+                        "to_issue_id": issue["issue_id"],
+                        "reason": "blocked_by",
+                    }
+                )
+        for dependent_id in issue["plan_link_analysis"].get("selected_prerequisite_for_issue_ids") or []:
+            if dependent_id in adjacency and dependent_id != issue["issue_id"] and dependent_id not in adjacency[issue["issue_id"]]:
+                adjacency[issue["issue_id"]].add(dependent_id)
+                dependency_edges.append(
+                    {
+                        "from_issue_id": issue["issue_id"],
+                        "to_issue_id": dependent_id,
+                        "reason": "prerequisite_for",
+                    }
+                )
+    incoming: dict[str, int] = {issue_id: 0 for issue_id in adjacency}
+    for source_issue_id, targets in adjacency.items():
+        for target_issue_id in targets:
+            incoming[target_issue_id] += 1
+    ready = sorted([issue_id for issue_id, count in incoming.items() if count == 0], key=lambda issue_id: base_order[issue_id])
+    ordered_issue_ids: list[str] = []
+    while ready:
+        issue_id = ready.pop(0)
+        ordered_issue_ids.append(issue_id)
+        for target_issue_id in sorted(adjacency[issue_id], key=lambda candidate: base_order[candidate]):
+            incoming[target_issue_id] -= 1
+            if incoming[target_issue_id] == 0:
+                ready.append(target_issue_id)
+                ready.sort(key=lambda candidate: base_order[candidate])
+    planning_warnings: list[str] = []
+    if len(ordered_issue_ids) != len(base_sorted):
+        remaining_issue_ids = [issue_id for issue_id in base_order if issue_id not in ordered_issue_ids]
+        remaining_issue_ids.sort(key=lambda issue_id: base_order[issue_id])
+        planning_warnings.append(f"Dependency cycle detected across selected issues: {', '.join(remaining_issue_ids)}.")
+        ordered_issue_ids.extend(remaining_issue_ids)
+    ordered_issues = [issue_by_id[issue_id] for issue_id in ordered_issue_ids]
+    planning_warnings.extend(
+        note
+        for issue in ordered_issues
+        for note in (issue.get("plan_link_analysis") or {}).get("planner_notes") or []
+        if note
+    )
+    external_blockers = [
+        {
+            "issue_id": issue["issue_id"],
+            "blocked_by_issue_ids": issue["plan_link_analysis"]["external_blocked_by_issue_ids"],
+        }
+        for issue in ordered_issues
+        if issue.get("plan_link_analysis", {}).get("external_blocked_by_issue_ids")
+    ]
+    duplicate_candidates = [
+        {
+            "issue_id": issue["issue_id"],
+            "duplicate_of_issue_ids": issue["plan_link_analysis"]["selected_duplicate_of_issue_ids"]
+            or issue["plan_link_analysis"]["external_duplicate_of_issue_ids"],
+        }
+        for issue in ordered_issues
+        if issue.get("plan_link_analysis", {}).get("selected_duplicate_of_issue_ids")
+        or issue.get("plan_link_analysis", {}).get("external_duplicate_of_issue_ids")
+    ]
+    selection_analysis = {
+        "ordered_issue_ids": ordered_issue_ids,
+        "dependency_edges": dependency_edges,
+        "external_blockers": external_blockers,
+        "duplicate_candidates": duplicate_candidates,
+        "planning_warnings": list(dict.fromkeys(planning_warnings)),
+    }
+    return ordered_issues, selection_analysis
+
 
 def _proposal_from_issue(issue: dict[str, Any], stage_id: str) -> dict[str, Any]:
     issue_key = issue["issue_key"]
@@ -1145,24 +1687,46 @@ def _proposal_from_issue(issue: dict[str, Any], stage_id: str) -> dict[str, Any]
         "title": f"{issue_key} {issue['summary']}",
         "objective": issue["summary"],
         "stage_id": stage_id,
+        "issue_entity_id": issue.get("issue_entity_id"),
         "issue_id": issue["issue_id"],
         "issue_key": issue_key,
         "issue_url": issue["issue_url"],
         "summary": issue["summary"],
+        "description": issue.get("description"),
         "youtrack_estimate_minutes": issue.get("youtrack_estimate_minutes"),
         "youtrack_spent_minutes": issue.get("youtrack_spent_minutes"),
         "codex_estimate_minutes": issue.get("codex_estimate_minutes"),
         "score": issue.get("score"),
+        "work_items": copy.deepcopy(issue.get("work_items") or []),
+        "comments": copy.deepcopy(issue.get("comments") or []),
+        "recent_activities": copy.deepcopy(issue.get("recent_activities") or []),
+        "recent_activity_page": copy.deepcopy(issue.get("recent_activity_page") or {}),
+        "issue_links": copy.deepcopy(issue.get("issue_links") or []),
+        "link_summary": copy.deepcopy(issue.get("link_summary") or _issue_link_summary(issue.get("issue_links") or [])),
+        "plan_link_analysis": copy.deepcopy(issue.get("plan_link_analysis") or {}),
+        "ticket_overview": copy.deepcopy(issue.get("ticket_overview") or _ticket_overview(issue)),
+        "context_fetch_warnings": copy.deepcopy(issue.get("context_fetch_warnings") or []),
         "branch_hint": f"task/{slugify(issue_key)}-{slugify(issue['summary'])[:32]}",
         "external_issue": {
             "connection_id": None,
+            "issue_entity_id": issue.get("issue_entity_id"),
             "issue_id": issue["issue_id"],
             "issue_key": issue_key,
             "issue_url": issue["issue_url"],
             "summary": issue["summary"],
+            "description": issue.get("description"),
             "field_snapshot": copy.deepcopy(issue.get("custom_fields") or {}),
             "youtrack_estimate_minutes": issue.get("youtrack_estimate_minutes"),
             "youtrack_spent_minutes": issue.get("youtrack_spent_minutes"),
+            "work_items": copy.deepcopy(issue.get("work_items") or []),
+            "comments": copy.deepcopy(issue.get("comments") or []),
+            "recent_activities": copy.deepcopy(issue.get("recent_activities") or []),
+            "recent_activity_page": copy.deepcopy(issue.get("recent_activity_page") or {}),
+            "issue_links": copy.deepcopy(issue.get("issue_links") or []),
+            "link_summary": copy.deepcopy(issue.get("link_summary") or _issue_link_summary(issue.get("issue_links") or [])),
+            "plan_link_analysis": copy.deepcopy(issue.get("plan_link_analysis") or {}),
+            "ticket_overview": copy.deepcopy(issue.get("ticket_overview") or _ticket_overview(issue)),
+            "context_fetch_warnings": copy.deepcopy(issue.get("context_fetch_warnings") or []),
         },
     }
 
@@ -1187,6 +1751,30 @@ def _build_stage_batches(selected_issues: list[dict[str, Any]]) -> tuple[list[di
         stage_title = "Quick wins" if all((item.get("codex_estimate_minutes") or 0) <= 60 for item in current_batch) else f"Batch {stage_number}"
         stage_proposals = [_proposal_from_issue(item, stage_id) for item in current_batch]
         objective = ", ".join(proposal["issue_key"] for proposal in stage_proposals)
+        stage_planner_notes = list(
+            dict.fromkeys(
+                note
+                for proposal in stage_proposals
+                for note in (
+                    f"{proposal['issue_key']}: {planner_note}"
+                    for planner_note in (proposal.get("plan_link_analysis") or {}).get("planner_notes") or []
+                )
+            )
+        )
+        selected_dependency_issue_ids = list(
+            dict.fromkeys(
+                issue_id
+                for proposal in stage_proposals
+                for issue_id in (proposal.get("plan_link_analysis") or {}).get("selected_blocked_by_issue_ids") or []
+            )
+        )
+        external_dependency_issue_ids = list(
+            dict.fromkeys(
+                issue_id
+                for proposal in stage_proposals
+                for issue_id in (proposal.get("plan_link_analysis") or {}).get("external_blocked_by_issue_ids") or []
+            )
+        )
         stages.append(
             {
                 "id": stage_id,
@@ -1194,6 +1782,11 @@ def _build_stage_batches(selected_issues: list[dict[str, Any]]) -> tuple[list[di
                 "objective": f"Resolve {objective}.",
                 "canonical_execution_slices": [proposal["task_id"] for proposal in stage_proposals],
                 "source_issue_ids": [proposal["issue_id"] for proposal in stage_proposals],
+                "planner_notes": stage_planner_notes,
+                "planning_signals": {
+                    "selected_dependency_issue_ids": selected_dependency_issue_ids,
+                    "external_dependency_issue_ids": external_dependency_issue_ids,
+                },
             }
         )
         proposals.extend(stage_proposals)
@@ -1230,7 +1823,14 @@ def propose_youtrack_workstream_plan(
     if not session["selected_issue_ids"]:
         raise ValueError("propose_youtrack_workstream_plan requires at least one selected issue.")
     selected = _selected_issue_payloads(paths, session, session["selected_issue_ids"])
-    selected.sort(key=lambda item: (-item["score"], item.get("codex_estimate_minutes") or 99999, item["issue_key"]))
+    connection = _read_connection_record(paths, session["connection_id"])
+    secret = _connection_secret(paths, session["connection_id"])
+    selected = [_attach_ticket_context(connection, secret["token"], item) for item in selected]
+    for issue_payload in selected:
+        update_issue_snapshot(workspace, issue_payload, connection_id=session["connection_id"])
+    selected, selection_analysis = _selection_link_analysis(selected)
+    session = _update_session_issue_payloads(session, selected)
+    session["selection_analysis"] = selection_analysis
     stages, proposals = _build_stage_batches(selected)
     for proposal in proposals:
         proposal["external_issue"]["connection_id"] = session["connection_id"]
@@ -1244,6 +1844,7 @@ def propose_youtrack_workstream_plan(
         "workstream_title": title,
         "selected_issue_ids": session["selected_issue_ids"],
         "rejected_issue_ids": session["rejected_issue_ids"],
+        "selection_analysis": selection_analysis,
         "stages": stages,
         "task_proposals": proposals,
         "codex_estimates": {
@@ -1266,96 +1867,53 @@ def propose_youtrack_workstream_plan(
     }
 
 
-def apply_youtrack_workstream_plan(
-    workspace: str | Path,
-    *,
-    plan_id: str | None = None,
-    confirmed: bool = False,
-    activate_first_task: bool = False,
-) -> dict[str, Any]:
-    if not confirmed:
-        raise ValueError("apply_youtrack_workstream_plan requires confirmed=True.")
-    paths = _youtrack_paths(workspace)
-    if not plan_id:
-        current = _load_json(Path(paths["current_plan"]), default={}, strict=False) or {}
-        plan_id = current.get("plan_id")
-    if not plan_id:
-        raise FileNotFoundError("No YouTrack plan draft is available for apply.")
-    plan = _read_plan_draft(paths, plan_id)
-    if plan.get("status") == "applied":
-        return {
-            "workspace_path": paths["workspace_path"],
-            "plan": plan,
-            "workstream": current_workstream(workspace),
-            "tasks": [item for item in (_load_tasks_index(workspace_paths(workspace)).get("items") or []) if item.get("linked_workstream_id") == plan.get("applied_workstream_id")],
-        }
-    workstream_result = create_workstream(
-        workspace,
-        title=plan["workstream_title"],
-        kind="feature",
-        scope_summary=f"YouTrack plan derived from search session {plan['search_session_id']}",
-        source_context={
-            "provider": "youtrack",
-            "connection_id": plan["connection_id"],
-            "search_session_id": plan["search_session_id"],
-            "plan_id": plan["plan_id"],
-        },
-        make_current=True,
-    )
-    workstream_id = workstream_result["created_workstream_id"]
-    register = read_stage_register(workspace, workstream_id=workstream_id)
-    register["stages"] = copy.deepcopy(plan.get("stages") or [])
-    if register["stages"]:
-        register["current_stage"] = register["stages"][0]["id"]
-        register["current_slice"] = register["stages"][0]["canonical_execution_slices"][0]
-        register["remaining_slices"] = register["stages"][0]["canonical_execution_slices"][1:]
-        register["stage_status"] = "planned"
-    register["plan_status"] = "confirmed"
-    register["source_context"] = {
+def _tasks_for_workstream(workspace: str | Path, workstream_id: str | None) -> list[dict[str, Any]]:
+    if not workstream_id:
+        return []
+    return [
+        item
+        for item in (_load_tasks_index(workspace_paths(workspace)).get("items") or [])
+        if item.get("linked_workstream_id") == workstream_id
+    ]
+
+
+def _existing_workstream_for_plan(workspace: str | Path, plan_id: str) -> str | None:
+    for item in list_workstreams(workspace).get("items") or []:
+        source_context = item.get("source_context") or {}
+        if source_context.get("provider") == "youtrack" and source_context.get("plan_id") == plan_id:
+            return item.get("workstream_id")
+    return None
+
+
+def _ensure_current_workstream_selected(workspace: str | Path, workstream_id: str | None) -> None:
+    if not workstream_id:
+        return
+    try:
+        current = current_workstream(workspace)
+    except Exception:
+        current = None
+    if (current or {}).get("workstream_id") != workstream_id:
+        switch_workstream(workspace, workstream_id)
+
+
+def _plan_source_context(plan: dict[str, Any]) -> dict[str, Any]:
+    return {
         "provider": "youtrack",
         "connection_id": plan["connection_id"],
         "search_session_id": plan["search_session_id"],
         "plan_id": plan["plan_id"],
     }
-    register.setdefault("planner_notes", []).append(f"YouTrack plan {plan_id} applied from search session {plan['search_session_id']}.")
-    write_stage_register(workspace, register, confirmed_stage_plan_edit=True, workstream_id=workstream_id)
-    created_task_ids: list[str] = []
-    for index, proposal in enumerate(plan.get("task_proposals") or []):
-        task_result = create_task(
-            workspace,
-            title=proposal["title"],
-            objective=proposal["objective"],
-            branch_hint=proposal.get("branch_hint"),
-            linked_workstream_id=workstream_id,
-            stage_id=proposal.get("stage_id"),
-            external_issue=proposal.get("external_issue"),
-            codex_estimate_minutes=proposal.get("codex_estimate_minutes"),
-            task_id=proposal["task_id"],
-            make_current=activate_first_task and index == 0,
-        )
-        created_task_ids.append(task_result["created_task_id"])
-        proposal["created_task_id"] = task_result["created_task_id"]
-        proposal["linked_workstream_id"] = workstream_id
-        update_issue_snapshot(workspace, proposal["external_issue"] | {
-            "issue_id": proposal["issue_id"],
-            "issue_key": proposal["issue_key"],
-            "issue_url": proposal["issue_url"],
-            "summary": proposal["summary"],
-            "youtrack_estimate_minutes": proposal.get("youtrack_estimate_minutes"),
-            "youtrack_spent_minutes": proposal.get("youtrack_spent_minutes"),
-            "codex_estimate_minutes": proposal.get("codex_estimate_minutes"),
-        }, connection_id=plan["connection_id"])
-        recompute_issue_ledger(workspace, connection_id=plan["connection_id"], issue_id=proposal["issue_id"])
-    plan["status"] = "applied"
-    plan["applied_workstream_id"] = workstream_id
-    plan["created_task_ids"] = created_task_ids
-    plan["applied_at"] = now_iso()
-    plan["updated_at"] = now_iso()
-    _write_json(_plan_draft_path(paths, plan_id), plan)
+
+
+def _plan_scope_summary(plan: dict[str, Any]) -> str:
+    return f"YouTrack plan derived from search session {plan['search_session_id']}"
+
+
+def _plan_brief_markdown(plan: dict[str, Any]) -> str:
     brief_lines = [
         "# StageExecutionBrief",
         "",
-        f"YouTrack plan: {plan_id}",
+        f"YouTrack plan: {plan['plan_id']}",
         f"Search session: {plan['search_session_id']}",
         f"Workstream: {plan['workstream_title']}",
         "",
@@ -1373,12 +1931,292 @@ def apply_youtrack_workstream_plan(
         "- Every linked commit subject must start with the YouTrack issue id.",
         "- Ask the user to validate behavior before closeout when project-specific access tokens or production-only checks are needed.",
     ]
-    set_active_brief(workspace, "\n".join(brief_lines))
+    return "\n".join(brief_lines)
+
+
+def _refresh_youtrack_planner_notes(register: dict[str, Any], plan: dict[str, Any]) -> dict[str, Any]:
+    note = f"YouTrack plan {plan['plan_id']} applied from search session {plan['search_session_id']}."
+    planner_notes = [
+        item
+        for item in (register.get("planner_notes") or [])
+        if not str(item).startswith("YouTrack plan ")
+    ]
+    planner_notes.append(note)
+    register["planner_notes"] = planner_notes
+    return register
+
+
+def _plan_stage_payloads_for_register(plan: dict[str, Any], register: dict[str, Any]) -> list[dict[str, Any]]:
+    existing_stages = {
+        stage.get("id"): stage
+        for stage in (register.get("stages") or [])
+        if stage.get("id")
+    }
+    merged_stages: list[dict[str, Any]] = []
+    for stage in plan.get("stages") or []:
+        payload = copy.deepcopy(stage)
+        existing = existing_stages.get(payload.get("id")) or {}
+        if existing.get("status") is not None:
+            payload["status"] = existing.get("status")
+        if existing.get("completed_at") is not None:
+            payload["completed_at"] = existing.get("completed_at")
+        merged_stages.append(payload)
+    return merged_stages
+
+
+def _reapply_plan_to_existing_workstream(
+    workspace: str | Path,
+    *,
+    plan: dict[str, Any],
+    workstream_id: str,
+) -> dict[str, Any]:
+    paths = _youtrack_paths(workspace)
+    _ensure_current_workstream_selected(workspace, workstream_id)
+    current = current_workstream(workspace)
+    register = copy.deepcopy(current.get("register") or {})
+    if any(stage.get("status") == "completed" for stage in (register.get("stages") or [])):
+        raise RuntimeError(
+            "Cannot reapply a new YouTrack plan onto a workstream with completed stages."
+        )
+
+    existing_tasks = _tasks_for_workstream(workspace, workstream_id)
+    existing_task_ids = {item.get("task_id") for item in existing_tasks}
+    expected_task_ids = [proposal["task_id"] for proposal in (plan.get("task_proposals") or [])]
+    expected_task_id_set = set(expected_task_ids)
+    unexpected_task_ids = sorted(task_id for task_id in existing_task_ids if task_id not in expected_task_id_set)
+    if unexpected_task_ids:
+        raise RuntimeError(
+            "Current workstream task set contains issues that are not present in the selected YouTrack plan: "
+            + ", ".join(unexpected_task_ids)
+            + "."
+        )
+
+    workstreams_index = _load_workstreams_index(paths)
+    workstream_record = _workstream_record_by_id(workstreams_index, workstream_id)
+    workstream_record["title"] = plan["workstream_title"]
+    workstream_record["scope_summary"] = _plan_scope_summary(plan)
+    workstream_record["source_context"] = _plan_source_context(plan)
+    workstream_record["updated_at"] = now_iso()
+    _save_workstreams_index(paths, workstreams_index)
+
+    register["stages"] = _plan_stage_payloads_for_register(plan, register)
+    register["plan_status"] = "confirmed"
+    register["scope_summary"] = _plan_scope_summary(plan)
+    register["source_context"] = _plan_source_context(plan)
+    register = _refresh_youtrack_planner_notes(register, plan)
+    write_stage_register(workspace, register, confirmed_stage_plan_edit=True, workstream_id=workstream_id)
+
+    task_by_id = {item["task_id"]: item for item in existing_tasks}
+    refreshed_task_ids: list[str] = []
+    for proposal in plan.get("task_proposals") or []:
+        existing_task = task_by_id.get(proposal["task_id"])
+        if existing_task:
+            payload = _normalize_task_payload(existing_task)
+            payload["title"] = proposal["title"]
+            payload["objective"] = proposal["objective"]
+            payload["branch_hint"] = proposal.get("branch_hint")
+            payload["linked_workstream_id"] = workstream_id
+            payload["stage_id"] = proposal.get("stage_id")
+            payload["codex_estimate_minutes"] = proposal.get("codex_estimate_minutes")
+            payload["external_issue"] = copy.deepcopy(proposal.get("external_issue"))
+            _persist_task_record(workspace, payload)
+        else:
+            task_result = create_task(
+                workspace,
+                title=proposal["title"],
+                objective=proposal["objective"],
+                branch_hint=proposal.get("branch_hint"),
+                linked_workstream_id=workstream_id,
+                stage_id=proposal.get("stage_id"),
+                external_issue=proposal.get("external_issue"),
+                codex_estimate_minutes=proposal.get("codex_estimate_minutes"),
+                task_id=proposal["task_id"],
+                make_current=False,
+                sync_issue_ledger=False,
+            )
+            task_by_id[proposal["task_id"]] = task_result["task"]
+        proposal["created_task_id"] = proposal["task_id"]
+        proposal["linked_workstream_id"] = workstream_id
+        refreshed_task_ids.append(proposal["task_id"])
+        update_issue_snapshot(
+            workspace,
+            proposal["external_issue"]
+            | {
+                "issue_entity_id": proposal.get("issue_entity_id"),
+                "issue_id": proposal["issue_id"],
+                "issue_key": proposal["issue_key"],
+                "issue_url": proposal["issue_url"],
+                "summary": proposal["summary"],
+                "youtrack_estimate_minutes": proposal.get("youtrack_estimate_minutes"),
+                "youtrack_spent_minutes": proposal.get("youtrack_spent_minutes"),
+                "codex_estimate_minutes": proposal.get("codex_estimate_minutes"),
+            },
+            connection_id=plan["connection_id"],
+        )
+
+    recompute_issue_ledgers(
+        workspace,
+        targets=[
+            (plan["connection_id"], proposal["issue_id"])
+            for proposal in (plan.get("task_proposals") or [])
+            if proposal.get("issue_id")
+        ],
+    )
+    plan["status"] = "applied"
+    plan["applied_workstream_id"] = workstream_id
+    plan["created_task_ids"] = refreshed_task_ids
+    plan["applied_at"] = plan.get("applied_at") or now_iso()
+    plan["updated_at"] = now_iso()
+    _write_json(_plan_draft_path(paths, plan["plan_id"]), plan)
+    _ensure_current_workstream_selected(workspace, workstream_id)
+    set_active_brief(workspace, _plan_brief_markdown(plan))
     return {
         "workspace_path": paths["workspace_path"],
         "plan": plan,
         "workstream": current_workstream(workspace),
-        "tasks": [item for item in (_load_tasks_index(workspace_paths(workspace)).get("items") or []) if item.get("linked_workstream_id") == workstream_id],
+        "tasks": _tasks_for_workstream(workspace, workstream_id),
+    }
+
+
+def apply_youtrack_workstream_plan(
+    workspace: str | Path,
+    *,
+    plan_id: str | None = None,
+    confirmed: bool = False,
+    activate_first_task: bool = False,
+    reuse_current_workstream: bool = False,
+) -> dict[str, Any]:
+    if not confirmed:
+        raise ValueError("apply_youtrack_workstream_plan requires confirmed=True.")
+    paths = _youtrack_paths(workspace)
+    if not plan_id:
+        current = _load_json(Path(paths["current_plan"]), default={}, strict=False) or {}
+        plan_id = current.get("plan_id")
+    if not plan_id:
+        raise FileNotFoundError("No YouTrack plan draft is available for apply.")
+    plan = _read_plan_draft(paths, plan_id)
+    if reuse_current_workstream:
+        current = current_workstream(workspace)
+        current_source = current.get("source_context") or {}
+        if current_source.get("provider") != "youtrack":
+            raise RuntimeError("Current workstream is not a YouTrack-backed workstream.")
+        if plan.get("applied_workstream_id") and plan.get("applied_workstream_id") != current["workstream_id"]:
+            raise RuntimeError(
+                "This YouTrack plan is already linked to a different workstream and cannot be reused here."
+            )
+        return _reapply_plan_to_existing_workstream(
+            workspace,
+            plan=plan,
+            workstream_id=current["workstream_id"],
+        )
+    existing_workstream_id = plan.get("applied_workstream_id") or _existing_workstream_for_plan(workspace, plan["plan_id"])
+    if plan.get("status") == "applied" and existing_workstream_id:
+        _ensure_current_workstream_selected(workspace, existing_workstream_id)
+        if plan.get("applied_workstream_id") != existing_workstream_id:
+            plan["applied_workstream_id"] = existing_workstream_id
+            plan["updated_at"] = now_iso()
+            _write_json(_plan_draft_path(paths, plan_id), plan)
+        return {
+            "workspace_path": paths["workspace_path"],
+            "plan": plan,
+            "workstream": current_workstream(workspace),
+            "tasks": _tasks_for_workstream(workspace, existing_workstream_id),
+        }
+    if existing_workstream_id:
+        expected_task_ids = [proposal["task_id"] for proposal in (plan.get("task_proposals") or [])]
+        existing_tasks = _tasks_for_workstream(workspace, existing_workstream_id)
+        existing_task_ids = {item.get("task_id") for item in existing_tasks}
+        missing_task_ids = [task_id for task_id in expected_task_ids if task_id not in existing_task_ids]
+        if missing_task_ids:
+            raise RuntimeError(
+                "YouTrack plan appears partially applied. "
+                f"Existing workstream `{existing_workstream_id}` is missing tasks: {', '.join(missing_task_ids)}."
+            )
+        _ensure_current_workstream_selected(workspace, existing_workstream_id)
+        for proposal in plan.get("task_proposals") or []:
+            proposal["created_task_id"] = proposal["task_id"]
+            proposal["linked_workstream_id"] = existing_workstream_id
+        plan["status"] = "applied"
+        plan["applied_workstream_id"] = existing_workstream_id
+        plan["created_task_ids"] = expected_task_ids
+        plan["applied_at"] = plan.get("applied_at") or now_iso()
+        plan["updated_at"] = now_iso()
+        _write_json(_plan_draft_path(paths, plan_id), plan)
+        return {
+            "workspace_path": paths["workspace_path"],
+            "plan": plan,
+            "workstream": current_workstream(workspace),
+            "tasks": existing_tasks,
+        }
+    workstream_result = create_workstream(
+        workspace,
+        title=plan["workstream_title"],
+        kind="feature",
+        scope_summary=_plan_scope_summary(plan),
+        source_context=_plan_source_context(plan),
+        make_current=True,
+    )
+    workstream_id = workstream_result["created_workstream_id"]
+    register = read_stage_register(workspace, workstream_id=workstream_id)
+    register["stages"] = copy.deepcopy(plan.get("stages") or [])
+    if register["stages"]:
+        register["current_stage"] = register["stages"][0]["id"]
+        register["current_slice"] = register["stages"][0]["canonical_execution_slices"][0]
+        register["remaining_slices"] = register["stages"][0]["canonical_execution_slices"][1:]
+        register["stage_status"] = "planned"
+    register["plan_status"] = "confirmed"
+    register["scope_summary"] = _plan_scope_summary(plan)
+    register["source_context"] = _plan_source_context(plan)
+    register = _refresh_youtrack_planner_notes(register, plan)
+    write_stage_register(workspace, register, confirmed_stage_plan_edit=True, workstream_id=workstream_id)
+    created_task_ids: list[str] = []
+    for index, proposal in enumerate(plan.get("task_proposals") or []):
+        task_result = create_task(
+            workspace,
+            title=proposal["title"],
+            objective=proposal["objective"],
+            branch_hint=proposal.get("branch_hint"),
+            linked_workstream_id=workstream_id,
+            stage_id=proposal.get("stage_id"),
+            external_issue=proposal.get("external_issue"),
+            codex_estimate_minutes=proposal.get("codex_estimate_minutes"),
+            task_id=proposal["task_id"],
+            make_current=activate_first_task and index == 0,
+            sync_issue_ledger=False,
+        )
+        created_task_ids.append(task_result["created_task_id"])
+        proposal["created_task_id"] = task_result["created_task_id"]
+        proposal["linked_workstream_id"] = workstream_id
+        update_issue_snapshot(workspace, proposal["external_issue"] | {
+            "issue_entity_id": proposal.get("issue_entity_id"),
+            "issue_id": proposal["issue_id"],
+            "issue_key": proposal["issue_key"],
+            "issue_url": proposal["issue_url"],
+            "summary": proposal["summary"],
+            "youtrack_estimate_minutes": proposal.get("youtrack_estimate_minutes"),
+            "youtrack_spent_minutes": proposal.get("youtrack_spent_minutes"),
+            "codex_estimate_minutes": proposal.get("codex_estimate_minutes"),
+        }, connection_id=plan["connection_id"])
+    recompute_issue_ledgers(
+        workspace,
+        targets=[
+            (plan["connection_id"], proposal["issue_id"])
+            for proposal in (plan.get("task_proposals") or [])
+            if proposal.get("issue_id")
+        ],
+    )
+    plan["status"] = "applied"
+    plan["applied_workstream_id"] = workstream_id
+    plan["created_task_ids"] = created_task_ids
+    plan["applied_at"] = now_iso()
+    plan["updated_at"] = now_iso()
+    _write_json(_plan_draft_path(paths, plan_id), plan)
+    set_active_brief(workspace, _plan_brief_markdown(plan))
+    return {
+        "workspace_path": paths["workspace_path"],
+        "plan": plan,
+        "workstream": current_workstream(workspace),
+        "tasks": _tasks_for_workstream(workspace, workstream_id),
     }
 
 

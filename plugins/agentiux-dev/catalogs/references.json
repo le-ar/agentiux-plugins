@@ -42,7 +42,7 @@
         "release",
         "youtrack"
       ],
-      "summary": "AgentiUX Dev includes a local-only dashboard launched through `scripts/agentiux_dev_gui.py`.",
+      "summary": "AgentiUX Dev includes a local-only dashboard launched through `scripts/agentiux_dev_gui.py` or the installed shell launcher `agentiux web`.",
       "tags": [
         "dashboard",
         "gui",
