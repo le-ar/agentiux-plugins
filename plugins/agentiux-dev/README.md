@@ -38,7 +38,7 @@ The source repo remains the place where you edit and verify the plugin. The inst
 
 ## Core Capabilities
 
-- external workspace state under `~/.codex/state/agentiux-dev/`
+- external workspace state under `~/.agentiux/agentiux-dev/`
 - explicit workspace initialization before state creation
 - automatic workflow advice that proposes initialization, starters, workstreams, or tasks from plain user requests without writing state automatically
 - named workstreams with independent stage registers, briefs, design state, and verification state
@@ -188,7 +188,7 @@ Stop the dashboard:
 python3 scripts/agentiux_dev_gui.py stop
 ```
 
-The `launch` command returns the local URL, process id, and log file paths. Runtime state is stored under `~/.codex/state/agentiux-dev/runtime/dashboard.json`.
+The `launch` command returns the local URL, process id, and log file paths. Runtime state is stored under `~/.agentiux/agentiux-dev/runtime/dashboard.json`.
 
 ## Automatic Routing
 
@@ -266,6 +266,8 @@ python3 scripts/agentiux_dev_state.py verification-events --workspace /path/to/r
 python3 scripts/agentiux_dev_state.py verification-log --workspace /path/to/repo --run-id <run-id> --stream stdout
 python3 scripts/agentiux_dev_state.py verification-log --workspace /path/to/repo --run-id <run-id> --stream logcat
 python3 scripts/agentiux_dev_state.py audit-verification-coverage --workspace /path/to/repo
+python3 scripts/agentiux_dev_state.py show-verification-helper-catalog --workspace /path/to/repo
+python3 scripts/agentiux_dev_state.py sync-verification-helpers --workspace /path/to/repo
 ```
 
 Approve or update a project-owned baseline:
@@ -276,6 +278,12 @@ python3 scripts/agentiux_dev_state.py update-verification-baseline --workspace /
 ```
 
 Verification runs write structured events, stdout, stderr, Android logcat when configured, and linked artifacts under the external workspace verification root, so Codex and the GUI can show progress without assuming a hang. Canonical baselines remain project-owned for reproducible CI checks. Coverage audits report warning-level gaps without failing the workspace automatically.
+
+Visual cases may also declare optional `semantic_assertions`. The plugin now owns a versioned helper bundle under `bundles/verification-helpers/<plugin-version>/`, and projects materialize the current neutral runtime snapshot into `.verification/helpers/` with `sync verification helpers`.
+
+The semantic spec supports `enabled`, `report_path`, `required_checks`, `targets`, `auto_scan`, `heuristics`, `artifacts`, and `platform_hooks`. Targets are platform-neutral and use locator kinds such as `selector`, `role`, `test_id`, `semantics_tag`, or `text`, plus expected attributes, styles, layout invariants, and clipping or occlusion allowances. At runtime AgentiUX Dev writes the resolved spec into the run root, passes helper and report env vars to the runner, validates helper sync and capability compatibility, and records `semantic_summary` in case and run state.
+
+The shared deterministic check families are `presence_uniqueness`, `visibility`, `scroll_reachability`, `overflow_clipping`, `occlusion`, `interaction_states`, `computed_styles`, `layout_relations`, `text_overflow`, `accessibility_state`, and `screenshot_baseline`. Coverage audits now also warn when semantic cases have no explicit targets, when helper bundles are missing or stale, or when required checks do not match the runner capability matrix.
 
 `resolve verification` returns a canonical `VerificationSelection` payload with `selection_status`, `source`, `requested_mode`, `requested_mode_source`, `resolved_mode`, `selected_cases`, `heuristic_suggestions`, `baseline_sources`, and `host_compatibility`. Tasks without explicit selectors remain unresolved and targeted by default; the runtime does not silently fall back to `smoke`.
 

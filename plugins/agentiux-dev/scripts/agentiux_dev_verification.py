@@ -17,6 +17,7 @@ from pathlib import Path
 from typing import Any, Callable
 
 from agentiux_dev_lib import (
+    PLUGIN_VERSION,
     _resolve_verification_fragments,
     _tool_available,
     current_task,
@@ -56,6 +57,62 @@ LOGCAT_CRASH_PATTERNS = [
     re.compile(r"\bcrash\b", re.IGNORECASE),
     re.compile(r"abort message:", re.IGNORECASE),
 ]
+SEMANTIC_RESULT_STATUSES = {
+    "passed",
+    "failed",
+    "warning",
+    "skipped",
+    "not_applicable",
+    "unknown",
+}
+SEMANTIC_ASSERTION_CHECKS = {
+    "presence_uniqueness",
+    "visibility",
+    "scroll_reachability",
+    "overflow_clipping",
+    "occlusion",
+    "interaction_states",
+    "computed_styles",
+    "layout_relations",
+    "text_overflow",
+    "accessibility_state",
+    "screenshot_baseline",
+}
+SEMANTIC_LOCATOR_KINDS = {
+    "selector",
+    "role",
+    "test_id",
+    "semantics_tag",
+    "text",
+}
+DEFAULT_SEMANTIC_HEURISTICS = [
+    "interactive_visibility_scan",
+    "interactive_overflow_scan",
+    "interactive_occlusion_scan",
+]
+RUNNER_CHECK_SUPPORT = {
+    "playwright-visual": set(SEMANTIC_ASSERTION_CHECKS),
+    "detox-visual": set(SEMANTIC_ASSERTION_CHECKS),
+    "android-compose-screenshot": set(SEMANTIC_ASSERTION_CHECKS),
+    "ios-simulator-capture": set(SEMANTIC_ASSERTION_CHECKS),
+    "shell-contract": set(),
+}
+RUNNER_LOCATOR_SUPPORT = {
+    "playwright-visual": {"selector", "role", "test_id", "text"},
+    "detox-visual": {"test_id", "text"},
+    "android-compose-screenshot": {"test_id", "semantics_tag", "text"},
+    "ios-simulator-capture": {"test_id", "text"},
+    "shell-contract": set(),
+}
+RUNNER_REQUIRED_HOST_TOOLS = {
+    "playwright-visual": ["node", "browser-runtime"],
+    "detox-visual": ["node", "detox"],
+    "android-compose-screenshot": ["android", "gradle"],
+    "ios-simulator-capture": ["xcode", "simulator"],
+}
+VERIFICATION_HELPER_RELATIVE_ROOT = Path(".verification") / "helpers"
+LEGACY_VERIFICATION_HELPER_RELATIVE_ROOT = Path(".agentiux") / "verification-helpers"
+VERIFICATION_HELPER_MARKER_FILENAME = "bundle.json"
 
 
 def _verification_file_error(path: Path, exc: Exception, purpose: str | None = None) -> ValueError:
@@ -114,10 +171,307 @@ def _ensure_workspace_paths(workspace: str | Path, workstream_id: str | None = N
     state_path = Path(paths["workspace_state"])
     if require_initialized and not state_path.exists():
         raise FileNotFoundError(f"Workspace is not initialized in AgentiUX Dev state: {paths['workspace_root']}")
+    if not paths["current_workstream_id"] or not paths["verification_dir"] or not paths["verification_runs_dir"]:
+        raise FileNotFoundError("No current workstream selected.")
     Path(paths["verification_dir"]).mkdir(parents=True, exist_ok=True)
     Path(paths["verification_runs_dir"]).mkdir(parents=True, exist_ok=True)
     Path(paths["verification_baselines_dir"]).mkdir(parents=True, exist_ok=True)
     return paths
+
+
+def _verification_helper_version() -> str:
+    return PLUGIN_VERSION
+
+
+def _verification_helper_bundle_root() -> Path:
+    return plugin_root() / "bundles" / "verification-helpers" / _verification_helper_version()
+
+
+def _verification_helper_catalog_path() -> Path:
+    return _verification_helper_bundle_root() / "catalog.json"
+
+
+def _verification_helper_sync_root(workspace: str | Path) -> Path:
+    return Path(workspace).expanduser().resolve() / VERIFICATION_HELPER_RELATIVE_ROOT
+
+
+def _legacy_verification_helper_sync_root(workspace: str | Path) -> Path:
+    return Path(workspace).expanduser().resolve() / LEGACY_VERIFICATION_HELPER_RELATIVE_ROOT
+
+
+def _verification_helper_version_root(workspace: str | Path) -> Path:
+    return _verification_helper_sync_root(workspace)
+
+
+def _verification_helper_marker_path(workspace: str | Path) -> Path:
+    return _verification_helper_sync_root(workspace) / VERIFICATION_HELPER_MARKER_FILENAME
+
+
+def _load_verification_helper_catalog() -> dict[str, Any]:
+    payload = _load_json(_verification_helper_catalog_path(), strict=True, purpose="verification helper catalog")
+    if not isinstance(payload, dict) or not payload.get("runners"):
+        raise ValueError(f"Verification helper catalog is invalid: {_verification_helper_catalog_path()}")
+    return payload
+
+
+def _materialized_helper_entrypoints(catalog: dict[str, Any] | None = None) -> list[str]:
+    payload = catalog if catalog is not None else _load_verification_helper_catalog()
+    entrypoints = {"core/index.js"}
+    for runner in (payload.get("runners") or {}).values():
+        primary = str(runner.get("entrypoint") or "").strip()
+        if primary:
+            entrypoints.add(primary)
+        for item in runner.get("entrypoints") or []:
+            entrypoint_path = str((item or {}).get("path") or "").strip()
+            if entrypoint_path:
+                entrypoints.add(entrypoint_path)
+    return sorted(entrypoints)
+
+
+def _legacy_materialized_helper_versions(workspace: str | Path) -> list[str]:
+    root = _legacy_verification_helper_sync_root(workspace)
+    if not root.exists():
+        return []
+    return sorted(candidate.name for candidate in root.iterdir() if candidate.is_dir())
+
+
+def _verification_helper_materialization_status(workspace: str | Path) -> dict[str, Any]:
+    resolved_workspace = Path(workspace).expanduser().resolve()
+    sync_root = _verification_helper_sync_root(resolved_workspace)
+    version_root = _verification_helper_version_root(resolved_workspace)
+    marker_path = _verification_helper_marker_path(resolved_workspace)
+    marker_payload = _load_json(marker_path, default={}) or {}
+    marker_version = marker_payload.get("bundle_version") or marker_payload.get("version")
+    catalog_error = None
+    try:
+        expected_entrypoints = _materialized_helper_entrypoints()
+    except Exception as exc:  # noqa: BLE001
+        expected_entrypoints = []
+        catalog_error = str(exc)
+    missing_entrypoints = [
+        entrypoint
+        for entrypoint in expected_entrypoints
+        if not (version_root / entrypoint).exists()
+    ]
+    legacy_versions = _legacy_materialized_helper_versions(resolved_workspace)
+    legacy_root = _legacy_verification_helper_sync_root(resolved_workspace)
+    legacy_exists = legacy_root.exists()
+    if version_root.exists() and marker_version == _verification_helper_version() and not missing_entrypoints:
+        status = "synced"
+    elif version_root.exists():
+        status = "version_drift"
+    elif legacy_exists:
+        status = "legacy_location"
+    else:
+        status = "not_synced"
+    return {
+        "workspace_path": str(resolved_workspace),
+        "bundle_version": _verification_helper_version(),
+        "sync_root": str(sync_root),
+        "current_version_root": str(version_root),
+        "current_marker_path": str(marker_path),
+        "available_versions": [str(marker_version)] if marker_version else [],
+        "current_marker_version": marker_version,
+        "marker_payload": copy.deepcopy(marker_payload),
+        "legacy_sync_root": str(legacy_root),
+        "legacy_versions": legacy_versions,
+        "legacy_detected": legacy_exists,
+        "missing_entrypoints": missing_entrypoints,
+        "catalog_error": catalog_error,
+        "status": status,
+        "synced": status == "synced",
+    }
+
+
+def _runner_catalog_entry(runner: str, catalog: dict[str, Any] | None = None) -> dict[str, Any]:
+    payload = catalog if catalog is not None else _load_verification_helper_catalog()
+    runner_entry = (payload.get("runners") or {}).get(runner) or {}
+    return copy.deepcopy(runner_entry) if isinstance(runner_entry, dict) else {}
+
+
+def _runner_supported_checks(runner: str, catalog: dict[str, Any] | None = None) -> set[str]:
+    runner_entry = _runner_catalog_entry(runner, catalog)
+    declared = runner_entry.get("supported_checks") or runner_entry.get("check_families") or []
+    if declared:
+        return {str(item).strip().lower() for item in declared if str(item or "").strip()}
+    return set(RUNNER_CHECK_SUPPORT.get(runner, set()))
+
+
+def _runner_supported_locator_kinds(runner: str, catalog: dict[str, Any] | None = None) -> set[str]:
+    runner_entry = _runner_catalog_entry(runner, catalog)
+    declared = runner_entry.get("supported_locator_kinds") or runner_entry.get("locator_kinds") or []
+    if declared:
+        return {str(item).strip().lower() for item in declared if str(item or "").strip()}
+    return set(RUNNER_LOCATOR_SUPPORT.get(runner, set()))
+
+
+def _runner_required_host_tools(runner: str, catalog: dict[str, Any] | None = None) -> list[str]:
+    runner_entry = _runner_catalog_entry(runner, catalog)
+    declared = runner_entry.get("required_host_tools") or runner_entry.get("required_tools") or []
+    if declared:
+        return [str(item) for item in declared if str(item or "").strip()]
+    return list(RUNNER_REQUIRED_HOST_TOOLS.get(runner, []))
+
+
+def _runner_capability_matrix(runner: str, catalog: dict[str, Any] | None = None) -> dict[str, Any]:
+    runner_entry = _runner_catalog_entry(runner, catalog)
+    return {
+        "runner": runner,
+        "supported_checks": sorted(_runner_supported_checks(runner, catalog)),
+        "supported_locator_kinds": sorted(_runner_supported_locator_kinds(runner, catalog)),
+        "required_host_tools": _runner_required_host_tools(runner, catalog),
+        "supports_auto_scan": bool(runner_entry.get("supports_auto_scan", runner in VISUAL_RUNNERS)),
+        "supports_platform_hooks": bool(runner_entry.get("supports_platform_hooks", runner in VISUAL_RUNNERS)),
+        "entrypoint": runner_entry.get("entrypoint"),
+        "entrypoints": copy.deepcopy(runner_entry.get("entrypoints") or []),
+    }
+
+
+def _render_import_examples(
+    workspace: str | Path,
+    entrypoint: str | Path,
+    runner_entry: dict[str, Any],
+) -> list[str]:
+    resolved_workspace = Path(workspace).expanduser().resolve()
+    version_root = _verification_helper_version_root(resolved_workspace)
+    relative_helper_root = VERIFICATION_HELPER_RELATIVE_ROOT
+    entrypoint_path = Path(str(entrypoint))
+    relative_entrypoint = (relative_helper_root / entrypoint_path).as_posix()
+    absolute_entrypoint = str((version_root / entrypoint_path).resolve())
+    templates = list(runner_entry.get("import_examples") or [])
+    if not templates:
+        export_name = str(runner_entry.get("export_name") or "runSemanticChecks")
+        language = str(runner_entry.get("language") or "").lower()
+        if language == "kotlin":
+            package_name = str(runner_entry.get("package") or "generated.verification.helpers")
+            templates = [f"import {package_name}.{export_name}"]
+        else:
+            templates = [f"import {{ {export_name} }} from './{relative_entrypoint}';"]
+    rendered: list[str] = []
+    for template in templates:
+        snippet = str(template)
+        snippet = snippet.replace("__HELPER_VERSION__", _verification_helper_version())
+        snippet = snippet.replace("__RELATIVE_VERSION_ROOT__", relative_helper_root.as_posix())
+        snippet = snippet.replace("__ABSOLUTE_VERSION_ROOT__", str(version_root))
+        snippet = snippet.replace("__RELATIVE_HELPER_ROOT__", relative_helper_root.as_posix())
+        snippet = snippet.replace("__ABSOLUTE_HELPER_ROOT__", str(version_root))
+        snippet = snippet.replace("__RELATIVE_ENTRYPOINT__", relative_entrypoint)
+        snippet = snippet.replace("__ABSOLUTE_ENTRYPOINT__", absolute_entrypoint)
+        rendered.append(snippet)
+    return rendered
+
+
+def _verification_helper_import_snippets(workspace: str | Path, catalog: dict[str, Any]) -> dict[str, Any]:
+    snippets: dict[str, Any] = {}
+    for runner_id, runner in (catalog.get("runners") or {}).items():
+        entrypoint = Path(str(runner.get("entrypoint") or ""))
+        relative_path = (VERIFICATION_HELPER_RELATIVE_ROOT / entrypoint).as_posix()
+        snippets[runner_id] = {
+            "relative_path": relative_path,
+            "absolute_path": str((Path(workspace).expanduser().resolve() / relative_path).resolve()),
+            "import_examples": _render_import_examples(workspace, entrypoint, runner),
+        }
+    return snippets
+
+
+def show_verification_helper_catalog(workspace: str | Path) -> dict[str, Any]:
+    resolved_workspace = Path(workspace).expanduser().resolve()
+    catalog = copy.deepcopy(_load_verification_helper_catalog())
+    materialization = _verification_helper_materialization_status(resolved_workspace)
+    runners: dict[str, Any] = {}
+    for runner_id, runner in (catalog.get("runners") or {}).items():
+        runners[runner_id] = {
+            **runner,
+            "capability_matrix": _runner_capability_matrix(runner_id, catalog),
+            "version_status": materialization.get("status"),
+        }
+    return {
+        "workspace_path": str(resolved_workspace),
+        "bundle_version": _verification_helper_version(),
+        "bundle_root": str(_verification_helper_bundle_root()),
+        "catalog_path": str(_verification_helper_catalog_path()),
+        "runners": runners,
+        "available_runners": sorted(runners),
+        "check_families": catalog.get("check_families") or sorted(SEMANTIC_ASSERTION_CHECKS),
+        "heuristics": catalog.get("heuristics") or DEFAULT_SEMANTIC_HEURISTICS,
+        "project_helper_root": str((resolved_workspace / VERIFICATION_HELPER_RELATIVE_ROOT).resolve()),
+        "project_helper_relative_root": VERIFICATION_HELPER_RELATIVE_ROOT.as_posix(),
+        "materialization": materialization,
+        "version_status": materialization.get("status"),
+        "import_snippets": _verification_helper_import_snippets(resolved_workspace, catalog),
+    }
+
+
+def _materialized_helper_runtime_directories(catalog: dict[str, Any] | None = None) -> list[str]:
+    roots = {Path(entrypoint).parts[0] for entrypoint in _materialized_helper_entrypoints(catalog)}
+    return sorted(root for root in roots if root)
+
+
+def _copy_verification_helper_bundle(source_root: Path, destination_root: Path, catalog: dict[str, Any]) -> None:
+    for directory in _materialized_helper_runtime_directories(catalog):
+        shutil.copytree(source_root / directory, destination_root / directory)
+
+
+def sync_verification_helpers(workspace: str | Path, force: bool = False) -> dict[str, Any]:
+    resolved_workspace = Path(workspace).expanduser().resolve()
+    if not resolved_workspace.exists():
+        raise FileNotFoundError(f"Workspace path does not exist: {resolved_workspace}")
+    source_root = _verification_helper_bundle_root()
+    if not source_root.exists():
+        raise FileNotFoundError(f"Verification helper bundle is missing: {source_root}")
+    catalog = _load_verification_helper_catalog()
+    destination_root = _verification_helper_version_root(resolved_workspace)
+    legacy_root = _legacy_verification_helper_sync_root(resolved_workspace)
+    destination_root.parent.mkdir(parents=True, exist_ok=True)
+    materialization_before = _verification_helper_materialization_status(resolved_workspace)
+    removed_legacy_root = False
+    if legacy_root.exists():
+        shutil.rmtree(legacy_root)
+        try:
+            legacy_root.parent.rmdir()
+        except OSError:
+            pass
+        removed_legacy_root = True
+    if force and destination_root.exists():
+        shutil.rmtree(destination_root)
+    if destination_root.exists() and materialization_before.get("status") == "synced" and not force:
+        status = "already_synced"
+    else:
+        if destination_root.exists():
+            shutil.rmtree(destination_root)
+        destination_root.mkdir(parents=True, exist_ok=True)
+        _copy_verification_helper_bundle(source_root, destination_root, catalog)
+        status = "synced"
+    marker_payload = {
+        "schema_version": 1,
+        "bundle_version": _verification_helper_version(),
+        "entrypoints": {
+            runner_id: str(runner.get("entrypoint") or "")
+            for runner_id, runner in (catalog.get("runners") or {}).items()
+        },
+        "materialized_relative_root": VERIFICATION_HELPER_RELATIVE_ROOT.as_posix(),
+        "synced_at": now_iso(),
+    }
+    _write_json(
+        _verification_helper_marker_path(resolved_workspace),
+        marker_payload,
+    )
+    files = sorted(str(candidate) for candidate in destination_root.rglob("*") if candidate.is_file())
+    return {
+        "workspace_path": str(resolved_workspace),
+        "status": status,
+        "bundle_version": _verification_helper_version(),
+        "source_root": str(source_root),
+        "destination_root": str(destination_root),
+        "marker_path": str(_verification_helper_marker_path(resolved_workspace)),
+        "version_marker": marker_payload,
+        "removed_legacy_root": removed_legacy_root,
+        "file_count": len(files),
+        "files": files,
+        "materialization": _verification_helper_materialization_status(resolved_workspace),
+        "import_snippets": _verification_helper_import_snippets(resolved_workspace, catalog),
+        "catalog": show_verification_helper_catalog(resolved_workspace),
+    }
 
 
 def _runner_from_legacy(value: str | None) -> str | None:
@@ -148,6 +502,166 @@ def _normalize_android_logcat(payload: dict[str, Any] | None) -> dict[str, Any]:
         "filter_specs": list(config.get("filter_specs") or []),
         "clear_on_start": bool(config.get("clear_on_start", False)),
         "tail_lines_on_failure": int(config.get("tail_lines_on_failure", 80)),
+    }
+
+
+def _default_locator_kind_for_runner(runner: str) -> str:
+    if runner == "playwright-visual":
+        return "selector"
+    if runner == "android-compose-screenshot":
+        return "semantics_tag"
+    return "test_id"
+
+
+def _normalize_semantic_locator(payload: Any, *, runner: str) -> dict[str, Any] | None:
+    if payload is None or payload == "":
+        return None
+    if isinstance(payload, str):
+        normalized = {
+            "kind": _default_locator_kind_for_runner(runner),
+            "value": payload,
+            "name": None,
+            "exact": False,
+        }
+    elif isinstance(payload, dict):
+        normalized = {
+            "kind": str(payload.get("kind") or _default_locator_kind_for_runner(runner)).strip().lower(),
+            "value": payload.get("value"),
+            "name": payload.get("name"),
+            "exact": bool(payload.get("exact", False)),
+        }
+    else:
+        raise ValueError(f"Unsupported semantic locator payload: {payload}")
+    if normalized["kind"] not in SEMANTIC_LOCATOR_KINDS:
+        raise ValueError(f"Unsupported semantic locator kind: {normalized['kind']}")
+    if normalized["kind"] not in _runner_supported_locator_kinds(runner):
+        raise ValueError(f"Locator kind `{normalized['kind']}` is not supported by runner `{runner}`")
+    if normalized["value"] in {None, ""}:
+        raise ValueError(f"Semantic locator for runner `{runner}` requires a non-empty value")
+    return normalized
+
+
+def _normalize_semantic_target(payload: dict[str, Any], *, runner: str, index: int) -> dict[str, Any]:
+    if not isinstance(payload, dict):
+        raise ValueError(f"Semantic target must be an object: {payload}")
+    target_id = str(payload.get("target_id") or payload.get("id") or f"target-{index}").strip()
+    if not target_id:
+        raise ValueError("Semantic target requires target_id")
+    interactions: list[str] = []
+    for item in payload.get("interactions") or []:
+        interaction = str(item or "").strip().lower()
+        if interaction and interaction not in interactions:
+            interactions.append(interaction)
+    normalized = {
+        "target_id": target_id,
+        "locator": _normalize_semantic_locator(payload.get("locator"), runner=runner),
+        "container_locator": _normalize_semantic_locator(payload.get("container_locator"), runner=runner),
+        "scroll_container_locator": _normalize_semantic_locator(payload.get("scroll_container_locator"), runner=runner),
+        "interactions": interactions,
+        "expected_attributes": copy.deepcopy(payload.get("expected_attributes") or {}),
+        "expected_styles": copy.deepcopy(payload.get("expected_styles") or {}),
+        "expected_layout": copy.deepcopy(payload.get("expected_layout") or {}),
+        "allow_clipping": bool(payload.get("allow_clipping", False)),
+        "allow_occlusion": bool(payload.get("allow_occlusion", False)),
+        "allow_text_truncation": bool(payload.get("allow_text_truncation", False)),
+    }
+    if normalized["locator"] is None:
+        raise ValueError(f"Semantic target `{target_id}` requires locator")
+    return normalized
+
+
+def _default_semantic_checks(case: dict[str, Any]) -> list[str]:
+    required = [
+        "presence_uniqueness",
+        "visibility",
+        "scroll_reachability",
+        "overflow_clipping",
+        "layout_relations",
+        "text_overflow",
+        "accessibility_state",
+    ]
+    if case.get("runner") == "playwright-visual" or str(case.get("surface_type") or "").lower() == "web":
+        required.extend(["computed_styles", "interaction_states", "occlusion"])
+    elif _case_prefers_android(case):
+        required.extend(["computed_styles", "interaction_states", "occlusion"])
+    else:
+        required.extend(["interaction_states", "occlusion"])
+    if case.get("baseline", {}).get("source_path") and case.get("runner") in VISUAL_RUNNERS:
+        required.append("screenshot_baseline")
+    deduped: list[str] = []
+    for item in required:
+        if item not in deduped:
+            deduped.append(item)
+    return deduped
+
+
+def _normalize_semantic_artifacts(payload: Any) -> dict[str, Any]:
+    config = dict(payload or {})
+    return {
+        "target_screenshots": bool(config.get("target_screenshots", False)),
+        "debug_snapshots": bool(config.get("debug_snapshots", False)),
+        "dom_snapshot": bool(config.get("dom_snapshot", False)),
+        "report_copy": bool(config.get("report_copy", True)),
+        "debug_layout_overlay": bool(config.get("debug_layout_overlay", False)),
+        "capture_on_failure_only": bool(config.get("capture_on_failure_only", False)),
+    }
+
+
+def _normalize_semantic_platform_hooks(payload: Any) -> dict[str, Any]:
+    config = dict(payload or {})
+    return {
+        "module": config.get("module"),
+        "entrypoint": config.get("entrypoint"),
+        "function": config.get("function"),
+        "probe": config.get("probe"),
+        "required": bool(config.get("required", False)),
+        "args": copy.deepcopy(config.get("args") or {}),
+        "metadata_keys": list(config.get("metadata_keys") or []),
+    }
+
+
+def _normalize_semantic_assertions(payload: dict[str, Any] | None, case: dict[str, Any]) -> dict[str, Any]:
+    config = dict(payload or {})
+    enabled = bool(config.get("enabled", False))
+    if enabled and case.get("runner") not in VISUAL_RUNNERS:
+        raise ValueError(f"Semantic assertions require a visual runner: {case['id']}")
+    requested = config.get("required_checks")
+    if requested:
+        required_checks = []
+        for item in requested:
+            check_id = str(item or "").strip().lower()
+            if not check_id or check_id in required_checks:
+                continue
+            required_checks.append(check_id)
+    elif enabled:
+        required_checks = _default_semantic_checks(case)
+    else:
+        required_checks = []
+    unsupported = [check_id for check_id in required_checks if check_id not in SEMANTIC_ASSERTION_CHECKS]
+    if unsupported:
+        raise ValueError(f"Unsupported semantic assertion checks: {', '.join(unsupported)}")
+    unsupported_by_runner = [check_id for check_id in required_checks if check_id not in _runner_supported_checks(case.get("runner"))]
+    targets = [
+        _normalize_semantic_target(target, runner=case.get("runner"), index=index)
+        for index, target in enumerate(config.get("targets") or [], start=1)
+    ]
+    auto_scan = bool(config.get("auto_scan", enabled))
+    heuristics: list[str] = []
+    for item in config.get("heuristics") or (DEFAULT_SEMANTIC_HEURISTICS if auto_scan else []):
+        heuristic = str(item or "").strip().lower()
+        if heuristic and heuristic not in heuristics:
+            heuristics.append(heuristic)
+    return {
+        "enabled": enabled,
+        "report_path": config.get("report_path") or f"{case['id']}-semantic.json",
+        "required_checks": required_checks,
+        "unsupported_required_checks": unsupported_by_runner,
+        "targets": targets,
+        "auto_scan": auto_scan,
+        "heuristics": heuristics,
+        "artifacts": _normalize_semantic_artifacts(config.get("artifacts")),
+        "platform_hooks": _normalize_semantic_platform_hooks(config.get("platform_hooks")),
+        "runner_capabilities": _runner_capability_matrix(case.get("runner")),
     }
 
 
@@ -208,6 +722,7 @@ def _normalize_case(case: dict[str, Any]) -> dict[str, Any]:
         "baseline": baseline,
         "android_logcat": _normalize_android_logcat(payload.get("android_logcat")),
     }
+    normalized["semantic_assertions"] = _normalize_semantic_assertions(payload.get("semantic_assertions"), normalized)
     if runner not in RUNNER_TYPES:
         raise ValueError(f"Unsupported verification runner: {runner}")
     return normalized
@@ -280,6 +795,8 @@ def write_verification_recipes(workspace: str | Path, recipes: dict[str, Any], w
 
 def _verification_run_paths(workspace: str | Path, run_id: str, workstream_id: str | None = None) -> dict[str, Path]:
     paths = workspace_paths(workspace, workstream_id=workstream_id)
+    if not paths["current_workstream_id"] or not paths["verification_runs_dir"] or not paths["artifacts_dir"]:
+        raise FileNotFoundError("No current workstream selected.")
     run_root = Path(paths["verification_runs_dir"]) / run_id
     return {
         "run_root": run_root,
@@ -535,6 +1052,7 @@ def _host_requirement_status(state: dict[str, Any], requirement: str) -> dict[st
 
 def _case_selection_summary(workspace: str | Path, case: dict[str, Any], state: dict[str, Any]) -> dict[str, Any]:
     requirements = [_host_requirement_status(state, requirement) for requirement in case.get("host_requirements") or []]
+    semantic_assertions = case.get("semantic_assertions") or {}
     return {
         "case_id": case["id"],
         "title": case.get("title"),
@@ -548,6 +1066,9 @@ def _case_selection_summary(workspace: str | Path, case: dict[str, Any], state: 
         "feature_ids": case.get("feature_ids") or [],
         "routes_or_screens": case.get("routes_or_screens") or [],
         "changed_path_globs": case.get("changed_path_globs") or [],
+        "semantic_assertions_enabled": bool(semantic_assertions.get("enabled")),
+        "semantic_target_count": len(semantic_assertions.get("targets") or []),
+        "semantic_auto_scan": bool(semantic_assertions.get("auto_scan", False)),
     }
 
 
@@ -599,6 +1120,32 @@ def _selection_baseline_sources(selected_cases: list[dict[str, Any]], heuristic_
     return sources
 
 
+def _selection_helper_guidance(workspace: str | Path, selected_cases: list[dict[str, Any]], heuristic_suggestions: list[dict[str, Any]]) -> dict[str, Any]:
+    relevant_cases = [*selected_cases, *heuristic_suggestions]
+    materialization = _verification_helper_materialization_status(workspace)
+    needs_semantic = any(case.get("semantic_assertions_enabled") for case in relevant_cases)
+    missing_targets = [
+        case["case_id"]
+        for case in relevant_cases
+        if case.get("semantic_assertions_enabled") and int(case.get("semantic_target_count") or 0) == 0
+    ]
+    next_actions: list[str] = []
+    if needs_semantic and materialization.get("status") == "legacy_location":
+        next_actions.append("Re-run `sync verification helpers` to replace the legacy `.agentiux/verification-helpers` helper layout.")
+    elif needs_semantic and not materialization.get("synced"):
+        next_actions.append("Run `sync verification helpers` so the project can import the neutral verification helpers.")
+    if missing_targets:
+        next_actions.append(f"Add semantic targets for visual cases: {', '.join(missing_targets)}.")
+    if needs_semantic:
+        next_actions.append("Run targeted verification while wiring semantic targets, then run the `full` suite for closeout.")
+    return {
+        "needs_semantic_helpers": needs_semantic,
+        "materialization": materialization,
+        "cases_missing_targets": missing_targets,
+        "next_actions": next_actions,
+    }
+
+
 def resolve_verification_selection(
     workspace: str | Path,
     workstream_id: str | None = None,
@@ -637,6 +1184,12 @@ def resolve_verification_selection(
             "heuristic_suggestions": [],
             "used_confirmed_heuristics": False,
             "baseline_sources": [],
+            "helper_guidance": {
+                "needs_semantic_helpers": False,
+                "materialization": _verification_helper_materialization_status(resolved_workspace),
+                "cases_missing_targets": [],
+                "next_actions": [],
+            },
             "host_compatibility": {
                 "host_os": state.get("host_os"),
                 "requirements": [],
@@ -741,6 +1294,7 @@ def resolve_verification_selection(
         "selected_suite": selected_suite,
         "heuristic_suggestions": heuristic_suggestions,
         "baseline_sources": _selection_baseline_sources(selected_cases, heuristic_suggestions),
+        "helper_guidance": _selection_helper_guidance(resolved_workspace, selected_cases, heuristic_suggestions),
         "host_compatibility": _selection_host_compatibility(selected_cases or heuristic_suggestions, state.get("host_os")),
         "changed_paths": changed_paths or [],
         "reason": reason,
@@ -966,13 +1520,28 @@ def _effective_command(case: dict[str, Any]) -> tuple[list[str] | None, str | No
     raise ValueError(f"Unsupported verification runner: {runner}")
 
 
-def _run_case_attempt(workspace: str | Path, run: dict[str, Any], case: dict[str, Any], attempt: int) -> int:
+def _run_case_attempt(
+    workspace: str | Path,
+    run: dict[str, Any],
+    case: dict[str, Any],
+    attempt: int,
+    semantic_runtime: dict[str, Any] | None = None,
+) -> int:
     run_paths = _verification_run_paths(workspace, run["run_id"], workstream_id=run.get("workstream_id"))
     env = os.environ.copy()
     env.update({str(key): str(value) for key, value in (case.get("env") or {}).items()})
-    env["AGENTIUX_VERIFICATION_RUN_ID"] = run["run_id"]
-    env["AGENTIUX_VERIFICATION_CASE_ID"] = case["id"]
-    env["AGENTIUX_VERIFICATION_ARTIFACT_DIR"] = str(run_paths["artifacts_dir"])
+    env["VERIFICATION_RUN_ID"] = run["run_id"]
+    env["VERIFICATION_CASE_ID"] = case["id"]
+    env["VERIFICATION_ARTIFACT_DIR"] = str(run_paths["artifacts_dir"])
+    preferred_helper_root, _ = _preferred_verification_helper_root(workspace)
+    runtime_payload = semantic_runtime or {}
+    env["VERIFICATION_HELPER_ROOT"] = str(runtime_payload.get("helper_root") or preferred_helper_root)
+    env["VERIFICATION_HELPER_VERSION"] = _verification_helper_version()
+    semantic_report_path = _resolve_semantic_report_path(run_paths, case)
+    semantic_spec_path = _write_resolved_semantic_spec(run_paths, case, semantic_runtime=runtime_payload)
+    env["VERIFICATION_SEMANTIC_REPORT_PATH"] = str(semantic_report_path)
+    if semantic_spec_path is not None:
+        env["VERIFICATION_SEMANTIC_SPEC_PATH"] = str(semantic_spec_path)
     cwd = _resolve_case_cwd(workspace, case)
     argv, shell_command = _effective_command(case)
 
@@ -980,6 +1549,17 @@ def _run_case_attempt(workspace: str | Path, run: dict[str, Any], case: dict[str
     with run_paths["stdout_log"].open("a") as stdout_handle, run_paths["stderr_log"].open("a") as stderr_handle:
         stdout_handle.write(f"\n=== CASE {case['id']} ATTEMPT {attempt} START {now_iso()} ===\n")
         stderr_handle.write(f"\n=== CASE {case['id']} ATTEMPT {attempt} START {now_iso()} ===\n")
+    if semantic_spec_path is not None:
+        _append_event(
+            workspace,
+            run["run_id"],
+            "semantic_spec_ready",
+            f"Semantic spec is ready for {case['id']}.",
+            workstream_id=run.get("workstream_id"),
+            case_id=case["id"],
+            spec_path=str(semantic_spec_path),
+            report_path=str(semantic_report_path),
+        )
     logcat_session = _start_android_logcat_capture(workspace, run, case)
     try:
         if shell_command:
@@ -1068,6 +1648,495 @@ def _case_baseline_result(workspace: str | Path, case: dict[str, Any], exit_code
     }
 
 
+def _resolve_semantic_report_path(run_paths: dict[str, Path], case: dict[str, Any]) -> Path:
+    config = case.get("semantic_assertions") or {}
+    candidate = config.get("report_path") or f"{case['id']}-semantic.json"
+    path = Path(str(candidate))
+    if path.is_absolute():
+        return path
+    return run_paths["artifacts_dir"] / path
+
+
+def _resolve_semantic_spec_path(run_paths: dict[str, Path], case: dict[str, Any]) -> Path:
+    return run_paths["run_root"] / "semantic-specs" / f"{case['id']}.json"
+
+
+def _preferred_verification_helper_root(workspace: str | Path) -> tuple[Path, dict[str, Any]]:
+    materialization = _verification_helper_materialization_status(workspace)
+    if materialization.get("synced"):
+        return Path(materialization["current_version_root"]).resolve(), materialization
+    return _verification_helper_bundle_root(), materialization
+
+
+def _semantic_preflight_failure(
+    case: dict[str, Any],
+    report_path: Path,
+    helper_root: Path | None,
+    materialization: dict[str, Any],
+    reason: str,
+    message: str,
+    *,
+    capability_matrix: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    config = case.get("semantic_assertions") or {}
+    return {
+        "enabled": True,
+        "status": "failed",
+        "reason": reason,
+        "message": message,
+        "report_path": str(report_path),
+        "required_checks": list(config.get("required_checks") or []),
+        "unsupported_required_checks": list(config.get("unsupported_required_checks") or []),
+        "missing_targets": [],
+        "missing_checks": [],
+        "failed_checks": [],
+        "optional_failed_checks": [],
+        "target_ids": [target.get("target_id") for target in config.get("targets") or [] if target.get("target_id")],
+        "helper_root": str(helper_root) if helper_root is not None else None,
+        "helper_bundle_version": _verification_helper_version(),
+        "helper_materialization": materialization,
+        "runner_capabilities": copy.deepcopy(capability_matrix or config.get("runner_capabilities") or _runner_capability_matrix(case.get("runner"))),
+    }
+
+
+def _semantic_runtime_preflight(workspace: str | Path, run_paths: dict[str, Path], case: dict[str, Any]) -> dict[str, Any]:
+    config = case.get("semantic_assertions") or {}
+    report_path = _resolve_semantic_report_path(run_paths, case)
+    helper_root, materialization = _preferred_verification_helper_root(workspace)
+    capability_matrix = copy.deepcopy(config.get("runner_capabilities") or _runner_capability_matrix(case.get("runner")))
+    if not config.get("enabled"):
+        return {
+            "enabled": False,
+            "status": "not_enabled",
+            "report_path": None,
+            "helper_root": str(helper_root),
+            "helper_bundle_version": _verification_helper_version(),
+            "helper_materialization": materialization,
+            "runner_capabilities": capability_matrix,
+        }
+    try:
+        catalog = _load_verification_helper_catalog()
+    except Exception as exc:  # noqa: BLE001
+        return _semantic_preflight_failure(
+            case,
+            report_path,
+            None,
+            materialization,
+            "helper_bundle_missing",
+            str(exc),
+            capability_matrix=capability_matrix,
+        )
+    if not _runner_catalog_entry(case.get("runner"), catalog):
+        return _semantic_preflight_failure(
+            case,
+            report_path,
+            helper_root,
+            materialization,
+            "runner_not_cataloged",
+            f"Verification helper catalog has no semantic entrypoint for runner `{case.get('runner')}`.",
+            capability_matrix=capability_matrix,
+        )
+    if materialization.get("status") == "not_synced":
+        return _semantic_preflight_failure(
+            case,
+            report_path,
+            helper_root,
+            materialization,
+            "helper_bundle_not_synced",
+            "Verification helper bundle is not materialized in `.verification/helpers`. Run `sync verification helpers` first.",
+            capability_matrix=capability_matrix,
+        )
+    if materialization.get("status") == "legacy_location":
+        return _semantic_preflight_failure(
+            case,
+            report_path,
+            helper_root,
+            materialization,
+            "helper_bundle_legacy_location",
+            "A legacy `.agentiux/verification-helpers` helper layout was detected. Re-run `sync verification helpers` to materialize `.verification/helpers`.",
+            capability_matrix=capability_matrix,
+        )
+    if materialization.get("status") == "version_drift":
+        return _semantic_preflight_failure(
+            case,
+            report_path,
+            helper_root,
+            materialization,
+            "helper_bundle_version_drift",
+            "Materialized verification helpers do not match the current bundle version. Re-run `sync verification helpers` before this case.",
+            capability_matrix=capability_matrix,
+        )
+    unsupported_required_checks = list(config.get("unsupported_required_checks") or [])
+    if unsupported_required_checks:
+        return _semantic_preflight_failure(
+            case,
+            report_path,
+            helper_root,
+            materialization,
+            "unsupported_required_checks",
+            (
+                f"Semantic assertion checks {', '.join(unsupported_required_checks)} are not supported by runner "
+                f"`{case.get('runner')}`."
+            ),
+            capability_matrix=capability_matrix,
+        )
+    if not helper_root.exists():
+        return _semantic_preflight_failure(
+            case,
+            report_path,
+            helper_root,
+            materialization,
+            "helper_bundle_missing",
+            f"Verification helper bundle is missing at {helper_root}.",
+            capability_matrix=capability_matrix,
+        )
+    return {
+        "enabled": True,
+        "status": "ready",
+        "report_path": str(report_path),
+        "helper_root": str(helper_root),
+        "helper_bundle_version": _verification_helper_version(),
+        "helper_materialization": materialization,
+        "runner_capabilities": capability_matrix,
+    }
+
+
+def _write_resolved_semantic_spec(
+    run_paths: dict[str, Path],
+    case: dict[str, Any],
+    semantic_runtime: dict[str, Any] | None = None,
+) -> Path | None:
+    config = case.get("semantic_assertions") or {}
+    if not config.get("enabled"):
+        return None
+    spec_path = _resolve_semantic_spec_path(run_paths, case)
+    runtime_payload = semantic_runtime or {}
+    payload = {
+        "schema_version": 2,
+        "helper_bundle_version": _verification_helper_version(),
+        "helper_root": runtime_payload.get("helper_root"),
+        "helper_materialization": copy.deepcopy(runtime_payload.get("helper_materialization") or {}),
+        "runner": case.get("runner"),
+        "case_id": case.get("id"),
+        "surface_type": case.get("surface_type"),
+        "report_path": str(_resolve_semantic_report_path(run_paths, case)),
+        "required_checks": list(config.get("required_checks") or []),
+        "unsupported_required_checks": list(config.get("unsupported_required_checks") or []),
+        "targets": copy.deepcopy(config.get("targets") or []),
+        "auto_scan": bool(config.get("auto_scan", False)),
+        "heuristics": list(config.get("heuristics") or []),
+        "artifacts": copy.deepcopy(config.get("artifacts") or {}),
+        "platform_hooks": copy.deepcopy(config.get("platform_hooks") or {}),
+        "runner_capabilities": copy.deepcopy(runtime_payload.get("runner_capabilities") or config.get("runner_capabilities") or {}),
+        "locale": case.get("locale"),
+        "timezone": case.get("timezone"),
+        "color_scheme": case.get("color_scheme"),
+        "freeze_clock": bool(case.get("freeze_clock", False)),
+        "masks": list(case.get("masks") or []),
+        "target": copy.deepcopy(case.get("target") or {}),
+    }
+    _write_json(spec_path, payload)
+    return spec_path
+
+
+def _normalize_semantic_result_status(value: Any) -> str:
+    status = str(value or "").strip().lower() or "unknown"
+    return status if status in SEMANTIC_RESULT_STATUSES else "unknown"
+
+
+def _normalize_semantic_artifact_paths(payload: Any) -> list[str]:
+    if not isinstance(payload, list):
+        return []
+    return [str(item) for item in payload if item not in {None, ""}]
+
+
+def _normalize_semantic_report_check(item: dict[str, Any], *, runner: str, target_id: str) -> dict[str, Any] | None:
+    check_id = str(item.get("check_id") or item.get("id") or "").strip().lower()
+    if not check_id:
+        return None
+    return {
+        "check_id": check_id,
+        "target_id": target_id,
+        "status": _normalize_semantic_result_status(item.get("status")),
+        "runner": str(item.get("runner") or runner),
+        "diagnostics": copy.deepcopy(item.get("diagnostics") or item.get("details") or {}),
+        "artifact_paths": _normalize_semantic_artifact_paths(item.get("artifact_paths") or item.get("artifacts")),
+    }
+
+
+def _parse_semantic_report_targets(payload: Any) -> dict[str, dict[str, Any]]:
+    parsed_targets: dict[str, dict[str, Any]] = {}
+    if not isinstance(payload, dict):
+        return parsed_targets
+    runner = str(payload.get("runner") or "")
+    for target in payload.get("targets") or []:
+        if not isinstance(target, dict):
+            continue
+        target_id = str(target.get("target_id") or target.get("id") or "").strip()
+        if not target_id:
+            continue
+        parsed = {
+            "target_id": target_id,
+            "status": _normalize_semantic_result_status(target.get("status")),
+            "diagnostics": copy.deepcopy(target.get("diagnostics") or {}),
+            "artifact_paths": _normalize_semantic_artifact_paths(target.get("artifact_paths") or target.get("artifacts")),
+            "checks": {},
+        }
+        checks_payload = target.get("checks") or []
+        if isinstance(checks_payload, dict):
+            checks_iterable = [{"check_id": check_id, **(value if isinstance(value, dict) else {"status": value})} for check_id, value in checks_payload.items()]
+        else:
+            checks_iterable = checks_payload
+        for check in checks_iterable:
+            if not isinstance(check, dict):
+                continue
+            normalized = _normalize_semantic_report_check(check, runner=runner, target_id=target_id)
+            if normalized is not None:
+                parsed["checks"][normalized["check_id"]] = normalized
+        parsed_targets[target_id] = parsed
+    if parsed_targets:
+        return parsed_targets
+    top_level_checks = payload.get("checks")
+    global_target = {
+        "target_id": "_global",
+        "status": _normalize_semantic_result_status((payload.get("summary") or {}).get("status") or payload.get("status")),
+        "diagnostics": {},
+        "artifact_paths": [],
+        "checks": {},
+    }
+    if isinstance(top_level_checks, dict):
+        for check_id, value in top_level_checks.items():
+            item = value if isinstance(value, dict) else {"status": value}
+            normalized = _normalize_semantic_report_check(
+                {"check_id": check_id, **(item if isinstance(item, dict) else {})},
+                runner=runner,
+                target_id="_global",
+            )
+            if normalized is not None:
+                global_target["checks"][normalized["check_id"]] = normalized
+    elif isinstance(top_level_checks, list):
+        for item in top_level_checks:
+            if not isinstance(item, dict):
+                continue
+            target_id = str(item.get("target_id") or "_global")
+            target = parsed_targets.setdefault(
+                target_id,
+                {
+                    "target_id": target_id,
+                    "status": "unknown",
+                    "diagnostics": {},
+                    "artifact_paths": [],
+                    "checks": {},
+                },
+            )
+            normalized = _normalize_semantic_report_check(item, runner=runner, target_id=target_id)
+            if normalized is not None:
+                target["checks"][normalized["check_id"]] = normalized
+    if parsed_targets:
+        return parsed_targets
+    if global_target["checks"]:
+        parsed_targets["_global"] = global_target
+    return parsed_targets
+
+
+def _semantic_report_schema_errors(payload: Any, case: dict[str, Any]) -> list[str]:
+    errors: list[str] = []
+    if not isinstance(payload, dict):
+        return ["Semantic assertions report must be a JSON object."]
+    report_runner = payload.get("runner")
+    if report_runner and str(report_runner) != str(case.get("runner")):
+        errors.append(
+            f"Semantic assertions report runner `{report_runner}` does not match case runner `{case.get('runner')}`."
+        )
+    helper_version = payload.get("helper_bundle_version") or payload.get("spec_version")
+    if helper_version and str(helper_version) != _verification_helper_version():
+        errors.append(
+            f"Semantic assertions report helper version `{helper_version}` does not match `{_verification_helper_version()}`."
+        )
+    summary = payload.get("summary") or {}
+    if summary and not isinstance(summary, dict):
+        errors.append("Semantic assertions report summary must be an object when present.")
+    elif summary and _normalize_semantic_result_status(summary.get("status")) == "unknown" and summary.get("status") not in {None, ""}:
+        errors.append(f"Semantic assertions report summary status `{summary.get('status')}` is unsupported.")
+    checks_payload = payload.get("checks")
+    targets_payload = payload.get("targets")
+    if checks_payload is not None and not isinstance(checks_payload, (list, dict)):
+        errors.append("Semantic assertions report checks must be a list or object.")
+    if targets_payload is not None and not isinstance(targets_payload, list):
+        errors.append("Semantic assertions report targets must be a list.")
+
+    def validate_check_entry(item: Any, *, label: str) -> None:
+        if not isinstance(item, dict):
+            errors.append(f"{label} must be an object.")
+            return
+        check_id = item.get("check_id") or item.get("id")
+        if not check_id:
+            errors.append(f"{label} is missing `check_id`.")
+        status = item.get("status")
+        if status is not None and _normalize_semantic_result_status(status) == "unknown" and str(status).strip().lower() != "unknown":
+            errors.append(f"{label} has unsupported status `{status}`.")
+        artifact_paths = item.get("artifact_paths") or item.get("artifacts")
+        if artifact_paths is not None and not isinstance(artifact_paths, list):
+            errors.append(f"{label} artifact paths must be a list.")
+
+    if isinstance(checks_payload, list):
+        for index, item in enumerate(checks_payload, start=1):
+            validate_check_entry(item, label=f"checks[{index}]")
+    elif isinstance(checks_payload, dict):
+        for check_id, item in checks_payload.items():
+            validate_check_entry(
+                item if isinstance(item, dict) else {"status": item, "check_id": check_id},
+                label=f"checks.{check_id}",
+            )
+    if isinstance(targets_payload, list):
+        for index, target in enumerate(targets_payload, start=1):
+            if not isinstance(target, dict):
+                errors.append(f"targets[{index}] must be an object.")
+                continue
+            target_id = target.get("target_id") or target.get("id")
+            if not target_id:
+                errors.append(f"targets[{index}] is missing `target_id`.")
+            checks = target.get("checks")
+            if checks is not None and not isinstance(checks, (list, dict)):
+                errors.append(f"targets[{index}].checks must be a list or object.")
+                continue
+            if isinstance(checks, list):
+                for check_index, item in enumerate(checks, start=1):
+                    validate_check_entry(item, label=f"targets[{index}].checks[{check_index}]")
+            elif isinstance(checks, dict):
+                for check_id, item in checks.items():
+                    validate_check_entry(
+                        item if isinstance(item, dict) else {"status": item, "check_id": check_id},
+                        label=f"targets[{index}].checks.{check_id}",
+                    )
+    return errors
+
+
+def _validate_semantic_assertions(run_paths: dict[str, Path], case: dict[str, Any]) -> dict[str, Any]:
+    config = case.get("semantic_assertions") or {}
+    if not config.get("enabled"):
+        return {
+            "enabled": False,
+            "status": "not_enabled",
+            "required_checks": [],
+            "report_path": None,
+        }
+    unsupported_required_checks = list(config.get("unsupported_required_checks") or [])
+    if unsupported_required_checks:
+        return {
+            "enabled": True,
+            "status": "failed",
+            "report_path": str(_resolve_semantic_report_path(run_paths, case)),
+            "required_checks": list(config.get("required_checks") or []),
+            "unsupported_required_checks": unsupported_required_checks,
+            "missing_checks": [],
+            "failed_checks": [],
+            "optional_failed_checks": [],
+            "reason": "unsupported_required_checks",
+            "message": (
+                f"Semantic assertion checks {', '.join(unsupported_required_checks)} are not supported by "
+                f"runner `{case.get('runner')}`."
+            ),
+        }
+    report_path = _resolve_semantic_report_path(run_paths, case)
+    if not report_path.exists():
+        return {
+            "enabled": True,
+            "status": "failed",
+            "report_path": str(report_path),
+            "required_checks": list(config.get("required_checks") or []),
+            "unsupported_required_checks": unsupported_required_checks,
+            "missing_checks": list(config.get("required_checks") or []),
+            "failed_checks": [],
+            "optional_failed_checks": [],
+            "reason": "missing_report",
+            "message": f"Semantic assertions report is missing for case {case['id']}.",
+        }
+    try:
+        payload = _load_json(report_path, strict=True, purpose="semantic assertions report")
+    except ValueError as exc:
+        return {
+            "enabled": True,
+            "status": "failed",
+            "report_path": str(report_path),
+            "required_checks": list(config.get("required_checks") or []),
+            "unsupported_required_checks": unsupported_required_checks,
+            "missing_checks": [],
+            "failed_checks": [],
+            "optional_failed_checks": [],
+            "reason": "invalid_report",
+            "message": str(exc),
+        }
+    schema_errors = _semantic_report_schema_errors(payload, case)
+    if schema_errors:
+        return {
+            "enabled": True,
+            "status": "failed",
+            "report_path": str(report_path),
+            "required_checks": list(config.get("required_checks") or []),
+            "unsupported_required_checks": unsupported_required_checks,
+            "missing_checks": [],
+            "failed_checks": [],
+            "optional_failed_checks": [],
+            "reason": "invalid_report_schema",
+            "message": "Semantic assertions report does not match the shared schema.",
+            "schema_errors": schema_errors,
+        }
+    targets = _parse_semantic_report_targets(payload)
+    required_checks = list(config.get("required_checks") or [])
+    expected_target_ids = [target.get("target_id") for target in config.get("targets") or [] if target.get("target_id")]
+    validation_target_ids = expected_target_ids or list(targets.keys()) or ["_global"]
+    missing_targets = [target_id for target_id in expected_target_ids if target_id not in targets]
+    missing_checks: list[str] = []
+    failed_checks: list[str] = []
+    optional_failed_checks: list[str] = []
+    for target_id in validation_target_ids:
+        target_checks = (targets.get(target_id) or {}).get("checks", {})
+        for check_id in required_checks:
+            composite_id = f"{target_id}/{check_id}" if target_id != "_global" else check_id
+            if check_id not in target_checks:
+                missing_checks.append(composite_id)
+            elif target_checks[check_id].get("status") != "passed":
+                failed_checks.append(composite_id)
+        for check_id, check in target_checks.items():
+            if check_id in required_checks or check.get("status") == "passed":
+                continue
+            composite_id = f"{target_id}/{check_id}" if target_id != "_global" else check_id
+            optional_failed_checks.append(composite_id)
+    summary_status = str((payload.get("summary") or {}).get("status") or payload.get("status") or "").lower()
+    report_status = "passed"
+    reason = None
+    if missing_targets:
+        report_status = "failed"
+        reason = "missing_targets"
+    elif missing_checks:
+        report_status = "failed"
+        reason = "missing_checks"
+    elif failed_checks:
+        report_status = "failed"
+        reason = "failed_checks"
+    elif not required_checks and summary_status == "failed":
+        report_status = "failed"
+        reason = "summary_failed"
+    return {
+        "enabled": True,
+        "status": report_status,
+        "report_path": str(report_path),
+        "required_checks": required_checks,
+        "unsupported_required_checks": unsupported_required_checks,
+        "target_ids": validation_target_ids,
+        "missing_targets": missing_targets,
+        "missing_checks": missing_checks,
+        "failed_checks": failed_checks,
+        "optional_failed_checks": optional_failed_checks,
+        "targets": targets,
+        "helper_bundle_version": payload.get("helper_bundle_version") or payload.get("spec_version"),
+        "summary_status": summary_status or ("passed" if report_status == "passed" else "failed"),
+        "reason": reason,
+        "message": (payload.get("summary") or {}).get("message") or payload.get("message"),
+    }
+
+
 def _start_run(workspace: str | Path, mode: str, target_id: str, workstream_id: str | None = None) -> dict[str, Any]:
     paths = _ensure_workspace_paths(workspace, workstream_id=workstream_id)
     recipes = read_verification_recipes(workspace, workstream_id=workstream_id)
@@ -1122,6 +2191,10 @@ def _start_run(workspace: str | Path, mode: str, target_id: str, workstream_id: 
                 "exit_code": None,
                 "runner": _case_by_id(recipes, case_id).get("runner"),
                 "baseline": _case_baseline_result(workspace, _case_by_id(recipes, case_id), 0),
+                "semantic_summary": {
+                    "enabled": bool((_case_by_id(recipes, case_id).get("semantic_assertions") or {}).get("enabled")),
+                    "status": "queued",
+                },
             }
             for case_id in case_ids
         ],
@@ -1331,6 +2404,7 @@ def audit_verification_coverage(workspace: str | Path, workstream_id: str | None
     detection = detect_workspace(resolved_workspace)
     paths = workspace_paths(resolved_workspace, workstream_id=workstream_id)
     recipes_path = Path(paths["verification_recipes"])
+    catalog_runners = set((_load_verification_helper_catalog().get("runners") or {}).keys())
     default_recipes = _default_recipes(resolved_workspace, workstream_id=workstream_id)
     if recipes_path.exists():
         saved_recipes = _normalize_recipes(_load_json(recipes_path, default={}) or {}, resolved_workspace)
@@ -1372,11 +2446,15 @@ def audit_verification_coverage(workspace: str | Path, workstream_id: str | None
     coverage = {
         "plugin": False,
         "web": False,
+        "web_visual": False,
         "mobile": False,
         "android": False,
+        "android_visual": False,
         "ios": False,
         "backend": False,
     }
+    helper_status = _verification_helper_materialization_status(resolved_workspace)
+    semantic_case_ids: list[str] = []
     for case in cases:
         case_id = case["id"]
         targeting_signals = bool(case.get("changed_path_globs") or case.get("feature_ids") or case.get("surface_ids") or case.get("routes_or_screens"))
@@ -1405,6 +2483,40 @@ def audit_verification_coverage(workspace: str | Path, workstream_id: str | None
                     category="baseline",
                 )
             )
+        semantic_assertions = case.get("semantic_assertions") or {}
+        if semantic_assertions.get("enabled"):
+            semantic_case_ids.append(case_id)
+            if not semantic_assertions.get("targets"):
+                gaps.append(
+                    _coverage_gap(
+                        f"{case_id}-missing-semantic-targets",
+                        f"Semantic visual case `{case_id}` does not declare targets",
+                        "Add `semantic_assertions.targets[]` so deterministic helper checks can resolve stable UI targets.",
+                        category="visual",
+                    )
+                )
+            if case.get("runner") not in catalog_runners:
+                gaps.append(
+                    _coverage_gap(
+                        f"{case_id}-semantic-runner-not-cataloged",
+                        f"Semantic visual case `{case_id}` uses a runner without a helper bundle entrypoint",
+                        f"Use a supported runner or extend the helper bundle catalog for `{case.get('runner')}`.",
+                        category="visual",
+                    )
+                )
+            unsupported_required_checks = semantic_assertions.get("unsupported_required_checks") or []
+            if unsupported_required_checks:
+                gaps.append(
+                    _coverage_gap(
+                        f"{case_id}-unsupported-semantic-checks",
+                        f"Semantic visual case `{case_id}` requires checks the runner cannot produce",
+                        (
+                            f"Remove or replace unsupported checks for `{case.get('runner')}`: "
+                            f"{', '.join(unsupported_required_checks)}."
+                        ),
+                        category="visual",
+                    )
+                )
         surface_type = str(case.get("surface_type") or "").lower()
         device = str((case.get("device_or_viewport") or {}).get("device") or "").lower()
         tags = {str(tag).lower() for tag in case.get("tags", [])}
@@ -1413,11 +2525,15 @@ def audit_verification_coverage(workspace: str | Path, workstream_id: str | None
             coverage["plugin"] = True
         if surface_type == "web":
             coverage["web"] = True
+            if case.get("runner") in VISUAL_RUNNERS:
+                coverage["web_visual"] = True
         if surface_type == "mobile":
             coverage["mobile"] = True
         if case.get("runner") == "android-compose-screenshot" or "android" in device or surface_type == "android":
             coverage["android"] = True
             coverage["mobile"] = True
+            if case.get("runner") in VISUAL_RUNNERS:
+                coverage["android_visual"] = True
         if case.get("runner") == "ios-simulator-capture" or "ios" in device or surface_type == "ios":
             coverage["ios"] = True
             coverage["mobile"] = True
@@ -1441,6 +2557,15 @@ def audit_verification_coverage(workspace: str | Path, workstream_id: str | None
                 "Add at least one deterministic web verification case.",
             )
         )
+    if "web-platform" in profiles and not coverage["web_visual"]:
+        gaps.append(
+            _coverage_gap(
+                "missing-web-visual-verification",
+                "Web workspace has no visual web verification case",
+                "Add at least one `playwright-visual` web case so deterministic UI regressions are covered.",
+                category="visual",
+            )
+        )
     if "mobile-platform" in profiles and not coverage["mobile"]:
         gaps.append(
             _coverage_gap(
@@ -1455,6 +2580,15 @@ def audit_verification_coverage(workspace: str | Path, workstream_id: str | None
                 "missing-android-verification",
                 "Android signals were detected but no Android verification case is defined",
                 "Add Android-targeted deterministic verification for emulator, Compose screenshots, or both.",
+            )
+        )
+    if "android" in stacks and not coverage["android_visual"]:
+        gaps.append(
+            _coverage_gap(
+                "missing-android-visual-verification",
+                "Android signals were detected but no Android visual verification case is defined",
+                "Add `android-compose-screenshot` or Android-targeted `detox-visual` coverage for deterministic UI closeout.",
+                category="visual",
             )
         )
     if "ios" in stacks and not coverage["ios"]:
@@ -1473,6 +2607,33 @@ def audit_verification_coverage(workspace: str | Path, workstream_id: str | None
                 "Add deterministic smoke or contract verification for backend and infra surfaces.",
             )
         )
+    if semantic_case_ids and helper_status["status"] == "not_synced":
+        gaps.append(
+            _coverage_gap(
+                "verification-helper-bundle-not-synced",
+                "Semantic visual cases are defined but the helper bundle is not materialized in the repository",
+                "Run `sync verification helpers` so projects can import `.verification/helpers`.",
+                category="visual",
+            )
+        )
+    if semantic_case_ids and helper_status["status"] == "legacy_location":
+        gaps.append(
+            _coverage_gap(
+                "verification-helper-bundle-legacy-location",
+                "A legacy `.agentiux/verification-helpers` helper layout is materialized in the repository",
+                "Re-run `sync verification helpers` to replace it with `.verification/helpers`.",
+                category="visual",
+            )
+        )
+    if semantic_case_ids and helper_status["status"] == "version_drift":
+        gaps.append(
+            _coverage_gap(
+                "verification-helper-bundle-version-drift",
+                "A stale verification helper bundle version is materialized in the repository",
+                "Re-run `sync verification helpers` to materialize the current neutral helper bundle version.",
+                category="visual",
+            )
+        )
     return {
         "workspace_path": str(resolved_workspace),
         "workstream_id": paths["current_workstream_id"],
@@ -1482,6 +2643,7 @@ def audit_verification_coverage(workspace: str | Path, workstream_id: str | None
         "case_count": len(cases),
         "suite_count": len(suites),
         "coverage": coverage,
+        "helper_bundle": helper_status,
         "gaps": gaps,
         "warning_count": len(gaps),
         "status": "warning" if gaps else "clean",
@@ -1598,8 +2760,12 @@ def execute_verification_run(workspace: str | Path, run_id: str, workstream_id: 
     failed_cases = 0
     for case_state in run.get("cases", []):
         case = _case_by_id(recipes, case_state["case_id"])
+        run_paths = _verification_run_paths(workspace_path, run_id, workstream_id=workstream_id)
+        semantic_runtime = _semantic_runtime_preflight(workspace_path, run_paths, case)
         case_state["status"] = "running"
         case_state["started_at"] = now_iso()
+        if semantic_runtime.get("enabled"):
+            case_state["semantic_runtime"] = semantic_runtime
         _write_run(workspace_path, run, workstream_id=workstream_id)
         _append_event(
             workspace_path,
@@ -1615,20 +2781,81 @@ def execute_verification_run(workspace: str | Path, run_id: str, workstream_id: 
         delay_seconds = float((case.get("retry_policy") or {}).get("delay_seconds", 0))
         exit_code = 1
         last_error: Exception | None = None
-        for attempt in range(1, attempts + 1):
-            try:
-                exit_code = _run_case_attempt(workspace_path, run, case, attempt)
-                last_error = None
-            except Exception as exc:  # noqa: BLE001
-                last_error = exc
-                exit_code = 1
-                with _verification_run_paths(workspace_path, run_id, workstream_id=workstream_id)["stderr_log"].open("a") as handle:
-                    handle.write(f"\n[verification-error] {exc}\n")
-            if exit_code == 0:
-                break
-            if attempt < attempts and delay_seconds > 0:
-                time.sleep(delay_seconds)
-        case_state["attempts"] = attempts
+        attempts_performed = 0
+        if semantic_runtime.get("enabled") and semantic_runtime.get("status") == "failed":
+            last_error = RuntimeError(str(semantic_runtime.get("message") or "Semantic helper preflight failed."))
+            exit_code = 1
+            _append_event(
+                workspace_path,
+                run_id,
+                "semantic_assertions_preflight_failed",
+                str(semantic_runtime.get("message") or "Semantic helper preflight failed."),
+                workstream_id=workstream_id,
+                case_id=case["id"],
+                reason=semantic_runtime.get("reason"),
+                report_path=semantic_runtime.get("report_path"),
+                helper_root=semantic_runtime.get("helper_root"),
+            )
+        else:
+            for attempt in range(1, attempts + 1):
+                attempts_performed = attempt
+                try:
+                    exit_code = _run_case_attempt(workspace_path, run, case, attempt, semantic_runtime=semantic_runtime)
+                    last_error = None
+                except Exception as exc:  # noqa: BLE001
+                    last_error = exc
+                    exit_code = 1
+                    with run_paths["stderr_log"].open("a") as handle:
+                        handle.write(f"\n[verification-error] {exc}\n")
+                if exit_code == 0:
+                    break
+                if attempt < attempts and delay_seconds > 0:
+                    time.sleep(delay_seconds)
+        semantic_assertions = (
+            semantic_runtime
+            if semantic_runtime.get("enabled") and semantic_runtime.get("status") == "failed"
+            else _validate_semantic_assertions(run_paths, case)
+        )
+        case_state["semantic_assertions"] = semantic_assertions
+        case_state["semantic_summary"] = semantic_assertions
+        if exit_code == 0 and semantic_assertions.get("enabled") and semantic_assertions.get("status") != "passed":
+            exit_code = 1
+            message = semantic_assertions.get("message") or (
+                f"Semantic assertions failed for case {case['id']}: "
+                f"missing_targets={semantic_assertions.get('missing_targets', [])}, "
+                f"missing={semantic_assertions.get('missing_checks', [])}, failed={semantic_assertions.get('failed_checks', [])}"
+            )
+            with _verification_run_paths(workspace_path, run_id, workstream_id=workstream_id)["stderr_log"].open("a") as handle:
+                handle.write(f"\n[semantic-assertions] {message}\n")
+            _append_event(
+                workspace_path,
+                run_id,
+                "semantic_assertions_failed",
+                message,
+                workstream_id=workstream_id,
+                case_id=case["id"],
+                missing_targets=semantic_assertions.get("missing_targets"),
+                missing_checks=semantic_assertions.get("missing_checks"),
+                failed_checks=semantic_assertions.get("failed_checks"),
+                report_path=semantic_assertions.get("report_path"),
+            )
+        if semantic_assertions.get("enabled"):
+            _append_event(
+                workspace_path,
+                run_id,
+                "semantic_assertions_validated",
+                f"Semantic assertions {semantic_assertions.get('status')} for case {case['id']}.",
+                workstream_id=workstream_id,
+                case_id=case["id"],
+                status=semantic_assertions.get("status"),
+                reason=semantic_assertions.get("reason"),
+                missing_targets=semantic_assertions.get("missing_targets"),
+                missing_checks=semantic_assertions.get("missing_checks"),
+                failed_checks=semantic_assertions.get("failed_checks"),
+                optional_failed_checks=semantic_assertions.get("optional_failed_checks"),
+                report_path=semantic_assertions.get("report_path"),
+            )
+        case_state["attempts"] = attempts_performed
         case_state["exit_code"] = exit_code
         case_state["completed_at"] = now_iso()
         case_state["status"] = "passed" if exit_code == 0 else "failed"
@@ -1652,6 +2879,17 @@ def execute_verification_run(workspace: str | Path, run_id: str, workstream_id: 
             run["summary"]["logcat_crash_summary"] = {
                 "case_id": case["id"],
                 "signals": logcat_summary["signals"],
+            }
+        if semantic_assertions.get("enabled"):
+            run.setdefault("summary", {})
+            run["summary"]["semantic_summary"] = {
+                "case_id": case["id"],
+                "status": semantic_assertions.get("status"),
+                "reason": semantic_assertions.get("reason"),
+                "missing_targets": semantic_assertions.get("missing_targets", []),
+                "missing_checks": semantic_assertions.get("missing_checks", []),
+                "failed_checks": semantic_assertions.get("failed_checks", []),
+                "optional_failed_checks": semantic_assertions.get("optional_failed_checks", []),
             }
         _write_run(workspace_path, run, workstream_id=workstream_id)
         _append_event(
@@ -1709,6 +2947,13 @@ def parse_args() -> argparse.Namespace:
 
     cmd = subparsers.add_parser("audit-coverage")
     add_workspace_arg(cmd)
+
+    cmd = subparsers.add_parser("show-helper-catalog")
+    add_workspace_arg(cmd)
+
+    cmd = subparsers.add_parser("sync-helpers")
+    add_workspace_arg(cmd)
+    cmd.add_argument("--force", action="store_true")
 
     cmd = subparsers.add_parser("write-recipes")
     add_workspace_arg(cmd)
@@ -1779,6 +3024,10 @@ def main() -> int:
         payload = read_verification_recipes(args.workspace, workstream_id=args.workstream_id)
     elif args.command == "audit-coverage":
         payload = audit_verification_coverage(args.workspace, workstream_id=args.workstream_id)
+    elif args.command == "show-helper-catalog":
+        payload = show_verification_helper_catalog(args.workspace)
+    elif args.command == "sync-helpers":
+        payload = sync_verification_helpers(args.workspace, force=args.force)
     elif args.command == "write-recipes":
         payload = write_verification_recipes(args.workspace, _load_json(Path(args.recipe_file), default={}) or {}, workstream_id=args.workstream_id)
     elif args.command == "approve-baseline":

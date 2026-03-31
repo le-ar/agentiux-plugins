@@ -17,6 +17,8 @@ from agentiux_dev_verification import (
     read_verification_recipes,
     read_verification_run,
     resolve_verification_selection,
+    show_verification_helper_catalog,
+    sync_verification_helpers,
     start_verification_case,
     start_verification_suite,
     update_verification_baseline,
@@ -285,6 +287,13 @@ def parse_args() -> argparse.Namespace:
     cmd = subparsers.add_parser("audit-verification-coverage")
     add_workspace_arg(cmd)
     cmd.add_argument("--workstream-id")
+
+    cmd = subparsers.add_parser("show-verification-helper-catalog")
+    add_workspace_arg(cmd)
+
+    cmd = subparsers.add_parser("sync-verification-helpers")
+    add_workspace_arg(cmd)
+    cmd.add_argument("--force", action="store_true")
 
     cmd = subparsers.add_parser("resolve-verification")
     add_workspace_arg(cmd)
@@ -560,6 +569,10 @@ def main() -> int:
             payload = read_verification_recipes(args.workspace, workstream_id=args.workstream_id)
         elif args.command == "audit-verification-coverage":
             payload = audit_verification_coverage(args.workspace, workstream_id=args.workstream_id)
+        elif args.command == "show-verification-helper-catalog":
+            payload = show_verification_helper_catalog(args.workspace)
+        elif args.command == "sync-verification-helpers":
+            payload = sync_verification_helpers(args.workspace, force=args.force)
         elif args.command == "resolve-verification":
             payload = resolve_verification_selection(
                 args.workspace,

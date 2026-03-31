@@ -209,6 +209,8 @@ def mcp_check(plugin_root: Path) -> dict[str, Any]:
         "repair_workspace_state",
         "show_host_support",
         "audit_verification_coverage",
+        "show_verification_helper_catalog",
+        "sync_verification_helpers",
         "resolve_verification",
         "run_verification_case",
         "list_verification_runs",

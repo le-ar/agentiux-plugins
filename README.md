@@ -38,7 +38,7 @@ python3 plugins/agentiux-dev/scripts/smoke_test.py
 
 - Edit plugin source in this repository.
 - Sync a tested snapshot into `~/plugins/agentiux-dev` when you want to use it as the installed runtime copy.
-- Keep Codex-only workspace state under `~/.codex/state/agentiux-dev/`.
+- Keep Codex-only workspace state under `~/.agentiux/agentiux-dev/`.
 - Treat the source repo and installed copy as separate roots: source is for development, installed copy is for daily use.
 
 ## Stable Use And Development

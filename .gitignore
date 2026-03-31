@@ -9,4 +9,3 @@ dist/
 build/
 *.log
 plugins/agentiux-dev/install-metadata.json
-corrupt-run/

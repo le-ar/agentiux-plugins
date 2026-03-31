@@ -1,0 +1,161 @@
+{
+  "schema_version": 1,
+  "bundle_version": "0.8.0",
+  "check_families": [
+    "presence_uniqueness",
+    "visibility",
+    "scroll_reachability",
+    "overflow_clipping",
+    "occlusion",
+    "interaction_states",
+    "computed_styles",
+    "layout_relations",
+    "text_overflow",
+    "accessibility_state",
+    "screenshot_baseline"
+  ],
+  "heuristics": [
+    "interactive_visibility_scan",
+    "interactive_overflow_scan",
+    "interactive_occlusion_scan"
+  ],
+  "runners": {
+    "playwright-visual": {
+      "language": "javascript",
+      "entrypoint": "playwright/index.js",
+      "entrypoints": [
+        {
+          "id": "default",
+          "path": "playwright/index.js",
+          "language": "javascript",
+          "exports": [
+            "runSemanticChecks"
+          ]
+        }
+      ],
+      "export_name": "runSemanticChecks",
+      "supported_checks": [
+        "presence_uniqueness",
+        "visibility",
+        "scroll_reachability",
+        "overflow_clipping",
+        "occlusion",
+        "interaction_states",
+        "computed_styles",
+        "layout_relations",
+        "text_overflow",
+        "accessibility_state",
+        "screenshot_baseline"
+      ],
+      "supported_locator_kinds": [
+        "selector",
+        "role",
+        "test_id",
+        "text"
+      ],
+      "required_host_tools": [
+        "node",
+        "browser-runtime"
+      ],
+      "supports_auto_scan": true,
+      "supports_platform_hooks": true,
+      "import_examples": [
+        "import { runSemanticChecks } from './__RELATIVE_ENTRYPOINT__';"
+      ]
+    },
+    "detox-visual": {
+      "language": "javascript",
+      "entrypoint": "detox/index.js",
+      "entrypoints": [
+        {
+          "id": "default",
+          "path": "detox/index.js",
+          "language": "javascript",
+          "exports": [
+            "runSemanticChecks"
+          ]
+        },
+        {
+          "id": "rn-probe-contract",
+          "path": "detox/react-native-probe.js",
+          "language": "javascript",
+          "exports": [
+            "createReactNativeProbe",
+            "normalizeReactNativeProbeSnapshot"
+          ]
+        }
+      ],
+      "export_name": "runSemanticChecks",
+      "supported_checks": [
+        "presence_uniqueness",
+        "visibility",
+        "scroll_reachability",
+        "overflow_clipping",
+        "occlusion",
+        "interaction_states",
+        "computed_styles",
+        "layout_relations",
+        "text_overflow",
+        "accessibility_state",
+        "screenshot_baseline"
+      ],
+      "supported_locator_kinds": [
+        "test_id",
+        "text"
+      ],
+      "required_host_tools": [
+        "node",
+        "detox"
+      ],
+      "supports_auto_scan": true,
+      "supports_platform_hooks": true,
+      "import_examples": [
+        "import { runSemanticChecks } from './__RELATIVE_ENTRYPOINT__';",
+        "import { createReactNativeProbe } from './.verification/helpers/detox/react-native-probe.js';"
+      ]
+    },
+    "android-compose-screenshot": {
+      "language": "kotlin",
+      "package": "generated.verification.helpers",
+      "entrypoint": "android-compose/SemanticChecks.kt",
+      "entrypoints": [
+        {
+          "id": "default",
+          "path": "android-compose/SemanticChecks.kt",
+          "language": "kotlin",
+          "exports": [
+            "runSemanticChecks"
+          ]
+        }
+      ],
+      "export_name": "runSemanticChecks",
+      "supported_checks": [
+        "presence_uniqueness",
+        "visibility",
+        "scroll_reachability",
+        "overflow_clipping",
+        "occlusion",
+        "interaction_states",
+        "computed_styles",
+        "layout_relations",
+        "text_overflow",
+        "accessibility_state",
+        "screenshot_baseline"
+      ],
+      "supported_locator_kinds": [
+        "test_id",
+        "semantics_tag",
+        "text"
+      ],
+      "required_host_tools": [
+        "android",
+        "gradle"
+      ],
+      "supports_auto_scan": true,
+      "supports_platform_hooks": true,
+      "import_examples": [
+        "import generated.verification.helpers.runSemanticChecks"
+      ]
+    }
+  }
+}

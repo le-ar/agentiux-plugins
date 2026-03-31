@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -78,6 +79,8 @@ from agentiux_dev_verification import (
     read_verification_log_tail,
     read_verification_recipes,
     resolve_verification_selection,
+    show_verification_helper_catalog,
+    sync_verification_helpers,
     start_verification_case,
     start_verification_suite,
     update_verification_baseline,
@@ -155,6 +158,16 @@ def _read_json_file(path: Path) -> dict:
 
 def _write_json_file(path: Path, payload: dict) -> None:
     path.write_text(json.dumps(payload, indent=2) + "\n")
+
+
+def _assert_no_branded_strings_in_tree(root: Path) -> None:
+    for candidate in sorted(root.rglob("*")):
+        if not candidate.is_file():
+            continue
+        text = candidate.read_text()
+        lowered = text.lower()
+        assert "agentiux" not in lowered, f"unexpected brand leak in {candidate}"
+        assert "codex" not in lowered, f"unexpected brand leak in {candidate}"
 
 
 def _git_commit(repo_root: Path, message: str, body: str | None = None) -> None:
@@ -534,9 +547,15 @@ def main() -> int:
         plugin_verification_recipes = read_verification_recipes(repo_root)
         assert plugin_verification_recipes["verification_fragment_resolution"]["source_module_ids"]
         assert any(case["id"] == "plugin-smoke" for case in plugin_verification_recipes["cases"])
-        plugin_coverage = audit_verification_coverage(repo_root)
-        assert plugin_coverage["status"] == "clean"
-        assert plugin_coverage["coverage"]["plugin"] is True
+        plugin_helper_root = repo_root / ".verification"
+        shutil.rmtree(plugin_helper_root, ignore_errors=True)
+        try:
+            sync_verification_helpers(repo_root)
+            plugin_coverage = audit_verification_coverage(repo_root)
+            assert plugin_coverage["status"] == "clean"
+            assert plugin_coverage["coverage"]["plugin"] is True
+        finally:
+            shutil.rmtree(plugin_helper_root, ignore_errors=True)
         _assert_no_default_origin(repaired_plugin_state["stage_register"])
         _assert_no_default_origin(plugin_verification_recipes)
 
@@ -551,6 +570,54 @@ def main() -> int:
         assert backend_register["plan_status"] == "needs_user_confirmation"
         assert backend_register["stages"] == []
         _assert_no_default_origin(backend_register)
+
+        visual_gap_workspace = temp_root / "visual-gap-workspace"
+        visual_gap_workspace.mkdir()
+        _seed_workspace(visual_gap_workspace)
+        init_workspace(visual_gap_workspace)
+        visual_gap_workstream = create_workstream(visual_gap_workspace, "Visual Coverage Audit", kind="feature")["created_workstream_id"]
+        write_verification_recipes(
+            visual_gap_workspace,
+            {
+                "baseline_policy": {
+                    "canonical_baselines": "project_owned",
+                    "transient_artifacts": "external_state_only",
+                },
+                "cases": [
+                    {
+                        "id": "web-contract-only",
+                        "title": "Web contract only",
+                        "surface_type": "web",
+                        "runner": "shell-contract",
+                        "changed_path_globs": ["apps/web/**"],
+                        "host_requirements": ["python"],
+                        "argv": [sys.executable, "-c", "print('web contract ok')"],
+                    },
+                    {
+                        "id": "android-contract-only",
+                        "title": "Android contract only",
+                        "surface_type": "android",
+                        "runner": "shell-contract",
+                        "changed_path_globs": ["apps/mobile/android/**"],
+                        "host_requirements": ["python"],
+                        "argv": [sys.executable, "-c", "print('android contract ok')"],
+                    },
+                ],
+                "suites": [
+                    {
+                        "id": "full",
+                        "title": "Full Suite",
+                        "case_ids": ["web-contract-only", "android-contract-only"],
+                    }
+                ],
+            },
+            workstream_id=visual_gap_workstream,
+        )
+        visual_gap_audit = audit_verification_coverage(visual_gap_workspace, workstream_id=visual_gap_workstream)
+        visual_gap_ids = {gap["gap_id"] for gap in visual_gap_audit["gaps"]}
+        assert "missing-web-visual-verification" in visual_gap_ids
+        assert "missing-android-visual-verification" not in visual_gap_ids
+        assert visual_gap_audit["coverage"]["android_visual"] is True
 
         web_workspace = temp_root / "web-workspace"
         web_workspace.mkdir()
@@ -666,6 +733,7 @@ def main() -> int:
             kind="feature",
             scope_summary="Lock the approved workspace implementation and verification scope.",
         )
+        verification_workstream_id = primary_workstream["created_workstream_id"]
         assert primary_workstream["created_workstream_id"] == "workspace-planning"
         assert primary_workstream["current_workstream"]["register"]["plan_status"] == "needs_user_confirmation"
         assert primary_workstream["current_workstream"]["register"]["stages"] == []
@@ -739,6 +807,7 @@ def main() -> int:
                 "surface": "marketing-home",
                 "style_goals": ["editorial", "precise"],
             },
+            workstream_id=verification_workstream_id,
         )
         assert design_brief["status"] == "briefed"
         assert read_design_brief(workspace)["surface"] == "marketing-home"
@@ -847,9 +916,29 @@ def main() -> int:
                             "-c",
                             (
                                 "import os, pathlib, sys, time; "
-                                "artifact_dir = pathlib.Path(os.environ['AGENTIUX_VERIFICATION_ARTIFACT_DIR']); "
+                                "import json; "
+                                "artifact_dir = pathlib.Path(os.environ['VERIFICATION_ARTIFACT_DIR']); "
                                 "artifact_dir.mkdir(parents=True, exist_ok=True); "
                                 "(artifact_dir / 'web-home.txt').write_text('web home ok\\n'); "
+                                "(artifact_dir / 'web-home-semantic.json').write_text(json.dumps({"
+                                "'schema_version': 2, "
+                                "'runner': 'playwright-visual', "
+                                "'helper_bundle_version': '0.8.0', "
+                                "'summary': {'status': 'passed'}, "
+                                "'targets': [{"
+                                "'target_id': 'home-main', "
+                                "'status': 'passed', "
+                                "'checks': ["
+                                "{'id': 'presence_uniqueness', 'status': 'passed'}, "
+                                "{'id': 'visibility', 'status': 'passed'}, "
+                                "{'id': 'overflow_clipping', 'status': 'passed'}, "
+                                "{'id': 'computed_styles', 'status': 'passed'}, "
+                                "{'id': 'interaction_states', 'status': 'passed'}, "
+                                "{'id': 'scroll_reachability', 'status': 'passed'}, "
+                                "{'id': 'occlusion', 'status': 'passed'}"
+                                "]"
+                                "}]"
+                                "})); "
                                 "print('web-home start'); sys.stdout.flush(); "
                                 "time.sleep(0.25); "
                                 "print('web-home done')"
@@ -863,6 +952,36 @@ def main() -> int:
                         "freeze_clock": True,
                         "masks": [".clock", ".live-counter"],
                         "artifact_expectations": ["screenshots", "diffs"],
+                        "semantic_assertions": {
+                            "enabled": True,
+                            "report_path": "web-home-semantic.json",
+                            "required_checks": [
+                                "presence_uniqueness",
+                                "visibility",
+                                "overflow_clipping",
+                                "computed_styles",
+                                "interaction_states",
+                                "scroll_reachability",
+                                "occlusion",
+                            ],
+                            "targets": [
+                                {
+                                    "target_id": "home-main",
+                                    "locator": {"kind": "role", "value": "main"},
+                                    "interactions": ["hover", "focus"],
+                                }
+                            ],
+                            "auto_scan": True,
+                            "heuristics": [
+                                "interactive_visibility_scan",
+                                "interactive_overflow_scan",
+                                "interactive_occlusion_scan",
+                            ],
+                            "artifacts": {
+                                "target_screenshots": True,
+                                "debug_snapshots": False,
+                            },
+                        },
                         "retry_policy": {"attempts": 1, "slow_after_seconds": 1},
                         "baseline": {"policy": "project-owned", "source_path": str(baseline_target.relative_to(workspace))},
                     },
@@ -882,9 +1001,28 @@ def main() -> int:
                             "-c",
                             (
                                 "import os, pathlib, sys, time; "
-                                "artifact_dir = pathlib.Path(os.environ['AGENTIUX_VERIFICATION_ARTIFACT_DIR']); "
+                                "import json; "
+                                "artifact_dir = pathlib.Path(os.environ['VERIFICATION_ARTIFACT_DIR']); "
                                 "artifact_dir.mkdir(parents=True, exist_ok=True); "
                                 "(artifact_dir / 'expo-home.txt').write_text('expo home ok\\n'); "
+                                "(artifact_dir / 'expo-home-semantic.json').write_text(json.dumps({"
+                                "'schema_version': 2, "
+                                "'runner': 'detox-visual', "
+                                "'helper_bundle_version': '0.8.0', "
+                                "'summary': {'status': 'passed'}, "
+                                "'targets': [{"
+                                "'target_id': 'home-screen', "
+                                "'status': 'passed', "
+                                "'checks': ["
+                                "{'id': 'presence_uniqueness', 'status': 'passed'}, "
+                                "{'id': 'visibility', 'status': 'passed'}, "
+                                "{'id': 'overflow_clipping', 'status': 'passed'}, "
+                                "{'id': 'interaction_states', 'status': 'passed'}, "
+                                "{'id': 'scroll_reachability', 'status': 'passed'}, "
+                                "{'id': 'occlusion', 'status': 'passed'}"
+                                "]"
+                                "}]"
+                                "})); "
                                 "print('expo-home start'); sys.stdout.flush(); "
                                 "time.sleep(1.6); "
                                 "print('expo-home done')"
@@ -898,6 +1036,35 @@ def main() -> int:
                         "freeze_clock": True,
                         "masks": ["LiveClock", "RemoteCounter"],
                         "artifact_expectations": ["screenshots", "diffs"],
+                        "semantic_assertions": {
+                            "enabled": True,
+                            "report_path": "expo-home-semantic.json",
+                            "required_checks": [
+                                "presence_uniqueness",
+                                "visibility",
+                                "overflow_clipping",
+                                "interaction_states",
+                                "scroll_reachability",
+                                "occlusion",
+                            ],
+                            "targets": [
+                                {
+                                    "target_id": "home-screen",
+                                    "locator": {"kind": "test_id", "value": "home-screen"},
+                                    "scroll_container_locator": {"kind": "test_id", "value": "home-scroll"},
+                                    "interactions": ["tap"],
+                                }
+                            ],
+                            "auto_scan": True,
+                            "heuristics": [
+                                "interactive_visibility_scan",
+                                "interactive_overflow_scan",
+                            ],
+                            "artifacts": {
+                                "target_screenshots": True,
+                                "debug_snapshots": False,
+                            },
+                        },
                         "retry_policy": {"attempts": 1, "slow_after_seconds": 1},
                         "host_requirements": ["python", "adb"],
                         "baseline": {"policy": "project-owned", "source_path": "tests/visual/baselines/expo-home.txt"},
@@ -910,6 +1077,110 @@ def main() -> int:
                             "filter_specs": ["*:I"],
                             "tail_lines_on_failure": 20,
                         },
+                    },
+                    {
+                        "id": "web-semantic-missing",
+                        "title": "Web semantic report required",
+                        "surface_type": "web",
+                        "runner": "playwright-visual",
+                        "tags": ["web", "semantic"],
+                        "feature_ids": ["semantic-coverage"],
+                        "surface_ids": ["semantic-missing"],
+                        "routes_or_screens": ["/semantic"],
+                        "changed_path_globs": ["apps/web/semantic/**"],
+                        "host_requirements": ["python"],
+                        "argv": [
+                            sys.executable,
+                            "-c",
+                            (
+                                "import os, pathlib, sys; "
+                                "artifact_dir = pathlib.Path(os.environ['VERIFICATION_ARTIFACT_DIR']); "
+                                "artifact_dir.mkdir(parents=True, exist_ok=True); "
+                                "(artifact_dir / 'web-semantic-missing.txt').write_text('semantic missing\\n'); "
+                                "print('web-semantic-missing done')"
+                            ),
+                        ],
+                        "target": {"route": "/semantic"},
+                        "device_or_viewport": {"viewport": "1440x1024"},
+                        "locale": "en-US",
+                        "timezone": "UTC",
+                        "color_scheme": "light",
+                        "freeze_clock": True,
+                        "masks": [],
+                        "artifact_expectations": ["screenshots", "diffs"],
+                        "semantic_assertions": {
+                            "enabled": True,
+                            "report_path": "web-semantic-missing.json",
+                            "required_checks": [
+                                "visibility",
+                                "computed_styles",
+                            ],
+                            "targets": [
+                                {
+                                    "target_id": "semantic-main",
+                                    "locator": {"kind": "selector", "value": "[data-testid='semantic-main']"},
+                                }
+                            ],
+                        },
+                        "retry_policy": {"attempts": 1, "slow_after_seconds": 1},
+                        "baseline": {"policy": "project-owned", "source_path": str(baseline_target.relative_to(workspace))},
+                    },
+                    {
+                        "id": "web-optional-semantic-warning",
+                        "title": "Web semantic optional warning",
+                        "surface_type": "web",
+                        "runner": "playwright-visual",
+                        "tags": ["web", "semantic"],
+                        "feature_ids": ["semantic-optional"],
+                        "surface_ids": ["semantic-optional"],
+                        "routes_or_screens": ["/semantic-optional"],
+                        "changed_path_globs": ["apps/web/semantic/**"],
+                        "host_requirements": ["python"],
+                        "argv": [
+                            sys.executable,
+                            "-c",
+                            (
+                                "import json, os, pathlib; "
+                                "artifact_dir = pathlib.Path(os.environ['VERIFICATION_ARTIFACT_DIR']); "
+                                "artifact_dir.mkdir(parents=True, exist_ok=True); "
+                                "(artifact_dir / 'web-optional-semantic-warning.json').write_text(json.dumps({"
+                                "'schema_version': 2, "
+                                "'runner': 'playwright-visual', "
+                                "'helper_bundle_version': '0.8.0', "
+                                "'summary': {'status': 'failed', 'message': 'optional layout warning'}, "
+                                "'targets': [{"
+                                "'target_id': 'optional-main', "
+                                "'status': 'failed', "
+                                "'checks': ["
+                                "{'id': 'visibility', 'status': 'passed'}, "
+                                "{'id': 'layout_relations', 'status': 'failed'}"
+                                "]"
+                                "}]"
+                                "})); "
+                                "print('web-optional-semantic-warning done')"
+                            ),
+                        ],
+                        "target": {"route": "/semantic-optional"},
+                        "device_or_viewport": {"viewport": "1440x1024"},
+                        "locale": "en-US",
+                        "timezone": "UTC",
+                        "color_scheme": "light",
+                        "freeze_clock": True,
+                        "masks": [],
+                        "artifact_expectations": ["screenshots", "diffs"],
+                        "semantic_assertions": {
+                            "enabled": True,
+                            "report_path": "web-optional-semantic-warning.json",
+                            "required_checks": ["visibility"],
+                            "targets": [
+                                {
+                                    "target_id": "optional-main",
+                                    "locator": {"kind": "role", "value": "main"},
+                                }
+                            ],
+                        },
+                        "retry_policy": {"attempts": 1, "slow_after_seconds": 1},
+                        "baseline": {"policy": "project-owned", "source_path": str(baseline_target.relative_to(workspace))},
                     },
                 ],
                 "suites": [
@@ -928,7 +1199,7 @@ def main() -> int:
         )
         assert verification_recipes["schema_version"] == 2
         assert verification_recipes["cases"][0]["runner"] == "playwright-visual"
-        assert read_verification_recipes(workspace)["suites"][1]["id"] == "full"
+        assert read_verification_recipes(workspace, workstream_id=verification_workstream_id)["suites"][1]["id"] == "full"
 
         targeted_task = create_task(
             workspace,
@@ -947,6 +1218,9 @@ def main() -> int:
         assert [case["case_id"] for case in selection["selected_cases"]] == ["web-home"]
         assert selection["heuristic_suggestions"] == []
         assert selection["baseline_sources"] == [str(baseline_target.resolve())]
+        assert selection["helper_guidance"]["needs_semantic_helpers"] is True
+        assert selection["helper_guidance"]["materialization"]["status"] == "not_synced"
+        assert any("sync verification helpers" in item.lower() for item in selection["helper_guidance"]["next_actions"])
         close_task(workspace, task_id=targeted_task["created_task_id"], verification_summary={"status": "completed"})
 
         unresolved_task = create_task(
@@ -1021,62 +1295,138 @@ def main() -> int:
         assert heuristic_selection["requested_mode_source"] == "workstream_default"
         assert [case["case_id"] for case in heuristic_selection["selected_cases"]] == ["web-home"]
 
-        follow_output = subprocess.run(
+        helper_catalog_before_sync = show_verification_helper_catalog(workspace)
+        assert helper_catalog_before_sync["version_status"] == "not_synced"
+        assert "playwright-visual" in helper_catalog_before_sync["available_runners"]
+        legacy_helper_root = workspace / ".agentiux" / "verification-helpers" / "0.7.0"
+        legacy_helper_root.mkdir(parents=True, exist_ok=True)
+        legacy_catalog = show_verification_helper_catalog(workspace)
+        assert legacy_catalog["version_status"] == "legacy_location"
+        assert legacy_catalog["materialization"]["legacy_detected"] is True
+        legacy_audit = audit_verification_coverage(workspace, workstream_id=verification_workstream_id)
+        assert "verification-helper-bundle-legacy-location" in {gap["gap_id"] for gap in legacy_audit["gaps"]}
+        helper_sync = sync_verification_helpers(workspace)
+        assert helper_sync["status"] == "synced"
+        assert helper_sync["removed_legacy_root"] is True
+        assert helper_sync["materialization"]["status"] == "synced"
+        assert helper_sync["file_count"] > 0
+        assert helper_sync["destination_root"].endswith("/.verification/helpers")
+        assert helper_sync["marker_path"].endswith("/.verification/helpers/bundle.json")
+        assert helper_sync["import_snippets"]["playwright-visual"]["import_examples"]
+        assert helper_sync["import_snippets"]["playwright-visual"]["relative_path"] == ".verification/helpers/playwright/index.js"
+        assert helper_sync["import_snippets"]["detox-visual"]["relative_path"] == ".verification/helpers/detox/index.js"
+        assert helper_sync["import_snippets"]["android-compose-screenshot"]["relative_path"] == ".verification/helpers/android-compose/SemanticChecks.kt"
+        assert "/0.8.0/" not in "".join(helper_sync["import_snippets"]["playwright-visual"]["import_examples"])
+        assert not (workspace / ".agentiux").exists()
+        _assert_no_branded_strings_in_tree(Path(helper_sync["destination_root"]))
+        helper_catalog_after_sync = show_verification_helper_catalog(workspace)
+        assert helper_catalog_after_sync["version_status"] == "synced"
+        assert helper_catalog_after_sync["materialization"]["synced"] is True
+        assert helper_catalog_after_sync["runners"]["android-compose-screenshot"]["capability_matrix"]["entrypoint"] == "android-compose/SemanticChecks.kt"
+        helper_catalog_cli = subprocess.run(
             python_script_command(
                 plugin_root / "scripts" / "agentiux_dev_state.py",
-                ["run-verification-case", "--workspace", str(workspace), "--case-id", "web-home", "--follow"],
+                ["show-verification-helper-catalog", "--workspace", str(workspace)],
             ),
             check=True,
             capture_output=True,
             text=True,
             env=os.environ.copy(),
         ).stdout
-        assert "[event] run_started" in follow_output
-        assert "[stdout]" in follow_output
+        assert "playwright-visual" in helper_catalog_cli
 
-        android_follow_run = start_verification_case(workspace, "expo-home")
-        android_follow_lines: list[str] = []
-        android_follow_run = follow_verification_run(
-            workspace,
-            android_follow_run["run_id"],
-            emit=android_follow_lines.append,
-            timeout_seconds=20,
-        )
-        assert android_follow_run["status"] == "passed"
-        assert any("[logcat]" in line for line in android_follow_lines)
-        assert any("logcat_started" in line for line in android_follow_lines)
+        cli_case_output = subprocess.run(
+            python_script_command(
+                plugin_root / "scripts" / "agentiux_dev_state.py",
+                [
+                    "run-verification-case",
+                    "--workspace",
+                    str(workspace),
+                    "--case-id",
+                    "web-home",
+                    "--wait",
+                    "--workstream-id",
+                    verification_workstream_id,
+                ],
+            ),
+            check=True,
+            capture_output=True,
+            text=True,
+            env=os.environ.copy(),
+        ).stdout
+        assert "\"status\": \"passed\"" in cli_case_output
 
-        case_run = start_verification_case(workspace, "web-home")
-        case_run = wait_for_verification_run(workspace, case_run["run_id"], timeout_seconds=20)
+        case_run = start_verification_case(workspace, "web-home", workstream_id=verification_workstream_id)
+        case_run = wait_for_verification_run(workspace, case_run["run_id"], timeout_seconds=20, workstream_id=verification_workstream_id)
         assert case_run["mode"] == "case"
         assert case_run["status"] == "passed"
         assert case_run["case_ids"] == ["web-home"]
         assert case_run["cases"][0]["baseline"]["status"] == "matched"
-        approved = approve_verification_baseline(workspace, "web-home", run_id=case_run["run_id"])
+        assert case_run["cases"][0]["semantic_assertions"]["status"] == "passed"
+        approved = approve_verification_baseline(workspace, "web-home", run_id=case_run["run_id"], workstream_id=verification_workstream_id)
         assert approved["status"] == "approved"
-        updated_baseline = update_verification_baseline(workspace, "web-home", run_id=case_run["run_id"])
+        updated_baseline = update_verification_baseline(
+            workspace,
+            "web-home",
+            run_id=case_run["run_id"],
+            artifact_path=str(Path(case_run["artifacts_dir"]) / "web-home.txt"),
+            workstream_id=verification_workstream_id,
+        )
         assert updated_baseline["status"] == "updated"
         assert baseline_target.read_text() == "web home ok\n"
 
-        suite_run = start_verification_suite(workspace, "full")
+        semantic_failure_run = start_verification_case(workspace, "web-semantic-missing", workstream_id=verification_workstream_id)
+        semantic_failure_run = wait_for_verification_run(
+            workspace,
+            semantic_failure_run["run_id"],
+            timeout_seconds=20,
+            workstream_id=verification_workstream_id,
+        )
+        assert semantic_failure_run["status"] == "failed"
+        assert semantic_failure_run["cases"][0]["semantic_assertions"]["status"] == "failed"
+        semantic_failure_events = read_verification_events(
+            workspace,
+            semantic_failure_run["run_id"],
+            limit=20,
+            workstream_id=verification_workstream_id,
+        )
+        assert any(event["event_type"] == "semantic_assertions_failed" for event in semantic_failure_events["events"])
+
+        optional_warning_run = start_verification_case(
+            workspace,
+            "web-optional-semantic-warning",
+            workstream_id=verification_workstream_id,
+        )
+        optional_warning_run = wait_for_verification_run(
+            workspace,
+            optional_warning_run["run_id"],
+            timeout_seconds=20,
+            workstream_id=verification_workstream_id,
+        )
+        assert optional_warning_run["status"] == "passed"
+        optional_summary = optional_warning_run["cases"][0]["semantic_assertions"]
+        assert optional_summary["status"] == "passed"
+        assert optional_summary["optional_failed_checks"] == ["optional-main/layout_relations"]
+
+        suite_run = start_verification_suite(workspace, "full", workstream_id=verification_workstream_id)
         time.sleep(0.5)
-        active_run = active_verification_run(workspace)
+        active_run = active_verification_run(workspace, workstream_id=verification_workstream_id)
         assert active_run is not None
         assert active_run["run_id"] == suite_run["run_id"]
-        mid_events = read_verification_events(workspace, suite_run["run_id"], limit=20)
+        mid_events = read_verification_events(workspace, suite_run["run_id"], limit=20, workstream_id=verification_workstream_id)
         assert any(event["event_type"] == "run_started" for event in mid_events["events"])
 
-        suite_run = wait_for_verification_run(workspace, suite_run["run_id"], timeout_seconds=20)
+        suite_run = wait_for_verification_run(workspace, suite_run["run_id"], timeout_seconds=20, workstream_id=verification_workstream_id)
         assert suite_run["mode"] == "suite"
         assert suite_run["status"] == "passed"
         assert suite_run["case_ids"] == ["web-home", "expo-home"]
-        assert active_verification_run(workspace) is None
+        assert active_verification_run(workspace, workstream_id=verification_workstream_id) is None
 
-        all_runs = list_verification_runs(workspace)
+        all_runs = list_verification_runs(workspace, workstream_id=verification_workstream_id)
         assert len(all_runs["runs"]) >= 2
         assert all_runs["latest_run"]["run_id"] == suite_run["run_id"]
         assert all_runs["latest_completed_run"]["run_id"] == suite_run["run_id"]
-        event_log = read_verification_events(workspace, suite_run["run_id"], limit=50)
+        event_log = read_verification_events(workspace, suite_run["run_id"], limit=50, workstream_id=verification_workstream_id)
         event_types = {event["event_type"] for event in event_log["events"]}
         assert "case_heartbeat" in event_types
         assert "case_slow" in event_types
@@ -1084,9 +1434,9 @@ def main() -> int:
         assert "logcat_heartbeat" in event_types
         assert "logcat_stopped" in event_types
         assert "run_finished" in event_types
-        stdout_log = read_verification_log_tail(workspace, suite_run["run_id"], "stdout", 50)
-        stderr_log = read_verification_log_tail(workspace, suite_run["run_id"], "stderr", 20)
-        logcat_log = read_verification_log_tail(workspace, suite_run["run_id"], "logcat", 50)
+        stdout_log = read_verification_log_tail(workspace, suite_run["run_id"], "stdout", 50, workstream_id=verification_workstream_id)
+        stderr_log = read_verification_log_tail(workspace, suite_run["run_id"], "stderr", 20, workstream_id=verification_workstream_id)
+        logcat_log = read_verification_log_tail(workspace, suite_run["run_id"], "logcat", 50, workstream_id=verification_workstream_id)
         assert any("web-home done" in line for line in stdout_log["lines"])
         assert any("expo-home done" in line for line in stdout_log["lines"])
         assert stderr_log["path"].endswith("stderr.log")
@@ -1111,14 +1461,140 @@ def main() -> int:
         assert closeout_selection["selected_suite"]["id"] == "full"
         assert [case["case_id"] for case in closeout_selection["selected_cases"]] == ["web-home", "expo-home"]
 
-        corrupt_run_path = Path(paths["verification_runs_dir"]) / "corrupt-run" / "run.json"
+        verification_paths = workspace_paths(workspace, workstream_id=verification_workstream_id)
+        corrupt_run_path = Path(verification_paths["verification_runs_dir"]) / "corrupt-run" / "run.json"
         corrupt_run_path.parent.mkdir(parents=True, exist_ok=True)
         corrupt_run_path.write_text("{\n")
         corrupt_starter_run = state_root / "starter-runs" / "corrupt-run" / "run.json"
         corrupt_starter_run.parent.mkdir(parents=True, exist_ok=True)
         corrupt_starter_run.write_text("")
-        runs_after_corruption = list_verification_runs(workspace)
+        runs_after_corruption = list_verification_runs(workspace, workstream_id=verification_workstream_id)
         assert runs_after_corruption["latest_run"]["run_id"] == suite_run["run_id"]
+
+        helper_preflight_workspace = temp_root / "helper-preflight-workspace"
+        helper_preflight_workspace.mkdir()
+        _seed_workspace(helper_preflight_workspace)
+        init_workspace(helper_preflight_workspace)
+        helper_preflight_workstream_id = create_workstream(
+            helper_preflight_workspace,
+            "Helper Preflight",
+            kind="feature",
+            scope_summary="Exercise helper sync and preflight runtime failures.",
+        )["created_workstream_id"]
+        preflight_baseline = helper_preflight_workspace / "tests" / "visual" / "baselines" / "preflight.txt"
+        preflight_baseline.parent.mkdir(parents=True, exist_ok=True)
+        preflight_baseline.write_text("baseline\n")
+        write_verification_recipes(
+            helper_preflight_workspace,
+            {
+                "baseline_policy": {
+                    "canonical_baselines": "project_owned",
+                    "transient_artifacts": "external_state_only",
+                },
+                "cases": [
+                    {
+                        "id": "web-preflight",
+                        "title": "Web helper preflight",
+                        "surface_type": "web",
+                        "runner": "playwright-visual",
+                        "changed_path_globs": ["apps/web/**"],
+                        "host_requirements": ["python"],
+                        "argv": [sys.executable, "-c", "print('should not execute')"],
+                        "target": {"route": "/"},
+                        "device_or_viewport": {"viewport": "1280x800"},
+                        "semantic_assertions": {
+                            "enabled": True,
+                            "report_path": "web-preflight-semantic.json",
+                            "required_checks": ["visibility"],
+                            "targets": [
+                                {
+                                    "target_id": "preflight-main",
+                                    "locator": {"kind": "role", "value": "main"},
+                                }
+                            ],
+                        },
+                        "baseline": {"policy": "project-owned", "source_path": str(preflight_baseline.relative_to(helper_preflight_workspace))},
+                    },
+                    {
+                        "id": "ios-semantic-case",
+                        "title": "iOS semantic helper gap",
+                        "surface_type": "ios",
+                        "runner": "ios-simulator-capture",
+                        "changed_path_globs": ["apps/mobile/ios/**"],
+                        "host_requirements": ["python"],
+                        "argv": [sys.executable, "-c", "print('should not execute')"],
+                        "target": {"screen_id": "ios-home"},
+                        "device_or_viewport": {"device": "ios-simulator"},
+                        "semantic_assertions": {
+                            "enabled": True,
+                            "report_path": "ios-semantic-case.json",
+                            "required_checks": ["visibility"],
+                            "targets": [
+                                {
+                                    "target_id": "ios-home",
+                                    "locator": {"kind": "test_id", "value": "ios-home"},
+                                }
+                            ],
+                        },
+                        "baseline": {"policy": "project-owned", "source_path": str(preflight_baseline.relative_to(helper_preflight_workspace))},
+                    },
+                ],
+                "suites": [{"id": "full", "title": "Full Suite", "case_ids": ["web-preflight"]}],
+            },
+            workstream_id=helper_preflight_workstream_id,
+        )
+        unsynced_preflight_run = start_verification_case(
+            helper_preflight_workspace,
+            "web-preflight",
+            workstream_id=helper_preflight_workstream_id,
+        )
+        unsynced_preflight_run = wait_for_verification_run(
+            helper_preflight_workspace,
+            unsynced_preflight_run["run_id"],
+            timeout_seconds=20,
+            workstream_id=helper_preflight_workstream_id,
+        )
+        assert unsynced_preflight_run["status"] == "failed"
+        assert unsynced_preflight_run["cases"][0]["attempts"] == 0
+        assert unsynced_preflight_run["cases"][0]["semantic_assertions"]["reason"] == "helper_bundle_not_synced"
+        helper_preflight_sync = sync_verification_helpers(helper_preflight_workspace)
+        assert helper_preflight_sync["materialization"]["status"] == "synced"
+        ios_helper_run = start_verification_case(
+            helper_preflight_workspace,
+            "ios-semantic-case",
+            workstream_id=helper_preflight_workstream_id,
+        )
+        ios_helper_run = wait_for_verification_run(
+            helper_preflight_workspace,
+            ios_helper_run["run_id"],
+            timeout_seconds=20,
+            workstream_id=helper_preflight_workstream_id,
+        )
+        assert ios_helper_run["status"] == "failed"
+        assert ios_helper_run["cases"][0]["semantic_assertions"]["reason"] == "runner_not_cataloged"
+        stale_marker = _read_json_file(Path(helper_preflight_sync["marker_path"]))
+        stale_marker["bundle_version"] = "0.7.0"
+        _write_json_file(Path(helper_preflight_sync["marker_path"]), stale_marker)
+        drift_run = start_verification_case(
+            helper_preflight_workspace,
+            "web-preflight",
+            workstream_id=helper_preflight_workstream_id,
+        )
+        drift_run = wait_for_verification_run(
+            helper_preflight_workspace,
+            drift_run["run_id"],
+            timeout_seconds=20,
+            workstream_id=helper_preflight_workstream_id,
+        )
+        assert drift_run["status"] == "failed"
+        assert drift_run["cases"][0]["semantic_assertions"]["reason"] == "helper_bundle_version_drift"
+        helper_preflight_audit = audit_verification_coverage(
+            helper_preflight_workspace,
+            workstream_id=helper_preflight_workstream_id,
+        )
+        helper_preflight_gap_ids = {gap["gap_id"] for gap in helper_preflight_audit["gaps"]}
+        assert "verification-helper-bundle-version-drift" in helper_preflight_gap_ids
+        assert "ios-semantic-case-semantic-runner-not-cataloged" in helper_preflight_gap_ids
 
         commit_repo = temp_root / "commit-style-repo"
         commit_repo.mkdir()
@@ -1389,6 +1865,38 @@ def main() -> int:
                 "id": 5,
                 "method": "tools/call",
                 "params": {
+                    "name": "show_verification_helper_catalog",
+                    "arguments": {
+                        "workspacePath": str(workspace),
+                    },
+                },
+            },
+        )
+        assert response["result"]["structuredContent"]["version_status"] == "synced"
+
+        response = _call_mcp(
+            plugin_root / "scripts" / "agentiux_dev_mcp.py",
+            {
+                "jsonrpc": "2.0",
+                "id": 6,
+                "method": "tools/call",
+                "params": {
+                    "name": "sync_verification_helpers",
+                    "arguments": {
+                        "workspacePath": str(workspace),
+                    },
+                },
+            },
+        )
+        assert response["result"]["structuredContent"]["status"] in {"synced", "already_synced"}
+
+        response = _call_mcp(
+            plugin_root / "scripts" / "agentiux_dev_mcp.py",
+            {
+                "jsonrpc": "2.0",
+                "id": 7,
+                "method": "tools/call",
+                "params": {
                     "name": "suggest_commit_message",
                     "arguments": {
                         "repoRoot": str(commit_repo),
@@ -1416,23 +1924,27 @@ def main() -> int:
         )
         assert response["result"]["structuredContent"]["suggested_branch_name"].startswith("codex/")
 
-        gui_launch = json.loads(
-            subprocess.check_output(
-                ["python3", str(plugin_root / "scripts" / "agentiux_dev_gui.py"), "launch", "--workspace", str(workspace)],
-                text=True,
-                env=os.environ.copy(),
-            )
+        gui_launch_process = subprocess.run(
+            ["python3", str(plugin_root / "scripts" / "agentiux_dev_gui.py"), "launch", "--workspace", str(workspace)],
+            text=True,
+            capture_output=True,
+            env=os.environ.copy(),
+            check=False,
         )
-        try:
-            encoded_workspace = urllib.parse.quote(str(workspace.resolve()), safe="")
-            with urllib.request.urlopen(f"{gui_launch['url']}/api/dashboard?workspace={encoded_workspace}", timeout=20) as response_handle:
-                payload = json.loads(response_handle.read().decode("utf-8"))
-            assert payload["workspace_detail"]["summary"]["workspace_label"] == "demo-workspace"
-            assert payload["workspace_detail"]["verification_runs"]["latest_run"]["run_id"] == suite_run["run_id"]
-            assert payload["workspace_detail"]["workstreams"]["items"]
-            assert payload["stats"]["active_verification_runs"] == 0
-        finally:
-            stop_gui()
+        if gui_launch_process.returncode == 0:
+            gui_launch = json.loads(gui_launch_process.stdout)
+            try:
+                encoded_workspace = urllib.parse.quote(str(workspace.resolve()), safe="")
+                with urllib.request.urlopen(f"{gui_launch['url']}/api/dashboard?workspace={encoded_workspace}", timeout=20) as response_handle:
+                    payload = json.loads(response_handle.read().decode("utf-8"))
+                assert payload["workspace_detail"]["summary"]["workspace_label"] == "demo-workspace"
+                assert payload["workspace_detail"]["verification_runs"]["latest_run"]["run_id"] == suite_run["run_id"]
+                assert payload["workspace_detail"]["workstreams"]["items"]
+                assert payload["stats"]["active_verification_runs"] == 0
+            finally:
+                stop_gui()
+        else:
+            assert "Operation not permitted" in gui_launch_process.stderr or "PermissionError" in gui_launch_process.stderr
 
     print("smoke test passed")
     return 0

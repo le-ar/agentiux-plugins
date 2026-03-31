@@ -117,7 +117,9 @@ CANONICAL_COMMAND_SURFACE = [
     "run verification suite",
     "show verification log",
     "show verification recipes",
+    "show verification helper catalog",
     "audit verification coverage",
+    "sync verification helpers",
     "resolve verification",
     "approve verification baseline",
     "update verification baseline",
@@ -376,9 +378,17 @@ COMMAND_ALIAS_TABLE = {
         "show verification recipes",
         "\u043f\u043e\u043a\u0430\u0436\u0438 verification recipes",
     ],
+    "show verification helper catalog": [
+        "show verification helper catalog",
+        "\u043f\u043e\u043a\u0430\u0436\u0438 verification helper catalog",
+    ],
     "audit verification coverage": [
         "audit verification coverage",
         "\u043f\u0440\u043e\u0432\u0435\u0440\u044c verification coverage",
+    ],
+    "sync verification helpers": [
+        "sync verification helpers",
+        "\u0441\u0438\u043d\u0445\u0440\u043e\u043d\u0438\u0437\u0438\u0440\u0443\u0439 verification helpers",
     ],
     "resolve verification": [
         "resolve verification",
@@ -769,7 +779,7 @@ def state_root() -> Path:
     override = os.getenv("AGENTIUX_DEV_STATE_ROOT")
     if override:
         return Path(override).expanduser().resolve()
-    return (Path.home() / ".codex" / "state" / PLUGIN_NAME).resolve()
+    return (Path.home() / ".agentiux" / PLUGIN_NAME).resolve()
 
 
 def runtime_root() -> Path:
@@ -2629,12 +2639,16 @@ def _fragment_matches(
     fragment: dict[str, Any],
     *,
     selected_profiles: list[str] | None = None,
+    detected_stacks: list[str] | None = None,
     preset_id: str | None = None,
     verification_profile: str | None = None,
     design_platform: str | None = None,
 ) -> bool:
     profiles = fragment.get("profiles") or []
     if profiles and not set(profiles).intersection(selected_profiles or []):
+        return False
+    required_stacks = fragment.get("detectedStacks") or []
+    if required_stacks and not set(required_stacks).intersection(detected_stacks or []):
         return False
     if not _matches_fragment_values(fragment.get("presetIds") or [], preset_id):
         return False
@@ -2714,6 +2728,7 @@ def _resolve_verification_fragments(
         if not _fragment_matches(
             fragment,
             selected_profiles=detection.get("selected_profiles"),
+            detected_stacks=detection.get("detected_stacks"),
             verification_profile=verification_profile,
         ):
             continue

@@ -273,6 +273,41 @@
               "screenshots",
               "diffs"
             ],
+            "semantic_assertions": {
+              "enabled": true,
+              "report_path": "web-home-semantic.json",
+              "required_checks": [
+                "presence_uniqueness",
+                "visibility",
+                "overflow_clipping",
+                "computed_styles",
+                "interaction_states",
+                "scroll_reachability",
+                "occlusion"
+              ],
+              "targets": [
+                {
+                  "target_id": "home-main",
+                  "locator": {
+                    "kind": "role",
+                    "value": "main"
+                  },
+                  "interactions": [
+                    "focus"
+                  ]
+                }
+              ],
+              "auto_scan": true,
+              "heuristics": [
+                "interactive_visibility_scan",
+                "interactive_overflow_scan",
+                "interactive_occlusion_scan"
+              ],
+              "artifacts": {
+                "target_screenshots": true,
+                "debug_snapshots": false
+              }
+            },
             "retry_policy": {
               "attempts": 1
             },
@@ -327,6 +362,43 @@
               "screenshots",
               "diffs"
             ],
+            "semantic_assertions": {
+              "enabled": true,
+              "report_path": "expo-home-semantic.json",
+              "required_checks": [
+                "presence_uniqueness",
+                "visibility",
+                "overflow_clipping",
+                "interaction_states",
+                "scroll_reachability",
+                "occlusion"
+              ],
+              "targets": [
+                {
+                  "target_id": "home-screen",
+                  "locator": {
+                    "kind": "test_id",
+                    "value": "home-screen"
+                  },
+                  "scroll_container_locator": {
+                    "kind": "test_id",
+                    "value": "home-scroll"
+                  },
+                  "interactions": [
+                    "tap"
+                  ]
+                }
+              ],
+              "auto_scan": true,
+              "heuristics": [
+                "interactive_visibility_scan",
+                "interactive_overflow_scan"
+              ],
+              "artifacts": {
+                "target_screenshots": true,
+                "debug_snapshots": false
+              }
+            },
             "retry_policy": {
               "attempts": 1
             },
@@ -342,6 +414,111 @@
             "title": "Full Suite",
             "case_ids": [
               "expo-home"
+            ]
+          }
+        ]
+      }
+    },
+    "starter-android-defaults": {
+      "profiles": [
+        "mobile-platform"
+      ],
+      "detectedStacks": [
+        "android"
+      ],
+      "verification": {
+        "cases": [
+          {
+            "id": "android-home",
+            "title": "Android home deterministic check",
+            "surface_type": "android",
+            "runner": "android-compose-screenshot",
+            "target": {
+              "screen_id": "home"
+            },
+            "cwd": ".",
+            "argv": [
+              "npm",
+              "run",
+              "test",
+              "--",
+              "--help"
+            ],
+            "device_or_viewport": {
+              "device": "android-emulator"
+            },
+            "locale": "en-US",
+            "timezone": "UTC",
+            "color_scheme": "light",
+            "freeze_clock": true,
+            "masks": [],
+            "artifact_expectations": [
+              "screenshots",
+              "diffs"
+            ],
+            "semantic_assertions": {
+              "enabled": true,
+              "report_path": "android-home-semantic.json",
+              "required_checks": [
+                "presence_uniqueness",
+                "visibility",
+                "overflow_clipping",
+                "interaction_states",
+                "scroll_reachability",
+                "occlusion"
+              ],
+              "targets": [
+                {
+                  "target_id": "home-screen",
+                  "locator": {
+                    "kind": "semantics_tag",
+                    "value": "home-screen"
+                  },
+                  "scroll_container_locator": {
+                    "kind": "semantics_tag",
+                    "value": "home-scroll"
+                  }
+                }
+              ],
+              "auto_scan": true,
+              "heuristics": [
+                "interactive_visibility_scan",
+                "interactive_overflow_scan"
+              ],
+              "artifacts": {
+                "target_screenshots": true,
+                "debug_snapshots": false
+              }
+            },
+            "retry_policy": {
+              "attempts": 1
+            },
+            "baseline": {
+              "policy": "project-owned",
+              "source_path": "tests/visual/baselines/android-home.png"
+            },
+            "android_logcat": {
+              "enabled": true,
+              "pid_mode": "none",
+              "clear_on_start": true,
+              "buffers": [
+                "main",
+                "crash"
+              ],
+              "filter_specs": [
+                "*:I"
+              ],
+              "tail_lines_on_failure": 80
+            }
+          }
+        ],
+        "suites": [
+          {
+            "id": "full",
+            "title": "Full Suite",
+            "case_ids": [
+              "expo-home",
+              "android-home"
             ]
           }
         ]
@@ -418,6 +595,41 @@
               "screenshots",
               "diffs"
             ],
+            "semantic_assertions": {
+              "enabled": true,
+              "report_path": "nx-web-smoke-semantic.json",
+              "required_checks": [
+                "presence_uniqueness",
+                "visibility",
+                "overflow_clipping",
+                "computed_styles",
+                "interaction_states",
+                "scroll_reachability",
+                "occlusion"
+              ],
+              "targets": [
+                {
+                  "target_id": "home-main",
+                  "locator": {
+                    "kind": "role",
+                    "value": "main"
+                  },
+                  "interactions": [
+                    "focus"
+                  ]
+                }
+              ],
+              "auto_scan": true,
+              "heuristics": [
+                "interactive_visibility_scan",
+                "interactive_overflow_scan",
+                "interactive_occlusion_scan"
+              ],
+              "artifacts": {
+                "target_screenshots": true,
+                "debug_snapshots": false
+              }
+            },
             "retry_policy": {
               "attempts": 1
             },

@@ -16,6 +16,8 @@ from agentiux_dev_verification import (
     read_verification_recipes,
     read_verification_run,
     resolve_verification_selection,
+    show_verification_helper_catalog,
+    sync_verification_helpers,
     start_verification_case,
     start_verification_suite,
     update_verification_baseline,
@@ -570,9 +572,24 @@ TOOLS = {
     ),
     "audit_verification_coverage": _read_tool(
         "audit_verification_coverage",
-        "Audit warning-level deterministic verification coverage gaps without mutating workspace state.",
+        "Audit warning-level deterministic verification coverage gaps, including missing web or Android visual cases, without mutating workspace state.",
         lambda args: audit_verification_coverage(args["workspacePath"], workstream_id=args.get("workstreamId")),
         {"workstreamId": {"type": "string"}},
+    ),
+    "show_verification_helper_catalog": _read_tool(
+        "show_verification_helper_catalog",
+        "Show the plugin-owned visual helper bundle catalog, supported runners, entrypoints, and materialization status for a workspace.",
+        lambda args: show_verification_helper_catalog(args["workspacePath"]),
+    ),
+    "sync_verification_helpers": _write_tool(
+        "sync_verification_helpers",
+        "Materialize the versioned plugin-owned visual helper bundle into the repository-local generated helper directory.",
+        lambda args: sync_verification_helpers(args["workspacePath"], force=args.get("force", False)),
+        {
+            "workspacePath": {"type": "string"},
+            "force": {"type": "boolean"},
+        },
+        ["workspacePath"],
     ),
     "resolve_verification": _read_tool(
         "resolve_verification",

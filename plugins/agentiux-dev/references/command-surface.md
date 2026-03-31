@@ -19,7 +19,9 @@ AgentiUX Dev exposes a small chat-first command surface.
 - `run verification suite`
 - `show verification log`
 - `show verification recipes`
+- `show verification helper catalog`
 - `audit verification coverage`
+- `sync verification helpers`
 - `approve verification baseline`
 - `update verification baseline`
 - `create workstream`
@@ -58,7 +60,9 @@ AgentiUX Dev exposes a small chat-first command surface.
 - `run verification case` starts one deterministic verification case.
 - `run verification suite` starts a deterministic suite in stable case order.
 - `show verification log` reads stdout, stderr, or Android logcat from the active or selected verification run in external state.
+- `show verification helper catalog` returns the versioned plugin-owned helper bundle catalog plus sync status for the current workspace.
 - `audit verification coverage` reports warning-level QA coverage gaps without mutating workspace state.
+- `sync verification helpers` materializes the generated helper bundle into `.verification/helpers/` for local imports.
 - `approve verification baseline` records approval for a project-owned baseline source path.
 - `update verification baseline` copies a selected verification artifact into a project-owned baseline path.
 - `create workstream` creates a named workstream container with its own external state and an empty stage register that still requires explicit stage-plan confirmation.
