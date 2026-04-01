@@ -414,7 +414,9 @@
                 "presence_uniqueness",
                 "visibility",
                 "overflow_clipping",
+                "computed_styles",
                 "interaction_states",
+                "layout_relations",
                 "scroll_reachability",
                 "occlusion"
               ],
@@ -443,6 +445,17 @@
                 "target_screenshots": true,
                 "debug_snapshots": false
               }
+            },
+            "native_layout_audit": {
+              "enabled": true,
+              "report_path": "expo-home-native-layout-audit.json",
+              "required_checks": [
+                "visibility",
+                "overflow_clipping",
+                "computed_styles",
+                "layout_relations",
+                "occlusion"
+              ]
             },
             "retry_policy": {
               "attempts": 1
@@ -508,7 +521,9 @@
                 "presence_uniqueness",
                 "visibility",
                 "overflow_clipping",
+                "computed_styles",
                 "interaction_states",
+                "layout_relations",
                 "scroll_reachability",
                 "occlusion"
               ],
@@ -534,6 +549,17 @@
                 "target_screenshots": true,
                 "debug_snapshots": false
               }
+            },
+            "native_layout_audit": {
+              "enabled": true,
+              "report_path": "android-home-native-layout-audit.json",
+              "required_checks": [
+                "visibility",
+                "overflow_clipping",
+                "computed_styles",
+                "layout_relations",
+                "occlusion"
+              ]
             },
             "retry_policy": {
               "attempts": 1

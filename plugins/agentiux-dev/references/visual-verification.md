@@ -13,6 +13,7 @@ Deterministic verification is the default closeout path for AgentiUX Dev.
 - Web workspaces should ship at least one visual web case.
 - Web workspaces should also ship at least one live `browser-layout-audit` case so computed overlap, occlusion, clipping, and viewport regressions are exercised against a real rendered page.
 - Android-capable workspaces should ship at least one Android-targeted visual case.
+- Mobile workspaces should also ship at least one `native_layout_audit`-enabled native visual case so overlap, clipping, bounds, spacing, tap-target, and computed-style regressions fail from runner-emitted semantic reports.
 - Canonical baselines should stay project-owned for reproducible CI checks.
 - Transient screenshots, diffs, traces, videos, and plugin packets should stay outside the repo.
 
@@ -43,12 +44,16 @@ Deterministic verification is the default closeout path for AgentiUX Dev.
 - `baseline`
 - `android_logcat`
 - `semantic_assertions`
+- `native_layout_audit`
 - `browser_layout_audit`
 
 ## Optional Semantic Assertions
 
 - `semantic_assertions` is optional for non-visual and non-web cases, but web visual cases should always enable it.
+- `native_layout_audit` is the post-run native geometry/style audit for `detox-visual` and `android-compose-screenshot` cases. It reads the semantic JSON report, validates target bounds and style tokens, detects pair overlap and root overflow, warns on suspicious spacing, rhythm, tap-target, and flex anomalies, and writes a separate audit report under the verification artifact root.
 - `browser_layout_audit` is the live browser DOM audit config for cases that must verify a rendered page directly instead of relying only on runner-emitted semantic JSON.
+- The shared rule catalog lives in `catalogs/layout_audit_rules.json`. Browser and native audit adapters should read thresholds from that catalog instead of hardcoding drift and gap tolerances separately.
+- `warning` is a non-green verification state for both browser and native layout audits. Use it when the layout looks suspicious enough to review even if there is no hard overlap or clipping failure yet.
 - Projects should materialize the plugin-owned helper bundle into `.verification/helpers/` before importing runner helpers.
 - The helper catalog is read-only and reports bundle version, runner entrypoints, required host tools, and current materialization status.
 - When enabled, the runner must emit a JSON report into the verification artifact root.
@@ -58,6 +63,13 @@ Deterministic verification is the default closeout path for AgentiUX Dev.
 - Shared check families are `presence_uniqueness`, `visibility`, `scroll_reachability`, `overflow_clipping`, `occlusion`, `interaction_states`, `computed_styles`, `layout_relations`, `text_overflow`, `accessibility_state`, and `screenshot_baseline`.
 - Required checks for web visual cases: `presence_uniqueness`, `visibility`, `overflow_clipping`, `computed_styles`, `interaction_states`, `scroll_reachability`, `occlusion`.
 - Recommended checks for Android: `visibility`, `overflow_clipping`, `interaction_states`, `scroll_reachability`, `occlusion`.
+
+## Shared Layout Rules
+
+- Cross-surface layout rules currently include `pair-overlap`, `sibling-gap-inconsistency`, `alignment-drift`, `vertical-rhythm-drift`, `touch-target-too-small`, and `unexpected-flex-distribution`.
+- Cross-surface warning rules should be treated as review gates, not as informational logs only.
+- Web-specific rules currently include `viewport-overflow`, `container-padding-imbalance`, `contrast-warning`, and `ragged-grid-warning`.
+- Native-first rules may extend the shared set when helper payloads expose more metadata, but thresholds should still live in the shared catalog.
 
 ## Web
 
@@ -80,6 +92,7 @@ Deterministic verification is the default closeout path for AgentiUX Dev.
 - Persist stable screen names, device targets, and masked dynamic regions in the design handoff.
 - Prefer one screen-state pair per verification case and stable suites for broader regression runs.
 - If semantic assertions are enabled, make Detox emit a JSON report that records required UI-state checks in addition to screenshots.
+- Prefer enabling `native_layout_audit` on Detox visual cases so React Native layouts are checked for overlap, clipping, occlusion, missing style data, suspicious spacing drift, and undersized tap targets even when screenshot diffs are noisy.
 
 ## Android
 
@@ -88,6 +101,7 @@ Deterministic verification is the default closeout path for AgentiUX Dev.
 - Mirror Logcat into external verification state when Android execution is active.
 - Prefer package- or pid-scoped Logcat capture when the test runner can resolve the app process deterministically.
 - If semantic assertions are enabled, emit a JSON report for visibility, clipping, interaction-state, scroll, and occlusion checks.
+- Prefer wiring Compose semantic helpers so `computed_styles`, `layout_relations`, `overflow_clipping`, and `occlusion` diagnostics are present for `native_layout_audit`.
 
 ## iOS
 

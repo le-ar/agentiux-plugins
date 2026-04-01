@@ -1,0 +1,119 @@
+{
+  "schema_version": 1,
+  "catalog_id": "layout-audit-rules",
+  "rules": [
+    {
+      "id": "pair-overlap",
+      "family": "layout",
+      "default_severity": "error",
+      "supported_surfaces": ["web", "native"],
+      "thresholds": {
+        "epsilon_px": 2,
+        "ratio_threshold": 0.04
+      }
+    },
+    {
+      "id": "viewport-overflow",
+      "family": "layout",
+      "default_severity": "error",
+      "supported_surfaces": ["web"],
+      "thresholds": {
+        "epsilon_px": 2
+      }
+    },
+    {
+      "id": "occlusion",
+      "family": "layout",
+      "default_severity": "error",
+      "supported_surfaces": ["web", "native"],
+      "thresholds": {}
+    },
+    {
+      "id": "edge-gutter-imbalance",
+      "family": "layout",
+      "default_severity": "warning",
+      "supported_surfaces": ["web", "native"],
+      "thresholds": {
+        "difference_px": 8,
+        "ratio_threshold": 0.25
+      }
+    },
+    {
+      "id": "sibling-gap-inconsistency",
+      "family": "layout",
+      "default_severity": "warning",
+      "supported_surfaces": ["web", "native"],
+      "thresholds": {
+        "difference_px": 8,
+        "ratio_threshold": 0.3
+      }
+    },
+    {
+      "id": "alignment-drift",
+      "family": "layout",
+      "default_severity": "warning",
+      "supported_surfaces": ["web", "native"],
+      "thresholds": {
+        "drift_px": 8
+      }
+    },
+    {
+      "id": "vertical-rhythm-drift",
+      "family": "layout",
+      "default_severity": "warning",
+      "supported_surfaces": ["web", "native"],
+      "thresholds": {
+        "difference_px": 12,
+        "ratio_threshold": 0.3
+      }
+    },
+    {
+      "id": "touch-target-too-small",
+      "family": "layout",
+      "default_severity": "warning",
+      "supported_surfaces": ["web", "native"],
+      "thresholds": {
+        "min_width": 44,
+        "min_height": 44
+      }
+    },
+    {
+      "id": "unexpected-flex-distribution",
+      "family": "mixed",
+      "default_severity": "warning",
+      "supported_surfaces": ["web", "native"],
+      "thresholds": {
+        "ratio_threshold": 1.8,
+        "cross_axis_tolerance_px": 16
+      }
+    },
+    {
+      "id": "container-padding-imbalance",
+      "family": "layout",
+      "default_severity": "warning",
+      "supported_surfaces": ["web"],
+      "thresholds": {
+        "difference_px": 8,
+        "ratio_threshold": 0.25
+      }
+    },
+    {
+      "id": "contrast-warning",
+      "family": "computed",
+      "default_severity": "warning",
+      "supported_surfaces": ["web"],
+      "thresholds": {
+        "minimum_ratio": 4.5
+      }
+    },
+    {
+      "id": "ragged-grid-warning",
+      "family": "mixed",
+      "default_severity": "warning",
+      "supported_surfaces": ["web"],
+      "thresholds": {
+        "edge_drift_px": 12
+      }
+    }
+  ]
+}

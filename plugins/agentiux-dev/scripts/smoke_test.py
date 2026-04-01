@@ -1350,7 +1350,10 @@ def main() -> int:
         assert "missing-web-visual-verification" in visual_gap_ids
         assert "missing-web-browser-layout-audit" in visual_gap_ids
         assert "missing-android-visual-verification" not in visual_gap_ids
+        assert "missing-mobile-native-layout-audit" not in visual_gap_ids
+        assert "missing-android-native-layout-audit" not in visual_gap_ids
         assert visual_gap_audit["coverage"]["android_visual"] is True
+        assert visual_gap_audit["coverage"]["android_native_layout_audit"] is True
         web_semantic_gap_workspace = temp_root / "web-semantic-gap-workspace"
         web_semantic_gap_workspace.mkdir()
         _seed_web_only_workspace(web_semantic_gap_workspace)
@@ -1840,7 +1843,7 @@ def main() -> int:
             "    }\n"
             "    [data-testid='primary-panel'] { width: 220px; background: #ffffff; }\n"
             "    [data-testid='secondary-panel'] { width: 220px; margin-left: -96px; background: rgba(180, 52, 35, 0.82); color: #fff; }\n"
-            "    [data-testid='layout-action'] { display: inline-flex; margin-top: 56px; padding: 8px 14px; }\n"
+            "    [data-testid='layout-action'] { display: inline-flex; align-items: center; min-height: 44px; margin-top: 56px; padding: 12px 18px; }\n"
             "  </style>\n"
             "</head>\n"
             "<body>\n"
@@ -1852,6 +1855,46 @@ def main() -> int:
             "      </section>\n"
             "      <aside data-testid=\"secondary-panel\">Secondary panel overlaps the primary content.</aside>\n"
             "    </div>\n"
+            "  </main>\n"
+            "</body>\n"
+            "</html>\n"
+        )
+        warning_layout_root = workspace / "browser-layout-audit" / "warning"
+        warning_layout_root.mkdir(parents=True, exist_ok=True)
+        warning_layout_root.joinpath("index.html").write_text(
+            "<!doctype html>\n"
+            "<html lang=\"en\">\n"
+            "<head>\n"
+            "  <meta charset=\"utf-8\">\n"
+            "  <meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">\n"
+            "  <title>Warning Layout</title>\n"
+            "  <style>\n"
+            "    body { margin: 0; font: 16px/1.4 sans-serif; background: #f3f1ea; color: #181511; }\n"
+            "    [data-testid='layout-shell'] { padding: 12px; }\n"
+            "    [data-testid='layout-stack'] {\n"
+            "      box-sizing: border-box; display: flex; flex-direction: column; width: 320px; padding: 24px 6px 18px 24px;\n"
+            "      border: 1px solid #111; background: #fbf8ef;\n"
+            "    }\n"
+            "    [data-testid='stack-card'] {\n"
+            "      box-sizing: border-box; width: 240px; min-height: 72px; padding: 16px; border: 1px solid #111; background: #fffdfa;\n"
+            "    }\n"
+            "    [data-testid='stack-card'] + [data-testid='stack-card'] { margin-top: 12px; }\n"
+            "    [data-testid='stack-card'].delayed { margin-top: 38px; }\n"
+            "    [data-testid='warning-cta'] {\n"
+            "      align-self: flex-start; margin-top: 18px; padding: 6px 10px; border: 1px solid #111; background: #181511; color: #fffdfa;\n"
+            "    }\n"
+            "    [data-testid='subtle-copy'] { margin-top: 10px; color: #a5a091; }\n"
+            "  </style>\n"
+            "</head>\n"
+            "<body>\n"
+            "  <main data-testid=\"layout-shell\">\n"
+            "    <section class=\"content-grid\" data-testid=\"layout-stack\">\n"
+            "      <article data-testid=\"stack-card\">Primary summary card</article>\n"
+            "      <article data-testid=\"stack-card\">Secondary card with smaller gap above</article>\n"
+            "      <article class=\"delayed\" data-testid=\"stack-card\">Tertiary card drifts the vertical rhythm.</article>\n"
+            "      <button data-testid=\"warning-cta\">Go</button>\n"
+            "      <p data-testid=\"subtle-copy\">Low-contrast helper copy should be reviewed.</p>\n"
+            "    </section>\n"
             "  </main>\n"
             "</body>\n"
             "</html>\n"
@@ -1874,7 +1917,7 @@ def main() -> int:
             "    }\n"
             "    [data-testid='primary-panel'] { background: #ffffff; }\n"
             "    [data-testid='secondary-panel'] { background: #dfe8db; }\n"
-            "    [data-testid='layout-action'] { display: inline-flex; margin-top: 56px; padding: 8px 14px; }\n"
+            "    [data-testid='layout-action'] { display: inline-flex; align-items: center; min-height: 44px; margin-top: 56px; padding: 12px 18px; }\n"
             "  </style>\n"
             "</head>\n"
             "<body>\n"
@@ -1891,7 +1934,517 @@ def main() -> int:
             "</html>\n"
         )
         broken_layout_port = _reserve_local_port()
+        warning_layout_port = _reserve_local_port()
         fixed_layout_port = _reserve_local_port()
+
+        def rect_payload(left: int, top: int, right: int, bottom: int) -> dict[str, int | bool]:
+            return {
+                "present": True,
+                "left": left,
+                "top": top,
+                "right": right,
+                "bottom": bottom,
+                "width": right - left,
+                "height": bottom - top,
+            }
+
+        def semantic_check(check_id: str, status: str = "passed", diagnostics: dict[str, object] | None = None) -> dict[str, object]:
+            return {
+                "id": check_id,
+                "status": status,
+                "diagnostics": diagnostics or {},
+            }
+
+        def semantic_target(target_id: str, checks: list[dict[str, object]], status: str = "passed") -> dict[str, object]:
+            return {
+                "target_id": target_id,
+                "status": status,
+                "checks": checks,
+            }
+
+        def semantic_report(runner: str, targets: list[dict[str, object]]) -> dict[str, object]:
+            summary_status = "passed" if all(target["status"] == "passed" for target in targets) else "failed"
+            return {
+                "schema_version": 2,
+                "runner": runner,
+                "helper_bundle_version": "0.8.0",
+                "summary": {"status": summary_status},
+                "targets": targets,
+            }
+
+        mobile_root_bounds = rect_payload(0, 0, 360, 720)
+        expo_home_report = semantic_report(
+            "detox-visual",
+            [
+                semantic_target(
+                    "home-screen",
+                    [
+                        semantic_check("presence_uniqueness"),
+                        semantic_check("visibility"),
+                        semantic_check(
+                            "overflow_clipping",
+                            diagnostics={
+                                "clipping": {
+                                    "clipped": False,
+                                    "target_bounds": rect_payload(12, 24, 348, 696),
+                                    "root_bounds": mobile_root_bounds,
+                                }
+                            },
+                        ),
+                        semantic_check(
+                            "computed_styles",
+                            diagnostics={
+                                "style_tokens": {
+                                    "width": 336,
+                                    "height": 672,
+                                    "enabled": True,
+                                    "selected": False,
+                                    "textLength": 18,
+                                },
+                                "mismatches": [],
+                            },
+                        ),
+                        semantic_check("interaction_states"),
+                        semantic_check(
+                            "layout_relations",
+                            diagnostics={
+                                "layout": {
+                                    "bounds_in_root": rect_payload(12, 24, 348, 696),
+                                    "root_bounds": mobile_root_bounds,
+                                }
+                            },
+                        ),
+                        semantic_check("scroll_reachability"),
+                        semantic_check("occlusion", diagnostics={"metadata": {"occluded": False}}),
+                        semantic_check("text_overflow", diagnostics={"text_overflow": {"truncated": False}}),
+                    ],
+                )
+            ],
+        )
+        expo_layout_overlap_report = semantic_report(
+            "detox-visual",
+            [
+                semantic_target(
+                    "home-card",
+                    [
+                        semantic_check("presence_uniqueness"),
+                        semantic_check("visibility"),
+                        semantic_check(
+                            "overflow_clipping",
+                            diagnostics={
+                                "clipping": {
+                                    "clipped": False,
+                                    "target_bounds": rect_payload(16, 24, 176, 228),
+                                    "root_bounds": mobile_root_bounds,
+                                }
+                            },
+                        ),
+                        semantic_check(
+                            "computed_styles",
+                            diagnostics={
+                                "style_tokens": {"width": 160, "height": 204, "background": "#ffffff"},
+                                "mismatches": [],
+                            },
+                        ),
+                        semantic_check("interaction_states"),
+                        semantic_check(
+                            "layout_relations",
+                            diagnostics={
+                                "layout": {
+                                    "bounds_in_root": rect_payload(16, 24, 176, 228),
+                                    "root_bounds": mobile_root_bounds,
+                                }
+                            },
+                        ),
+                        semantic_check("scroll_reachability"),
+                        semantic_check("occlusion", diagnostics={"metadata": {"occluded": False}}),
+                    ],
+                ),
+                semantic_target(
+                    "home-overlay",
+                    [
+                        semantic_check("presence_uniqueness"),
+                        semantic_check("visibility"),
+                        semantic_check(
+                            "overflow_clipping",
+                            diagnostics={
+                                "clipping": {
+                                    "clipped": False,
+                                    "target_bounds": rect_payload(132, 80, 316, 284),
+                                    "root_bounds": mobile_root_bounds,
+                                }
+                            },
+                        ),
+                        semantic_check(
+                            "computed_styles",
+                            diagnostics={
+                                "style_tokens": {"width": 184, "height": 204, "background": "#f75f49"},
+                                "mismatches": [],
+                            },
+                        ),
+                        semantic_check("interaction_states"),
+                        semantic_check(
+                            "layout_relations",
+                            diagnostics={
+                                "layout": {
+                                    "bounds_in_root": rect_payload(132, 80, 316, 284),
+                                    "root_bounds": mobile_root_bounds,
+                                }
+                            },
+                        ),
+                        semantic_check("scroll_reachability"),
+                        semantic_check("occlusion", diagnostics={"metadata": {"occluded": False}}),
+                    ],
+                ),
+            ],
+        )
+        expo_gutter_warning_report = semantic_report(
+            "detox-visual",
+            [
+                semantic_target(
+                    "home-left-card",
+                    [
+                        semantic_check("presence_uniqueness"),
+                        semantic_check("visibility"),
+                        semantic_check(
+                            "overflow_clipping",
+                            diagnostics={
+                                "clipping": {
+                                    "clipped": False,
+                                    "target_bounds": rect_payload(24, 24, 192, 228),
+                                    "root_bounds": mobile_root_bounds,
+                                }
+                            },
+                        ),
+                        semantic_check(
+                            "computed_styles",
+                            diagnostics={
+                                "style_tokens": {"width": 168, "height": 204, "background": "#ffffff"},
+                                "mismatches": [],
+                            },
+                        ),
+                        semantic_check("interaction_states"),
+                        semantic_check(
+                            "layout_relations",
+                            diagnostics={
+                                "layout": {
+                                    "bounds_in_root": rect_payload(24, 24, 192, 228),
+                                    "root_bounds": mobile_root_bounds,
+                                }
+                            },
+                        ),
+                        semantic_check("scroll_reachability"),
+                        semantic_check("occlusion", diagnostics={"metadata": {"occluded": False}}),
+                    ],
+                ),
+                semantic_target(
+                    "home-right-card",
+                    [
+                        semantic_check("presence_uniqueness"),
+                        semantic_check("visibility"),
+                        semantic_check(
+                            "overflow_clipping",
+                            diagnostics={
+                                "clipping": {
+                                    "clipped": False,
+                                    "target_bounds": rect_payload(208, 24, 354, 228),
+                                    "root_bounds": mobile_root_bounds,
+                                }
+                            },
+                        ),
+                        semantic_check(
+                            "computed_styles",
+                            diagnostics={
+                                "style_tokens": {"width": 146, "height": 204, "background": "#dfe8db"},
+                                "mismatches": [],
+                            },
+                        ),
+                        semantic_check("interaction_states"),
+                        semantic_check(
+                            "layout_relations",
+                            diagnostics={
+                                "layout": {
+                                    "bounds_in_root": rect_payload(208, 24, 354, 228),
+                                    "root_bounds": mobile_root_bounds,
+                                }
+                            },
+                        ),
+                        semantic_check("scroll_reachability"),
+                        semantic_check("occlusion", diagnostics={"metadata": {"occluded": False}}),
+                    ],
+                ),
+            ],
+        )
+        expo_spacing_warning_report = semantic_report(
+            "detox-visual",
+            [
+                semantic_target(
+                    "stack-card-a",
+                    [
+                        semantic_check("presence_uniqueness"),
+                        semantic_check("visibility"),
+                        semantic_check(
+                            "overflow_clipping",
+                            diagnostics={
+                                "clipping": {
+                                    "clipped": False,
+                                    "target_bounds": rect_payload(16, 24, 344, 156),
+                                    "root_bounds": mobile_root_bounds,
+                                }
+                            },
+                        ),
+                        semantic_check(
+                            "computed_styles",
+                            diagnostics={
+                                "style_tokens": {"width": 328, "height": 132, "background": "#ffffff"},
+                                "mismatches": [],
+                            },
+                        ),
+                        semantic_check("interaction_states"),
+                        semantic_check(
+                            "layout_relations",
+                            diagnostics={
+                                "layout": {
+                                    "bounds_in_root": rect_payload(16, 24, 344, 156),
+                                    "root_bounds": mobile_root_bounds,
+                                }
+                            },
+                        ),
+                        semantic_check("scroll_reachability"),
+                        semantic_check("occlusion", diagnostics={"metadata": {"occluded": False}}),
+                    ],
+                ),
+                semantic_target(
+                    "stack-card-b",
+                    [
+                        semantic_check("presence_uniqueness"),
+                        semantic_check("visibility"),
+                        semantic_check(
+                            "overflow_clipping",
+                            diagnostics={
+                                "clipping": {
+                                    "clipped": False,
+                                    "target_bounds": rect_payload(16, 168, 344, 300),
+                                    "root_bounds": mobile_root_bounds,
+                                }
+                            },
+                        ),
+                        semantic_check(
+                            "computed_styles",
+                            diagnostics={
+                                "style_tokens": {"width": 328, "height": 132, "background": "#f7f3e9"},
+                                "mismatches": [],
+                            },
+                        ),
+                        semantic_check("interaction_states"),
+                        semantic_check(
+                            "layout_relations",
+                            diagnostics={
+                                "layout": {
+                                    "bounds_in_root": rect_payload(16, 168, 344, 300),
+                                    "root_bounds": mobile_root_bounds,
+                                }
+                            },
+                        ),
+                        semantic_check("scroll_reachability"),
+                        semantic_check("occlusion", diagnostics={"metadata": {"occluded": False}}),
+                    ],
+                ),
+                semantic_target(
+                    "stack-card-c",
+                    [
+                        semantic_check("presence_uniqueness"),
+                        semantic_check("visibility"),
+                        semantic_check(
+                            "overflow_clipping",
+                            diagnostics={
+                                "clipping": {
+                                    "clipped": False,
+                                    "target_bounds": rect_payload(16, 344, 344, 476),
+                                    "root_bounds": mobile_root_bounds,
+                                }
+                            },
+                        ),
+                        semantic_check(
+                            "computed_styles",
+                            diagnostics={
+                                "style_tokens": {"width": 328, "height": 132, "background": "#dfe8db"},
+                                "mismatches": [],
+                            },
+                        ),
+                        semantic_check("interaction_states"),
+                        semantic_check(
+                            "layout_relations",
+                            diagnostics={
+                                "layout": {
+                                    "bounds_in_root": rect_payload(16, 344, 344, 476),
+                                    "root_bounds": mobile_root_bounds,
+                                }
+                            },
+                        ),
+                        semantic_check("scroll_reachability"),
+                        semantic_check("occlusion", diagnostics={"metadata": {"occluded": False}}),
+                    ],
+                ),
+                semantic_target(
+                    "tiny-cta",
+                    [
+                        semantic_check("presence_uniqueness"),
+                        semantic_check("visibility"),
+                        semantic_check(
+                            "overflow_clipping",
+                            diagnostics={
+                                "clipping": {
+                                    "clipped": False,
+                                    "target_bounds": rect_payload(16, 520, 44, 548),
+                                    "root_bounds": mobile_root_bounds,
+                                }
+                            },
+                        ),
+                        semantic_check(
+                            "computed_styles",
+                            diagnostics={
+                                "style_tokens": {"width": 28, "height": 28, "background": "#101820"},
+                                "mismatches": [],
+                            },
+                        ),
+                        semantic_check("interaction_states"),
+                        semantic_check(
+                            "layout_relations",
+                            diagnostics={
+                                "layout": {
+                                    "bounds_in_root": rect_payload(16, 520, 44, 548),
+                                    "root_bounds": mobile_root_bounds,
+                                }
+                            },
+                        ),
+                        semantic_check("scroll_reachability"),
+                        semantic_check("occlusion", diagnostics={"metadata": {"occluded": False}}),
+                    ],
+                ),
+            ],
+        )
+        android_style_mismatch_report = semantic_report(
+            "android-compose-screenshot",
+            [
+                semantic_target(
+                    "android-card",
+                    [
+                        semantic_check("presence_uniqueness"),
+                        semantic_check("visibility"),
+                        semantic_check(
+                            "overflow_clipping",
+                            diagnostics={
+                                "clipping": {
+                                    "clipped": False,
+                                    "target_bounds": rect_payload(16, 24, 344, 212),
+                                    "root_bounds": mobile_root_bounds,
+                                }
+                            },
+                        ),
+                        semantic_check(
+                            "computed_styles",
+                            status="failed",
+                            diagnostics={
+                                "style_tokens": {"width": 328, "height": 188, "background": "#ffffff"},
+                                "mismatches": [
+                                    {"field": "background", "expected": "#101820", "actual": "#ffffff"}
+                                ],
+                            },
+                        ),
+                        semantic_check("interaction_states"),
+                        semantic_check(
+                            "layout_relations",
+                            diagnostics={
+                                "layout": {
+                                    "bounds_in_root": rect_payload(16, 24, 344, 212),
+                                    "root_bounds": mobile_root_bounds,
+                                }
+                            },
+                        ),
+                        semantic_check("scroll_reachability"),
+                        semantic_check("occlusion", diagnostics={"metadata": {"occluded": False}}),
+                    ],
+                )
+            ],
+        )
+        android_fixed_report = semantic_report(
+            "android-compose-screenshot",
+            [
+                semantic_target(
+                    "android-left-card",
+                    [
+                        semantic_check("presence_uniqueness"),
+                        semantic_check("visibility"),
+                        semantic_check(
+                            "overflow_clipping",
+                            diagnostics={
+                                "clipping": {
+                                    "clipped": False,
+                                    "target_bounds": rect_payload(16, 24, 168, 220),
+                                    "root_bounds": mobile_root_bounds,
+                                }
+                            },
+                        ),
+                        semantic_check(
+                            "computed_styles",
+                            diagnostics={
+                                "style_tokens": {"width": 152, "height": 196, "background": "#f7f4ed"},
+                                "mismatches": [],
+                            },
+                        ),
+                        semantic_check("interaction_states"),
+                        semantic_check(
+                            "layout_relations",
+                            diagnostics={
+                                "layout": {
+                                    "bounds_in_root": rect_payload(16, 24, 168, 220),
+                                    "root_bounds": mobile_root_bounds,
+                                }
+                            },
+                        ),
+                        semantic_check("scroll_reachability"),
+                        semantic_check("occlusion", diagnostics={"metadata": {"occluded": False}}),
+                    ],
+                ),
+                semantic_target(
+                    "android-right-card",
+                    [
+                        semantic_check("presence_uniqueness"),
+                        semantic_check("visibility"),
+                        semantic_check(
+                            "overflow_clipping",
+                            diagnostics={
+                                "clipping": {
+                                    "clipped": False,
+                                    "target_bounds": rect_payload(184, 24, 344, 220),
+                                    "root_bounds": mobile_root_bounds,
+                                }
+                            },
+                        ),
+                        semantic_check(
+                            "computed_styles",
+                            diagnostics={
+                                "style_tokens": {"width": 160, "height": 196, "background": "#dde9df"},
+                                "mismatches": [],
+                            },
+                        ),
+                        semantic_check("interaction_states"),
+                        semantic_check(
+                            "layout_relations",
+                            diagnostics={
+                                "layout": {
+                                    "bounds_in_root": rect_payload(184, 24, 344, 220),
+                                    "root_bounds": mobile_root_bounds,
+                                }
+                            },
+                        ),
+                        semantic_check("scroll_reachability"),
+                        semantic_check("occlusion", diagnostics={"metadata": {"occluded": False}}),
+                    ],
+                ),
+            ],
+        )
         verification_recipes = write_verification_recipes(
             workspace,
             {
@@ -2001,24 +2554,7 @@ def main() -> int:
                                 "artifact_dir = pathlib.Path(os.environ['VERIFICATION_ARTIFACT_DIR']); "
                                 "artifact_dir.mkdir(parents=True, exist_ok=True); "
                                 "(artifact_dir / 'expo-home.txt').write_text('expo home ok\\n'); "
-                                "(artifact_dir / 'expo-home-semantic.json').write_text(json.dumps({"
-                                "'schema_version': 2, "
-                                "'runner': 'detox-visual', "
-                                "'helper_bundle_version': '0.8.0', "
-                                "'summary': {'status': 'passed'}, "
-                                "'targets': [{"
-                                "'target_id': 'home-screen', "
-                                "'status': 'passed', "
-                                "'checks': ["
-                                "{'id': 'presence_uniqueness', 'status': 'passed'}, "
-                                "{'id': 'visibility', 'status': 'passed'}, "
-                                "{'id': 'overflow_clipping', 'status': 'passed'}, "
-                                "{'id': 'interaction_states', 'status': 'passed'}, "
-                                "{'id': 'scroll_reachability', 'status': 'passed'}, "
-                                "{'id': 'occlusion', 'status': 'passed'}"
-                                "]"
-                                "}]"
-                                "})); "
+                                f"(artifact_dir / 'expo-home-semantic.json').write_text({repr(json.dumps(expo_home_report))}); "
                                 "print('expo-home start'); sys.stdout.flush(); "
                                 "time.sleep(1.6); "
                                 "print('expo-home done')"
@@ -2039,7 +2575,9 @@ def main() -> int:
                                 "presence_uniqueness",
                                 "visibility",
                                 "overflow_clipping",
+                                "computed_styles",
                                 "interaction_states",
+                                "layout_relations",
                                 "scroll_reachability",
                                 "occlusion",
                             ],
@@ -2061,6 +2599,17 @@ def main() -> int:
                                 "debug_snapshots": False,
                             },
                         },
+                        "native_layout_audit": {
+                            "enabled": True,
+                            "report_path": "expo-home-native-layout-audit.json",
+                            "required_checks": [
+                                "visibility",
+                                "overflow_clipping",
+                                "computed_styles",
+                                "layout_relations",
+                                "occlusion",
+                            ],
+                        },
                         "retry_policy": {"attempts": 1, "slow_after_seconds": 1},
                         "host_requirements": ["python", "adb"],
                         "baseline": {"policy": "project-owned", "source_path": "tests/visual/baselines/expo-home.txt"},
@@ -2073,6 +2622,321 @@ def main() -> int:
                             "filter_specs": ["*:I"],
                             "tail_lines_on_failure": 20,
                         },
+                    },
+                    {
+                        "id": "expo-native-layout-overlap",
+                        "title": "Expo native layout overlap detection",
+                        "surface_type": "mobile",
+                        "runner": "detox-visual",
+                        "tags": ["mobile", "expo", "layout"],
+                        "feature_ids": ["native-layout-audit"],
+                        "surface_ids": ["expo-layout-overlap"],
+                        "routes_or_screens": ["layout-overlap"],
+                        "changed_path_globs": ["apps/mobile/**"],
+                        "host_requirements": ["python"],
+                        "argv": [
+                            sys.executable,
+                            "-c",
+                            (
+                                "import os, pathlib; "
+                                "artifact_dir = pathlib.Path(os.environ['VERIFICATION_ARTIFACT_DIR']); "
+                                "artifact_dir.mkdir(parents=True, exist_ok=True); "
+                                f"(artifact_dir / 'expo-native-layout-overlap.json').write_text({repr(json.dumps(expo_layout_overlap_report))}); "
+                                "print('expo-native-layout-overlap done')"
+                            ),
+                        ],
+                        "target": {"screen_id": "layout-overlap"},
+                        "device_or_viewport": {"device": "android-emulator"},
+                        "semantic_assertions": {
+                            "enabled": True,
+                            "report_path": "expo-native-layout-overlap.json",
+                            "required_checks": [
+                                "presence_uniqueness",
+                                "visibility",
+                                "overflow_clipping",
+                                "computed_styles",
+                                "interaction_states",
+                                "layout_relations",
+                                "scroll_reachability",
+                                "occlusion",
+                            ],
+                            "targets": [
+                                {
+                                    "target_id": "home-card",
+                                    "locator": {"kind": "test_id", "value": "home-card"},
+                                },
+                                {
+                                    "target_id": "home-overlay",
+                                    "locator": {"kind": "test_id", "value": "home-overlay"},
+                                },
+                            ],
+                        },
+                        "native_layout_audit": {
+                            "enabled": True,
+                            "report_path": "expo-native-layout-overlap-audit.json",
+                            "required_checks": [
+                                "visibility",
+                                "overflow_clipping",
+                                "computed_styles",
+                                "layout_relations",
+                                "occlusion",
+                            ],
+                        },
+                        "retry_policy": {"attempts": 1, "slow_after_seconds": 1},
+                        "baseline": {"policy": "project-owned", "source_path": "tests/visual/baselines/expo-layout-overlap.txt"},
+                    },
+                    {
+                        "id": "expo-native-gutter-warning",
+                        "title": "Expo native gutter imbalance warning",
+                        "surface_type": "mobile",
+                        "runner": "detox-visual",
+                        "tags": ["mobile", "expo", "layout", "warning"],
+                        "feature_ids": ["native-layout-audit"],
+                        "surface_ids": ["expo-gutter-warning"],
+                        "routes_or_screens": ["layout-gutter-warning"],
+                        "changed_path_globs": ["apps/mobile/**"],
+                        "host_requirements": ["python"],
+                        "argv": [
+                            sys.executable,
+                            "-c",
+                            (
+                                "import os, pathlib; "
+                                "artifact_dir = pathlib.Path(os.environ['VERIFICATION_ARTIFACT_DIR']); "
+                                "artifact_dir.mkdir(parents=True, exist_ok=True); "
+                                f"(artifact_dir / 'expo-native-gutter-warning.json').write_text({repr(json.dumps(expo_gutter_warning_report))}); "
+                                "print('expo-native-gutter-warning done')"
+                            ),
+                        ],
+                        "target": {"screen_id": "layout-gutter-warning"},
+                        "device_or_viewport": {"device": "android-emulator"},
+                        "semantic_assertions": {
+                            "enabled": True,
+                            "report_path": "expo-native-gutter-warning.json",
+                            "required_checks": [
+                                "presence_uniqueness",
+                                "visibility",
+                                "overflow_clipping",
+                                "computed_styles",
+                                "interaction_states",
+                                "layout_relations",
+                                "scroll_reachability",
+                                "occlusion",
+                            ],
+                            "targets": [
+                                {
+                                    "target_id": "home-left-card",
+                                    "locator": {"kind": "test_id", "value": "home-left-card"},
+                                },
+                                {
+                                    "target_id": "home-right-card",
+                                    "locator": {"kind": "test_id", "value": "home-right-card"},
+                                },
+                            ],
+                        },
+                        "native_layout_audit": {
+                            "enabled": True,
+                            "report_path": "expo-native-gutter-warning-audit.json",
+                            "required_checks": [
+                                "visibility",
+                                "overflow_clipping",
+                                "computed_styles",
+                                "layout_relations",
+                                "occlusion",
+                            ],
+                        },
+                        "retry_policy": {"attempts": 1, "slow_after_seconds": 1},
+                        "baseline": {"policy": "project-owned", "source_path": "tests/visual/baselines/expo-gutter-warning.txt"},
+                    },
+                    {
+                        "id": "expo-native-spacing-warning",
+                        "title": "Expo native spacing and tap-target warnings",
+                        "surface_type": "mobile",
+                        "runner": "detox-visual",
+                        "tags": ["mobile", "expo", "layout", "warning"],
+                        "feature_ids": ["native-layout-audit"],
+                        "surface_ids": ["expo-spacing-warning"],
+                        "routes_or_screens": ["layout-spacing-warning"],
+                        "changed_path_globs": ["apps/mobile/**"],
+                        "host_requirements": ["python"],
+                        "argv": [
+                            sys.executable,
+                            "-c",
+                            (
+                                "import os, pathlib; "
+                                "artifact_dir = pathlib.Path(os.environ['VERIFICATION_ARTIFACT_DIR']); "
+                                "artifact_dir.mkdir(parents=True, exist_ok=True); "
+                                f"(artifact_dir / 'expo-native-spacing-warning.json').write_text({repr(json.dumps(expo_spacing_warning_report))}); "
+                                "print('expo-native-spacing-warning done')"
+                            ),
+                        ],
+                        "target": {"screen_id": "layout-spacing-warning"},
+                        "device_or_viewport": {"device": "android-emulator"},
+                        "semantic_assertions": {
+                            "enabled": True,
+                            "report_path": "expo-native-spacing-warning.json",
+                            "required_checks": [
+                                "presence_uniqueness",
+                                "visibility",
+                                "overflow_clipping",
+                                "computed_styles",
+                                "interaction_states",
+                                "layout_relations",
+                                "scroll_reachability",
+                                "occlusion",
+                            ],
+                            "targets": [
+                                {
+                                    "target_id": "stack-card-a",
+                                    "locator": {"kind": "test_id", "value": "stack-card-a"},
+                                },
+                                {
+                                    "target_id": "stack-card-b",
+                                    "locator": {"kind": "test_id", "value": "stack-card-b"},
+                                },
+                                {
+                                    "target_id": "stack-card-c",
+                                    "locator": {"kind": "test_id", "value": "stack-card-c"},
+                                },
+                                {
+                                    "target_id": "tiny-cta",
+                                    "locator": {"kind": "test_id", "value": "tiny-cta"},
+                                    "interactions": ["tap"],
+                                },
+                            ],
+                        },
+                        "native_layout_audit": {
+                            "enabled": True,
+                            "report_path": "expo-native-spacing-warning-audit.json",
+                            "required_checks": [
+                                "visibility",
+                                "overflow_clipping",
+                                "computed_styles",
+                                "layout_relations",
+                                "occlusion",
+                            ],
+                        },
+                        "retry_policy": {"attempts": 1, "slow_after_seconds": 1},
+                        "baseline": {"policy": "project-owned", "source_path": "tests/visual/baselines/expo-spacing-warning.txt"},
+                    },
+                    {
+                        "id": "android-native-style-mismatch",
+                        "title": "Android native style mismatch detection",
+                        "surface_type": "android",
+                        "runner": "android-compose-screenshot",
+                        "tags": ["android", "layout", "style"],
+                        "feature_ids": ["native-layout-audit"],
+                        "surface_ids": ["android-style-mismatch"],
+                        "routes_or_screens": ["android-style"],
+                        "changed_path_globs": ["apps/mobile/android/**"],
+                        "host_requirements": ["python"],
+                        "argv": [
+                            sys.executable,
+                            "-c",
+                            (
+                                "import os, pathlib; "
+                                "artifact_dir = pathlib.Path(os.environ['VERIFICATION_ARTIFACT_DIR']); "
+                                "artifact_dir.mkdir(parents=True, exist_ok=True); "
+                                f"(artifact_dir / 'android-native-style-mismatch.json').write_text({repr(json.dumps(android_style_mismatch_report))}); "
+                                "print('android-native-style-mismatch done')"
+                            ),
+                        ],
+                        "target": {"screen_id": "android-style"},
+                        "device_or_viewport": {"device": "android-emulator"},
+                        "semantic_assertions": {
+                            "enabled": True,
+                            "report_path": "android-native-style-mismatch.json",
+                            "required_checks": [
+                                "presence_uniqueness",
+                                "visibility",
+                                "overflow_clipping",
+                                "computed_styles",
+                                "interaction_states",
+                                "layout_relations",
+                                "scroll_reachability",
+                                "occlusion",
+                            ],
+                            "targets": [
+                                {
+                                    "target_id": "android-card",
+                                    "locator": {"kind": "semantics_tag", "value": "android-card"},
+                                }
+                            ],
+                        },
+                        "native_layout_audit": {
+                            "enabled": True,
+                            "report_path": "android-native-style-mismatch-audit.json",
+                            "required_checks": [
+                                "visibility",
+                                "overflow_clipping",
+                                "computed_styles",
+                                "layout_relations",
+                                "occlusion",
+                            ],
+                        },
+                        "retry_policy": {"attempts": 1, "slow_after_seconds": 1},
+                        "baseline": {"policy": "project-owned", "source_path": "tests/visual/baselines/android-style-mismatch.txt"},
+                    },
+                    {
+                        "id": "android-native-layout-fixed",
+                        "title": "Android native layout fixed state",
+                        "surface_type": "android",
+                        "runner": "android-compose-screenshot",
+                        "tags": ["android", "layout"],
+                        "feature_ids": ["native-layout-audit"],
+                        "surface_ids": ["android-layout-fixed"],
+                        "routes_or_screens": ["android-fixed"],
+                        "changed_path_globs": ["apps/mobile/android/**"],
+                        "host_requirements": ["python"],
+                        "argv": [
+                            sys.executable,
+                            "-c",
+                            (
+                                "import os, pathlib; "
+                                "artifact_dir = pathlib.Path(os.environ['VERIFICATION_ARTIFACT_DIR']); "
+                                "artifact_dir.mkdir(parents=True, exist_ok=True); "
+                                f"(artifact_dir / 'android-native-layout-fixed.json').write_text({repr(json.dumps(android_fixed_report))}); "
+                                "print('android-native-layout-fixed done')"
+                            ),
+                        ],
+                        "target": {"screen_id": "android-fixed"},
+                        "device_or_viewport": {"device": "android-emulator"},
+                        "semantic_assertions": {
+                            "enabled": True,
+                            "report_path": "android-native-layout-fixed.json",
+                            "required_checks": [
+                                "presence_uniqueness",
+                                "visibility",
+                                "overflow_clipping",
+                                "computed_styles",
+                                "interaction_states",
+                                "layout_relations",
+                                "scroll_reachability",
+                                "occlusion",
+                            ],
+                            "targets": [
+                                {
+                                    "target_id": "android-left-card",
+                                    "locator": {"kind": "semantics_tag", "value": "android-left-card"},
+                                },
+                                {
+                                    "target_id": "android-right-card",
+                                    "locator": {"kind": "semantics_tag", "value": "android-right-card"},
+                                },
+                            ],
+                        },
+                        "native_layout_audit": {
+                            "enabled": True,
+                            "report_path": "android-native-layout-fixed-audit.json",
+                            "required_checks": [
+                                "visibility",
+                                "overflow_clipping",
+                                "computed_styles",
+                                "layout_relations",
+                                "occlusion",
+                            ],
+                        },
+                        "retry_policy": {"attempts": 1, "slow_after_seconds": 1},
+                        "baseline": {"policy": "project-owned", "source_path": "tests/visual/baselines/android-layout-fixed.txt"},
                     },
                     {
                         "id": "web-semantic-missing",
@@ -2202,6 +3066,36 @@ def main() -> int:
                             "base_url": f"http://127.0.0.1:{broken_layout_port}/",
                             "report_path": "browser-layout-overlap.json",
                             "screenshot_path": "browser-layout-overlap.png",
+                            "wait_timeout_ms": 8000,
+                            "settle_ms": 300,
+                        },
+                        "artifact_expectations": ["screenshots", "reports"],
+                        "retry_policy": {"attempts": 1, "slow_after_seconds": 1},
+                    },
+                    {
+                        "id": "browser-layout-warning",
+                        "title": "Browser layout warning detection",
+                        "surface_type": "web",
+                        "runner": "browser-layout-audit",
+                        "tags": ["web", "layout", "warning"],
+                        "feature_ids": ["browser-layout-audit"],
+                        "surface_ids": ["browser-layout-warning"],
+                        "routes_or_screens": ["/"],
+                        "changed_path_globs": ["browser-layout-audit/warning/**"],
+                        "host_requirements": ["python", "web", "browser-runtime"],
+                        "cwd": str(warning_layout_root.relative_to(workspace)),
+                        "argv": [sys.executable, "-m", "http.server", str(warning_layout_port), "--bind", "127.0.0.1"],
+                        "target": {"route": "/"},
+                        "device_or_viewport": {"viewport": "390x420"},
+                        "readiness_probe": {
+                            "type": "http",
+                            "url": f"http://127.0.0.1:{warning_layout_port}/",
+                            "timeout_seconds": 10,
+                        },
+                        "browser_layout_audit": {
+                            "base_url": f"http://127.0.0.1:{warning_layout_port}/",
+                            "report_path": "browser-layout-warning.json",
+                            "screenshot_path": "browser-layout-warning.png",
                             "wait_timeout_ms": 8000,
                             "settle_ms": 300,
                         },
@@ -2469,6 +3363,118 @@ def main() -> int:
         optional_summary = optional_warning_run["cases"][0]["semantic_assertions"]
         assert optional_summary["status"] == "passed"
         assert optional_summary["optional_failed_checks"] == ["optional-main/layout_relations"]
+
+        expo_overlap_run = start_verification_case(
+            workspace,
+            "expo-native-layout-overlap",
+            workstream_id=verification_workstream_id,
+        )
+        expo_overlap_run = wait_for_verification_run(
+            workspace,
+            expo_overlap_run["run_id"],
+            timeout_seconds=20,
+            workstream_id=verification_workstream_id,
+        )
+        assert expo_overlap_run["status"] == "failed"
+        expo_overlap_summary = expo_overlap_run["cases"][0]["native_layout_audit"]
+        assert expo_overlap_summary["status"] == "failed"
+        assert any(issue["type"] == "pair-overlap" for issue in expo_overlap_summary["issues"])
+        expo_overlap_events = read_verification_events(
+            workspace,
+            expo_overlap_run["run_id"],
+            limit=20,
+            workstream_id=verification_workstream_id,
+        )
+        assert any(event["event_type"] == "native_layout_audit_failed" for event in expo_overlap_events["events"])
+
+        expo_gutter_warning_run = start_verification_case(
+            workspace,
+            "expo-native-gutter-warning",
+            workstream_id=verification_workstream_id,
+        )
+        expo_gutter_warning_run = wait_for_verification_run(
+            workspace,
+            expo_gutter_warning_run["run_id"],
+            timeout_seconds=20,
+            workstream_id=verification_workstream_id,
+        )
+        assert expo_gutter_warning_run["status"] == "failed"
+        expo_gutter_warning_summary = expo_gutter_warning_run["cases"][0]["native_layout_audit"]
+        assert expo_gutter_warning_summary["status"] == "warning"
+        assert expo_gutter_warning_summary["issue_count"] == 0
+        assert expo_gutter_warning_summary["warning_count"] == 1
+        assert any(issue["type"] == "edge-gutter-imbalance" for issue in expo_gutter_warning_summary["warnings"])
+        expo_gutter_events = read_verification_events(
+            workspace,
+            expo_gutter_warning_run["run_id"],
+            limit=20,
+            workstream_id=verification_workstream_id,
+        )
+        assert any(event["event_type"] == "native_layout_audit_warning" for event in expo_gutter_events["events"])
+
+        expo_spacing_warning_run = start_verification_case(
+            workspace,
+            "expo-native-spacing-warning",
+            workstream_id=verification_workstream_id,
+        )
+        expo_spacing_warning_run = wait_for_verification_run(
+            workspace,
+            expo_spacing_warning_run["run_id"],
+            timeout_seconds=20,
+            workstream_id=verification_workstream_id,
+        )
+        assert expo_spacing_warning_run["status"] == "failed"
+        expo_spacing_warning_summary = expo_spacing_warning_run["cases"][0]["native_layout_audit"]
+        assert expo_spacing_warning_summary["status"] == "warning"
+        assert expo_spacing_warning_summary["issue_count"] == 0
+        assert expo_spacing_warning_summary["warning_count"] >= 2
+        assert any(
+            issue["type"] == "vertical-rhythm-drift" for issue in expo_spacing_warning_summary["warnings"]
+        )
+        assert any(
+            issue["type"] == "touch-target-too-small" for issue in expo_spacing_warning_summary["warnings"]
+        )
+        expo_spacing_events = read_verification_events(
+            workspace,
+            expo_spacing_warning_run["run_id"],
+            limit=20,
+            workstream_id=verification_workstream_id,
+        )
+        assert any(event["event_type"] == "native_layout_audit_warning" for event in expo_spacing_events["events"])
+
+        android_style_mismatch_run = start_verification_case(
+            workspace,
+            "android-native-style-mismatch",
+            workstream_id=verification_workstream_id,
+        )
+        android_style_mismatch_run = wait_for_verification_run(
+            workspace,
+            android_style_mismatch_run["run_id"],
+            timeout_seconds=20,
+            workstream_id=verification_workstream_id,
+        )
+        assert android_style_mismatch_run["status"] == "failed"
+        android_style_summary = android_style_mismatch_run["cases"][0]["native_layout_audit"]
+        assert android_style_summary["status"] == "failed"
+        assert any(issue["type"] == "style-mismatch" for issue in android_style_summary["issues"])
+
+        android_fixed_run = start_verification_case(
+            workspace,
+            "android-native-layout-fixed",
+            workstream_id=verification_workstream_id,
+        )
+        android_fixed_run = wait_for_verification_run(
+            workspace,
+            android_fixed_run["run_id"],
+            timeout_seconds=20,
+            workstream_id=verification_workstream_id,
+        )
+        assert android_fixed_run["status"] == "passed"
+        android_fixed_summary = android_fixed_run["cases"][0]["native_layout_audit"]
+        assert android_fixed_summary["status"] == "passed"
+        assert android_fixed_summary["issue_count"] == 0
+        assert Path(android_fixed_summary["report_path"]).exists()
+
         overlap_layout_run = start_verification_case(
             workspace,
             "browser-layout-overlap",
@@ -2493,6 +3499,34 @@ def main() -> int:
         )
         assert any(event["event_type"] == "browser_layout_audit_failed" for event in overlap_events["events"])
 
+        warning_layout_run = start_verification_case(
+            workspace,
+            "browser-layout-warning",
+            workstream_id=verification_workstream_id,
+        )
+        warning_layout_run = wait_for_verification_run(
+            workspace,
+            warning_layout_run["run_id"],
+            timeout_seconds=20,
+            workstream_id=verification_workstream_id,
+        )
+        assert warning_layout_run["status"] == "failed"
+        warning_layout_summary = warning_layout_run["cases"][0]["browser_layout_audit"]
+        assert warning_layout_summary["status"] == "warning"
+        assert warning_layout_summary["issue_count"] == 0
+        assert int(warning_layout_summary["warning_count"] or 0) >= 2
+        assert any(
+            issue["type"] in {"container-padding-imbalance", "vertical-rhythm-drift", "touch-target-too-small", "contrast-warning"}
+            for issue in warning_layout_summary["warnings"]
+        )
+        warning_layout_events = read_verification_events(
+            workspace,
+            warning_layout_run["run_id"],
+            limit=20,
+            workstream_id=verification_workstream_id,
+        )
+        assert any(event["event_type"] == "browser_layout_audit_warning" for event in warning_layout_events["events"])
+
         fixed_layout_run = start_verification_case(
             workspace,
             "browser-layout-fixed",
@@ -2510,7 +3544,7 @@ def main() -> int:
         assert fixed_layout_summary["issue_count"] == 0
         assert Path(fixed_layout_summary["report_path"]).exists()
         assert Path(fixed_layout_summary["screenshot_path"]).exists()
-        progress("single-case verification runs, semantic failures, optional warnings, and live browser layout audit")
+        progress("single-case verification runs, semantic failures, native mobile layout audits, and live browser layout audit")
 
         suite_run = start_verification_suite(workspace, "full", workstream_id=verification_workstream_id)
         active_run, mid_events = _wait_for_run_started(
@@ -2539,6 +3573,7 @@ def main() -> int:
         assert "logcat_started" in event_types
         assert "logcat_heartbeat" in event_types
         assert "logcat_stopped" in event_types
+        assert "native_layout_audit_validated" in event_types
         assert "run_finished" in event_types
         stdout_log = read_verification_log_tail(workspace, suite_run["run_id"], "stdout", 50, workstream_id=verification_workstream_id)
         stderr_log = read_verification_log_tail(workspace, suite_run["run_id"], "stderr", 20, workstream_id=verification_workstream_id)
@@ -2549,6 +3584,10 @@ def main() -> int:
         assert logcat_log["path"].endswith("logcat.log")
         assert any("FATAL EXCEPTION" in line for line in logcat_log["lines"])
         assert suite_run["summary"]["logcat_crash_summary"]["case_id"] == "expo-home"
+        assert suite_run["summary"]["native_layout_audit"]["case_id"] == "expo-home"
+        assert suite_run["summary"]["native_layout_audit"]["status"] == "passed"
+        expo_suite_case = next(case for case in suite_run["cases"] if case["case_id"] == "expo-home")
+        assert expo_suite_case["native_layout_audit"]["status"] == "passed"
         progress("full-suite verification execution, heartbeat events, and log capture")
 
         closeout_register = read_stage_register(workspace)

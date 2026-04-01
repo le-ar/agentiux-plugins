@@ -25,6 +25,7 @@ data class SemanticTarget(
     val targetId: String,
     val locator: SemanticLocator,
     val scrollContainerLocator: SemanticLocator? = null,
+    val interactions: List<String> = emptyList(),
     val expectedAttributes: Map<String, Any?> = emptyMap(),
     val expectedStyles: Map<String, Any?> = emptyMap(),
     val expectedLayout: Map<String, Any?> = emptyMap(),
@@ -90,6 +91,115 @@ private fun readSemantics(target: SemanticsNodeInteraction): JSONObject {
         .put("text", config.getOrNull(SemanticsProperties.Text)?.joinToString(" ") { it.text })
 }
 
+private fun mergeJson(base: JSONObject, overlay: JSONObject?): JSONObject {
+    if (overlay == null) {
+        return base
+    }
+    val merged = JSONObject(base.toString())
+    val keys = overlay.keys()
+    while (keys.hasNext()) {
+        val key = keys.next()
+        merged.put(key, overlay.get(key))
+    }
+    return merged
+}
+
+private fun rootContainsTarget(root: Rect?, target: Rect?): Boolean {
+    if (root == null || target == null) {
+        return true
+    }
+    return (
+        target.left >= root.left &&
+            target.top >= root.top &&
+            target.right <= root.right &&
+            target.bottom <= root.bottom
+        )
+}
+
+private fun compareExpectedMap(actual: JSONObject, expected: Map<String, Any?>): JSONArray {
+    val mismatches = JSONArray()
+    for ((key, expectedValue) in expected) {
+        val actualValue = if (actual.has(key)) actual.get(key) else null
+        val matches = when {
+            actualValue == null && expectedValue == null -> true
+            actualValue is Number && expectedValue is Number ->
+                kotlin.math.abs(actualValue.toDouble() - expectedValue.toDouble()) < 0.5
+            else -> actualValue == expectedValue
+        }
+        if (!matches) {
+            mismatches.put(
+                JSONObject()
+                    .put("field", key)
+                    .put("expected", expectedValue)
+                    .put("actual", actualValue)
+            )
+        }
+    }
+    return mismatches
+}
+
+private fun targetProbeSnapshot(
+    rule: ComposeContentTestRule,
+    target: SemanticTarget,
+    node: SemanticsNodeInteraction,
+    semantics: JSONObject,
+    probeNode: ((SemanticTarget, SemanticsNodeInteraction) -> JSONObject?)?,
+): JSONObject {
+    val nodeBounds = node.fetchSemanticsNode().boundsInRoot
+    val rootBounds = runCatching { rule.onRoot().fetchSemanticsNode().boundsInRoot }.getOrNull()
+    val extra = runCatching { probeNode?.invoke(target, node) }.getOrNull() ?: JSONObject()
+    val textValue = semantics.optString("text", "")
+    val styleTokens = mergeJson(
+        JSONObject()
+            .put("width", nodeBounds.width)
+            .put("height", nodeBounds.height)
+            .put("enabled", semantics.optBoolean("enabled"))
+            .put("selected", semantics.optBoolean("selected"))
+            .put("textLength", textValue.length),
+        extra.optJSONObject("style_tokens")
+    )
+    return JSONObject()
+        .put(
+            "layout",
+            mergeJson(
+                JSONObject()
+                    .put("bounds_in_root", rectJson(nodeBounds))
+                    .put("root_bounds", rectJson(rootBounds)),
+                extra.optJSONObject("layout")
+            )
+        )
+        .put(
+            "clipping",
+            mergeJson(
+                JSONObject()
+                    .put("clipped", !rootContainsTarget(rootBounds, nodeBounds))
+                    .put("target_bounds", rectJson(nodeBounds))
+                    .put("root_bounds", rectJson(rootBounds)),
+                extra.optJSONObject("clipping")
+            )
+        )
+        .put("style_tokens", styleTokens)
+        .put("accessibility", mergeJson(semantics, extra.optJSONObject("accessibility")))
+        .put(
+            "metadata",
+            mergeJson(
+                JSONObject()
+                    .put("occluded", false)
+                    .put("source", "compose-semantic-helper"),
+                extra.optJSONObject("metadata")
+            )
+        )
+        .put(
+            "text_overflow",
+            mergeJson(
+                JSONObject()
+                    .put("truncated", false)
+                    .put("text", textValue),
+                extra.optJSONObject("text_overflow")
+            )
+        )
+}
+
 private fun writeReport(reportPath: String, payload: JSONObject) {
     val file = File(reportPath)
     file.parentFile?.mkdirs()
@@ -100,6 +210,7 @@ fun runSemanticChecks(
     rule: ComposeContentTestRule,
     spec: SemanticSpec,
     captureNodeScreenshot: ((String, SemanticsNodeInteraction) -> String?)? = null,
+    probeNode: ((SemanticTarget, SemanticsNodeInteraction) -> JSONObject?)? = null,
 ): JSONObject {
     val targets = JSONArray()
     var hasFailures = false
@@ -150,20 +261,80 @@ fun runSemanticChecks(
             }
 
             val semantics = readSemantics(node)
+            val probe = targetProbeSnapshot(rule, target, node, semantics, probeNode)
             checks.put(
                 JSONObject()
                     .put("check_id", "accessibility_state")
                     .put("status", "passed")
-                    .put("diagnostics", semantics)
+                    .put("diagnostics", probe.getJSONObject("accessibility"))
                     .put("artifact_paths", JSONArray())
             )
 
-            val nodeBounds = node.fetchSemanticsNode().boundsInRoot
+            val styleMismatches = compareExpectedMap(probe.getJSONObject("style_tokens"), target.expectedStyles)
+            checks.put(
+                JSONObject()
+                    .put("check_id", "computed_styles")
+                    .put("status", if (styleMismatches.length() == 0) "passed" else "failed")
+                    .put(
+                        "diagnostics",
+                        JSONObject()
+                            .put("style_tokens", probe.getJSONObject("style_tokens"))
+                            .put("mismatches", styleMismatches)
+                    )
+                    .put("artifact_paths", JSONArray())
+            )
+
+            checks.put(
+                JSONObject()
+                    .put("check_id", "interaction_states")
+                    .put("status", "passed")
+                    .put(
+                        "diagnostics",
+                        JSONObject()
+                            .put("enabled", semantics.optBoolean("enabled"))
+                            .put("selected", semantics.optBoolean("selected"))
+                            .put("requested_interactions", JSONArray(target.interactions))
+                    )
+                    .put("artifact_paths", JSONArray())
+            )
+
             checks.put(
                 JSONObject()
                     .put("check_id", "layout_relations")
                     .put("status", "passed")
-                    .put("diagnostics", JSONObject().put("bounds_in_root", rectJson(nodeBounds)))
+                    .put(
+                        "diagnostics",
+                        JSONObject()
+                            .put("layout", probe.getJSONObject("layout"))
+                            .put("expected_layout", JSONObject(target.expectedLayout))
+                    )
+                    .put("artifact_paths", JSONArray())
+            )
+
+            val clipping = probe.getJSONObject("clipping")
+            checks.put(
+                JSONObject()
+                    .put("check_id", "overflow_clipping")
+                    .put("status", if (target.allowClipping || !clipping.optBoolean("clipped")) "passed" else "failed")
+                    .put("diagnostics", JSONObject().put("clipping", clipping))
+                    .put("artifact_paths", JSONArray())
+            )
+
+            val metadata = probe.getJSONObject("metadata")
+            checks.put(
+                JSONObject()
+                    .put("check_id", "occlusion")
+                    .put("status", if (target.allowOcclusion || !metadata.optBoolean("occluded")) "passed" else "failed")
+                    .put("diagnostics", JSONObject().put("metadata", metadata))
+                    .put("artifact_paths", JSONArray())
+            )
+
+            val textOverflow = probe.getJSONObject("text_overflow")
+            checks.put(
+                JSONObject()
+                    .put("check_id", "text_overflow")
+                    .put("status", if (target.allowTextTruncation || !textOverflow.optBoolean("truncated")) "passed" else "failed")
+                    .put("diagnostics", JSONObject().put("text_overflow", textOverflow))
                     .put("artifact_paths", JSONArray())
             )
 
@@ -176,6 +347,14 @@ fun runSemanticChecks(
                         .put("check_id", "scroll_reachability")
                         .put("status", "passed")
                         .put("diagnostics", JSONObject())
+                        .put("artifact_paths", JSONArray())
+                )
+            } else {
+                checks.put(
+                    JSONObject()
+                        .put("check_id", "scroll_reachability")
+                        .put("status", "passed")
+                        .put("diagnostics", JSONObject().put("performed", false))
                         .put("artifact_paths", JSONArray())
                 )
             }

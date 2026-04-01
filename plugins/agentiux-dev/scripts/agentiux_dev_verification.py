@@ -52,6 +52,10 @@ VISUAL_RUNNERS = {
     "android-compose-screenshot",
     "ios-simulator-capture",
 }
+NATIVE_LAYOUT_AUDIT_RUNNERS = {
+    "detox-visual",
+    "android-compose-screenshot",
+}
 LOGCAT_CRASH_PATTERNS = [
     re.compile(r"fatal exception", re.IGNORECASE),
     re.compile(r"androidruntime", re.IGNORECASE),
@@ -101,6 +105,21 @@ MANDATORY_WEB_VISUAL_SEMANTIC_CHECKS = [
     "scroll_reachability",
     "occlusion",
 ]
+MANDATORY_NATIVE_VISUAL_SEMANTIC_CHECKS = [
+    "presence_uniqueness",
+    "visibility",
+    "overflow_clipping",
+    "computed_styles",
+    "layout_relations",
+    "occlusion",
+]
+DEFAULT_NATIVE_LAYOUT_AUDIT_CHECKS = [
+    "visibility",
+    "overflow_clipping",
+    "computed_styles",
+    "layout_relations",
+    "occlusion",
+]
 RUNNER_CHECK_SUPPORT = {
     "browser-layout-audit": set(),
     "playwright-visual": set(SEMANTIC_ASSERTION_CHECKS),
@@ -127,6 +146,8 @@ RUNNER_REQUIRED_HOST_TOOLS = {
 VERIFICATION_HELPER_RELATIVE_ROOT = Path(".verification") / "helpers"
 LEGACY_VERIFICATION_HELPER_RELATIVE_ROOT = Path(".agentiux") / "verification-helpers"
 VERIFICATION_HELPER_MARKER_FILENAME = "bundle.json"
+LAYOUT_AUDIT_RULE_CATALOG_FILENAME = "layout_audit_rules.json"
+_LAYOUT_AUDIT_RULE_CATALOG_CACHE: dict[str, Any] | None = None
 
 
 def _verification_file_error(path: Path, exc: Exception, purpose: str | None = None) -> ValueError:
@@ -205,6 +226,35 @@ def _verification_helper_bundle_root() -> Path:
 
 def _verification_helper_catalog_path() -> Path:
     return _verification_helper_bundle_root() / "catalog.json"
+
+
+def _layout_audit_rule_catalog_path() -> Path:
+    return plugin_root() / "catalogs" / LAYOUT_AUDIT_RULE_CATALOG_FILENAME
+
+
+def _load_layout_audit_rule_catalog() -> dict[str, Any]:
+    global _LAYOUT_AUDIT_RULE_CATALOG_CACHE
+    if _LAYOUT_AUDIT_RULE_CATALOG_CACHE is not None:
+        return _LAYOUT_AUDIT_RULE_CATALOG_CACHE
+    payload = _load_json(_layout_audit_rule_catalog_path(), strict=True, purpose="layout audit rule catalog")
+    if not isinstance(payload, dict) or not isinstance(payload.get("rules"), list):
+        raise ValueError(f"Layout audit rule catalog is invalid: {_layout_audit_rule_catalog_path()}")
+    _LAYOUT_AUDIT_RULE_CATALOG_CACHE = payload
+    return payload
+
+
+def _layout_audit_rule(rule_id: str) -> dict[str, Any]:
+    for rule in _load_layout_audit_rule_catalog().get("rules") or []:
+        if str((rule or {}).get("id") or "").strip() == rule_id:
+            return dict(rule or {})
+    return {}
+
+
+def _layout_audit_threshold(rule_id: str, key: str, default: float) -> float:
+    rule = _layout_audit_rule(rule_id)
+    thresholds = rule.get("thresholds") if isinstance(rule.get("thresholds"), dict) else {}
+    value = _coerce_float((thresholds or {}).get(key))
+    return default if value is None else float(value)
 
 
 def _verification_helper_sync_root(workspace: str | Path) -> Path:
@@ -531,6 +581,115 @@ def _normalize_browser_layout_audit(payload: Any, case: dict[str, Any]) -> dict[
     }
 
 
+def _normalize_native_layout_audit(payload: Any, case: dict[str, Any]) -> dict[str, Any]:
+    config = dict(payload or {})
+    semantic_assertions = case.get("semantic_assertions") or {}
+    enabled_default = case.get("runner") in NATIVE_LAYOUT_AUDIT_RUNNERS and bool(semantic_assertions.get("enabled"))
+    enabled = bool(config.get("enabled", enabled_default))
+    requested_checks = config.get("required_checks")
+    if requested_checks:
+        required_checks: list[str] = []
+        for item in requested_checks:
+            check_id = str(item or "").strip().lower()
+            if check_id and check_id not in required_checks:
+                required_checks.append(check_id)
+    elif enabled:
+        required_checks = list(DEFAULT_NATIVE_LAYOUT_AUDIT_CHECKS)
+    else:
+        required_checks = []
+    unsupported = [check_id for check_id in required_checks if check_id not in SEMANTIC_ASSERTION_CHECKS]
+    if unsupported:
+        raise ValueError(f"Unsupported native layout audit checks: {', '.join(unsupported)}")
+    unsupported_by_runner = [check_id for check_id in required_checks if check_id not in _runner_supported_checks(case.get("runner"))]
+    return {
+        "enabled": enabled,
+        "report_path": str(config.get("report_path") or f"{case['id']}-native-layout-audit.json"),
+        "required_checks": required_checks,
+        "unsupported_required_checks": unsupported_by_runner,
+        "check_pair_overlap": bool(config.get("check_pair_overlap", True)),
+        "pair_overlap_tolerance_px": float(
+            config.get("pair_overlap_tolerance_px", _layout_audit_threshold("pair-overlap", "epsilon_px", 2.0))
+        ),
+        "pair_overlap_ratio_threshold": float(
+            config.get("pair_overlap_ratio_threshold", _layout_audit_threshold("pair-overlap", "ratio_threshold", 0.04))
+        ),
+        "check_edge_gutter_balance": bool(config.get("check_edge_gutter_balance", True)),
+        "edge_gutter_balance_tolerance_px": float(
+            config.get(
+                "edge_gutter_balance_tolerance_px",
+                _layout_audit_threshold("edge-gutter-imbalance", "difference_px", 8.0),
+            )
+        ),
+        "edge_gutter_ratio_threshold": float(
+            config.get(
+                "edge_gutter_ratio_threshold",
+                _layout_audit_threshold("edge-gutter-imbalance", "ratio_threshold", 0.25),
+            )
+        ),
+        "check_sibling_gap_consistency": bool(config.get("check_sibling_gap_consistency", True)),
+        "sibling_gap_tolerance_px": float(
+            config.get(
+                "sibling_gap_tolerance_px",
+                _layout_audit_threshold("sibling-gap-inconsistency", "difference_px", 8.0),
+            )
+        ),
+        "sibling_gap_ratio_threshold": float(
+            config.get(
+                "sibling_gap_ratio_threshold",
+                _layout_audit_threshold("sibling-gap-inconsistency", "ratio_threshold", 0.3),
+            )
+        ),
+        "check_alignment_drift": bool(config.get("check_alignment_drift", True)),
+        "alignment_drift_tolerance_px": float(
+            config.get(
+                "alignment_drift_tolerance_px",
+                _layout_audit_threshold("alignment-drift", "drift_px", 8.0),
+            )
+        ),
+        "check_vertical_rhythm": bool(config.get("check_vertical_rhythm", True)),
+        "vertical_rhythm_tolerance_px": float(
+            config.get(
+                "vertical_rhythm_tolerance_px",
+                _layout_audit_threshold("vertical-rhythm-drift", "difference_px", 12.0),
+            )
+        ),
+        "vertical_rhythm_ratio_threshold": float(
+            config.get(
+                "vertical_rhythm_ratio_threshold",
+                _layout_audit_threshold("vertical-rhythm-drift", "ratio_threshold", 0.3),
+            )
+        ),
+        "check_touch_targets": bool(config.get("check_touch_targets", True)),
+        "touch_target_min_width_px": float(
+            config.get(
+                "touch_target_min_width_px",
+                _layout_audit_threshold("touch-target-too-small", "min_width", 44.0),
+            )
+        ),
+        "touch_target_min_height_px": float(
+            config.get(
+                "touch_target_min_height_px",
+                _layout_audit_threshold("touch-target-too-small", "min_height", 44.0),
+            )
+        ),
+        "check_flex_distribution": bool(config.get("check_flex_distribution", True)),
+        "flex_distribution_ratio_threshold": float(
+            config.get(
+                "flex_distribution_ratio_threshold",
+                _layout_audit_threshold("unexpected-flex-distribution", "ratio_threshold", 1.8),
+            )
+        ),
+        "flex_cross_axis_tolerance_px": float(
+            config.get(
+                "flex_cross_axis_tolerance_px",
+                _layout_audit_threshold("unexpected-flex-distribution", "cross_axis_tolerance_px", 16.0),
+            )
+        ),
+        "fail_on_missing_bounds": bool(config.get("fail_on_missing_bounds", True)),
+        "require_style_tokens": bool(config.get("require_style_tokens", True)),
+    }
+
+
 def _normalize_android_logcat(payload: dict[str, Any] | None) -> dict[str, Any]:
     config = dict(payload or {})
     return {
@@ -763,6 +922,10 @@ def _normalize_case(case: dict[str, Any]) -> dict[str, Any]:
         "android_logcat": _normalize_android_logcat(payload.get("android_logcat")),
     }
     normalized["semantic_assertions"] = _normalize_semantic_assertions(payload.get("semantic_assertions"), normalized)
+    normalized["native_layout_audit"] = _normalize_native_layout_audit(
+        payload.get("native_layout_audit") or payload.get("native_audit"),
+        normalized,
+    )
     normalized["browser_layout_audit"] = _normalize_browser_layout_audit(
         payload.get("browser_layout_audit") or payload.get("browser_audit"),
         normalized,
@@ -1101,6 +1264,7 @@ def _host_requirement_status(state: dict[str, Any], requirement: str) -> dict[st
 def _case_selection_summary(workspace: str | Path, case: dict[str, Any], state: dict[str, Any]) -> dict[str, Any]:
     requirements = [_host_requirement_status(state, requirement) for requirement in case.get("host_requirements") or []]
     semantic_assertions = case.get("semantic_assertions") or {}
+    native_layout_audit = case.get("native_layout_audit") or {}
     browser_layout_audit = case.get("browser_layout_audit") or {}
     return {
         "case_id": case["id"],
@@ -1118,6 +1282,8 @@ def _case_selection_summary(workspace: str | Path, case: dict[str, Any], state: 
         "semantic_assertions_enabled": bool(semantic_assertions.get("enabled")),
         "semantic_target_count": len(semantic_assertions.get("targets") or []),
         "semantic_auto_scan": bool(semantic_assertions.get("auto_scan", False)),
+        "native_layout_audit_enabled": bool(native_layout_audit.get("enabled")),
+        "native_layout_audit_report_path": native_layout_audit.get("report_path"),
         "browser_layout_audit_enabled": case.get("runner") == "browser-layout-audit",
         "browser_layout_audit_report_path": browser_layout_audit.get("report_path"),
     }
@@ -1522,6 +1688,15 @@ def _resolve_case_cwd(workspace: str | Path, case: dict[str, Any]) -> str:
 def _resolve_browser_layout_audit_report_path(run_paths: dict[str, Path], case: dict[str, Any]) -> Path:
     config = case.get("browser_layout_audit") or {}
     candidate = config.get("report_path") or f"{case['id']}-browser-layout-audit.json"
+    path = Path(str(candidate))
+    if path.is_absolute():
+        return path
+    return run_paths["artifacts_dir"] / path
+
+
+def _resolve_native_layout_audit_report_path(run_paths: dict[str, Path], case: dict[str, Any]) -> Path:
+    config = case.get("native_layout_audit") or {}
+    candidate = config.get("report_path") or f"{case['id']}-native-layout-audit.json"
     path = Path(str(candidate))
     if path.is_absolute():
         return path
@@ -2417,6 +2592,8 @@ def _validate_browser_layout_audit(run_paths: dict[str, Path], case: dict[str, A
             "message": f"Browser layout audit report is missing for case {case['id']}.",
             "issue_count": None,
             "issues": [],
+            "warning_count": None,
+            "warnings": [],
             "screenshot_path": None,
         }
     try:
@@ -2430,6 +2607,8 @@ def _validate_browser_layout_audit(run_paths: dict[str, Path], case: dict[str, A
             "message": str(exc),
             "issue_count": None,
             "issues": [],
+            "warning_count": None,
+            "warnings": [],
             "screenshot_path": None,
         }
     if not isinstance(payload, dict):
@@ -2441,23 +2620,1012 @@ def _validate_browser_layout_audit(run_paths: dict[str, Path], case: dict[str, A
             "message": f"Browser layout audit report is invalid for case {case['id']}.",
             "issue_count": None,
             "issues": [],
+            "warning_count": None,
+            "warnings": [],
             "screenshot_path": None,
         }
     issues = payload.get("issues") if isinstance(payload.get("issues"), list) else []
-    status = "passed" if bool(payload.get("ok")) else "failed"
+    warnings = payload.get("warnings") if isinstance(payload.get("warnings"), list) else []
+    status = str(payload.get("status") or "").strip().lower()
+    if status not in {"passed", "warning", "failed"}:
+        if issues:
+            status = "failed"
+        elif warnings:
+            status = "warning"
+        else:
+            status = "passed" if bool(payload.get("ok")) else "failed"
     return {
         "enabled": True,
         "status": status,
         "report_path": str(report_path),
-        "reason": None if status == "passed" else "layout_issues_detected",
-        "message": None if status == "passed" else f"Browser layout audit detected {len(issues)} issues for case {case['id']}.",
+        "reason": (
+            None
+            if status == "passed"
+            else "layout_issues_detected"
+            if status == "failed"
+            else "layout_warnings_detected"
+        ),
+        "message": (
+            None
+            if status == "passed"
+            else f"Browser layout audit detected {len(issues)} issues for case {case['id']}."
+            if status == "failed"
+            else f"Browser layout audit detected {len(warnings)} warnings for case {case['id']}."
+        ),
         "issue_count": int(payload.get("issue_count") or len(issues)),
         "issues": issues,
+        "warning_count": int(payload.get("warning_count") or len(warnings)),
+        "warnings": warnings,
         "screenshot_path": payload.get("screenshot_path"),
         "viewport": copy.deepcopy(payload.get("viewport") or {}),
         "url": payload.get("url"),
         "label": payload.get("label"),
     }
+
+
+def _coerce_float(value: Any) -> float | None:
+    try:
+        if value in {None, ""}:
+            return None
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _rect_from_payload(payload: Any) -> dict[str, float] | None:
+    if not isinstance(payload, dict):
+        return None
+    if payload.get("present") is False:
+        return None
+    left = _coerce_float(payload.get("left"))
+    top = _coerce_float(payload.get("top"))
+    right = _coerce_float(payload.get("right"))
+    bottom = _coerce_float(payload.get("bottom"))
+    width = _coerce_float(payload.get("width"))
+    height = _coerce_float(payload.get("height"))
+    if left is None:
+        left = _coerce_float(payload.get("x"))
+    if top is None:
+        top = _coerce_float(payload.get("y"))
+    if width is None and left is not None and right is not None:
+        width = right - left
+    if height is None and top is not None and bottom is not None:
+        height = bottom - top
+    if right is None and left is not None and width is not None:
+        right = left + width
+    if bottom is None and top is not None and height is not None:
+        bottom = top + height
+    if None in {left, top, right, bottom, width, height}:
+        return None
+    return {
+        "left": float(left),
+        "top": float(top),
+        "right": float(right),
+        "bottom": float(bottom),
+        "width": float(width),
+        "height": float(height),
+    }
+
+
+def _extract_rect_from_candidates(candidates: list[Any], nested_keys: tuple[str, ...]) -> dict[str, float] | None:
+    for candidate in candidates:
+        rect = _rect_from_payload(candidate)
+        if rect is not None:
+            return rect
+        if not isinstance(candidate, dict):
+            continue
+        for key in nested_keys:
+            rect = _rect_from_payload(candidate.get(key))
+            if rect is not None:
+                return rect
+    return None
+
+
+def _extract_semantic_target_bounds(target: dict[str, Any]) -> dict[str, float] | None:
+    checks = target.get("checks") or {}
+    layout_diag = (checks.get("layout_relations") or {}).get("diagnostics") or {}
+    clipping_diag = (checks.get("overflow_clipping") or {}).get("diagnostics") or {}
+    return _extract_rect_from_candidates(
+        [
+            target.get("diagnostics") or {},
+            layout_diag,
+            layout_diag.get("layout") if isinstance(layout_diag, dict) else {},
+            clipping_diag,
+            clipping_diag.get("clipping") if isinstance(clipping_diag, dict) else {},
+        ],
+        ("bounds_in_root", "target_bounds", "bounds", "rect"),
+    )
+
+
+def _extract_semantic_root_bounds(target: dict[str, Any]) -> dict[str, float] | None:
+    checks = target.get("checks") or {}
+    layout_diag = (checks.get("layout_relations") or {}).get("diagnostics") or {}
+    clipping_diag = (checks.get("overflow_clipping") or {}).get("diagnostics") or {}
+    return _extract_rect_from_candidates(
+        [
+            target.get("diagnostics") or {},
+            layout_diag,
+            layout_diag.get("layout") if isinstance(layout_diag, dict) else {},
+            clipping_diag,
+            clipping_diag.get("clipping") if isinstance(clipping_diag, dict) else {},
+        ],
+        ("root_bounds", "container_bounds", "viewport_bounds"),
+    )
+
+
+def _extract_semantic_style_tokens(target: dict[str, Any]) -> dict[str, Any]:
+    checks = target.get("checks") or {}
+    computed_diag = (checks.get("computed_styles") or {}).get("diagnostics") or {}
+    candidates = [
+        computed_diag,
+        computed_diag.get("probe") if isinstance(computed_diag, dict) else {},
+        target.get("diagnostics") or {},
+    ]
+    for candidate in candidates:
+        if not isinstance(candidate, dict):
+            continue
+        for key in ("style_tokens", "styles", "computed_styles"):
+            value = candidate.get(key)
+            if isinstance(value, dict) and value:
+                return copy.deepcopy(value)
+    return {}
+
+
+def _extract_semantic_clipping(target: dict[str, Any]) -> dict[str, Any]:
+    checks = target.get("checks") or {}
+    diagnostics = (checks.get("overflow_clipping") or {}).get("diagnostics") or {}
+    if isinstance(diagnostics.get("clipping"), dict):
+        return copy.deepcopy(diagnostics.get("clipping") or {})
+    return copy.deepcopy(diagnostics) if isinstance(diagnostics, dict) else {}
+
+
+def _extract_semantic_metadata(target: dict[str, Any]) -> dict[str, Any]:
+    checks = target.get("checks") or {}
+    diagnostics = (checks.get("occlusion") or {}).get("diagnostics") or {}
+    if isinstance(diagnostics.get("metadata"), dict):
+        return copy.deepcopy(diagnostics.get("metadata") or {})
+    return copy.deepcopy(diagnostics) if isinstance(diagnostics, dict) else {}
+
+
+def _extract_text_overflow(target: dict[str, Any]) -> dict[str, Any]:
+    checks = target.get("checks") or {}
+    diagnostics = (checks.get("text_overflow") or {}).get("diagnostics") or {}
+    if isinstance(diagnostics.get("text_overflow"), dict):
+        return copy.deepcopy(diagnostics.get("text_overflow") or {})
+    return copy.deepcopy(diagnostics) if isinstance(diagnostics, dict) else {}
+
+
+def _extract_check_mismatches(target: dict[str, Any], check_id: str) -> list[Any]:
+    checks = target.get("checks") or {}
+    diagnostics = (checks.get(check_id) or {}).get("diagnostics") or {}
+    mismatches = diagnostics.get("mismatches")
+    return copy.deepcopy(mismatches) if isinstance(mismatches, list) else []
+
+
+def _rect_area(rect: dict[str, float] | None) -> float:
+    if rect is None:
+        return 0.0
+    return max(0.0, float(rect.get("width") or 0.0)) * max(0.0, float(rect.get("height") or 0.0))
+
+
+def _rect_contains(outer: dict[str, float], inner: dict[str, float], tolerance: float = 0.0) -> bool:
+    return (
+        inner["left"] >= outer["left"] - tolerance
+        and inner["top"] >= outer["top"] - tolerance
+        and inner["right"] <= outer["right"] + tolerance
+        and inner["bottom"] <= outer["bottom"] + tolerance
+    )
+
+
+def _rect_intersection(a: dict[str, float], b: dict[str, float]) -> dict[str, float] | None:
+    left = max(a["left"], b["left"])
+    top = max(a["top"], b["top"])
+    right = min(a["right"], b["right"])
+    bottom = min(a["bottom"], b["bottom"])
+    width = right - left
+    height = bottom - top
+    if width <= 0 or height <= 0:
+        return None
+    return {
+        "left": left,
+        "top": top,
+        "right": right,
+        "bottom": bottom,
+        "width": width,
+        "height": height,
+    }
+
+
+def _rect_center_x(rect: dict[str, float]) -> float:
+    return float(rect["left"] + rect["width"] / 2.0)
+
+
+def _rect_center_y(rect: dict[str, float]) -> float:
+    return float(rect["top"] + rect["height"] / 2.0)
+
+
+def _cluster_layout_targets(
+    targets: list[dict[str, Any]],
+    *,
+    axis: str,
+    band_tolerance: float = 24.0,
+) -> list[list[dict[str, Any]]]:
+    if axis not in {"row", "column"}:
+        return []
+    keyed: list[dict[str, Any]] = []
+    for target in targets:
+        bounds = target.get("bounds")
+        if not isinstance(bounds, dict):
+            continue
+        center = _rect_center_y(bounds) if axis == "row" else _rect_center_x(bounds)
+        keyed.append({**target, "_cluster_center": center})
+    if not keyed:
+        return []
+    keyed.sort(key=lambda item: float(item["_cluster_center"]))
+    clusters: list[list[dict[str, Any]]] = []
+    current: list[dict[str, Any]] = []
+    current_center = 0.0
+    for item in keyed:
+        if not current:
+            current = [item]
+            current_center = float(item["_cluster_center"])
+            continue
+        if abs(float(item["_cluster_center"]) - current_center) <= band_tolerance:
+            current.append(item)
+            current_center = sum(float(entry["_cluster_center"]) for entry in current) / len(current)
+            continue
+        clusters.append(current)
+        current = [item]
+        current_center = float(item["_cluster_center"])
+    if current:
+        clusters.append(current)
+    if axis == "row":
+        for cluster in clusters:
+            cluster.sort(key=lambda item: float((item.get("bounds") or {}).get("left") or 0.0))
+    else:
+        for cluster in clusters:
+            cluster.sort(key=lambda item: float((item.get("bounds") or {}).get("top") or 0.0))
+    return clusters
+
+
+def _neighbor_gaps(cluster: list[dict[str, Any]], *, axis: str) -> list[dict[str, Any]]:
+    gaps: list[dict[str, Any]] = []
+    for left_item, right_item in zip(cluster, cluster[1:]):
+        left_bounds = left_item.get("bounds") or {}
+        right_bounds = right_item.get("bounds") or {}
+        if axis == "row":
+            gap_value = float(right_bounds["left"] - left_bounds["right"])
+        else:
+            gap_value = float(right_bounds["top"] - left_bounds["bottom"])
+        gaps.append(
+            {
+                "axis": axis,
+                "first_target_id": left_item["target_id"],
+                "second_target_id": right_item["target_id"],
+                "gap": gap_value,
+            }
+        )
+    return gaps
+
+
+def _gap_warning_from_cluster(
+    cluster: list[dict[str, Any]],
+    *,
+    axis: str,
+    tolerance_px: float,
+    ratio_threshold: float,
+) -> dict[str, Any] | None:
+    gaps = [gap for gap in _neighbor_gaps(cluster, axis=axis) if gap["gap"] >= 0]
+    if len(gaps) < 2:
+        return None
+    values = [gap["gap"] for gap in gaps]
+    max_gap = max(values)
+    min_gap = min(values)
+    difference = max_gap - min_gap
+    dominant_gap = max_gap if max_gap > 0 else 0.0
+    difference_ratio = 0.0 if dominant_gap <= 0 else difference / dominant_gap
+    if difference <= tolerance_px or difference_ratio < ratio_threshold:
+        return None
+    return {
+        "type": "sibling-gap-inconsistency",
+        "severity": "warning",
+        "axis": "horizontal" if axis == "row" else "vertical",
+        "target_ids": [item["target_id"] for item in cluster],
+        "gaps": gaps,
+        "difference": difference,
+        "difference_ratio": difference_ratio,
+    }
+
+
+def _alignment_warning_from_cluster(
+    cluster: list[dict[str, Any]],
+    *,
+    axis: str,
+    tolerance_px: float,
+) -> dict[str, Any] | None:
+    if len(cluster) < 2:
+        return None
+    bounds_list = [item.get("bounds") or {} for item in cluster]
+    if axis == "row":
+        candidates = {
+            "top": max(float(bounds["top"]) for bounds in bounds_list) - min(float(bounds["top"]) for bounds in bounds_list),
+            "bottom": max(float(bounds["bottom"]) for bounds in bounds_list) - min(float(bounds["bottom"]) for bounds in bounds_list),
+            "center": max(_rect_center_y(bounds) for bounds in bounds_list) - min(_rect_center_y(bounds) for bounds in bounds_list),
+        }
+        layout_axis = "horizontal"
+    else:
+        candidates = {
+            "left": max(float(bounds["left"]) for bounds in bounds_list) - min(float(bounds["left"]) for bounds in bounds_list),
+            "right": max(float(bounds["right"]) for bounds in bounds_list) - min(float(bounds["right"]) for bounds in bounds_list),
+            "center": max(_rect_center_x(bounds) for bounds in bounds_list) - min(_rect_center_x(bounds) for bounds in bounds_list),
+        }
+        layout_axis = "vertical"
+    anchor, drift = min(candidates.items(), key=lambda item: item[1])
+    if drift <= tolerance_px:
+        return None
+    return {
+        "type": "alignment-drift",
+        "severity": "warning",
+        "axis": layout_axis,
+        "anchor": anchor,
+        "target_ids": [item["target_id"] for item in cluster],
+        "drift": drift,
+    }
+
+
+def _flex_distribution_warning_from_cluster(
+    cluster: list[dict[str, Any]],
+    *,
+    axis: str,
+    ratio_threshold: float,
+    cross_axis_tolerance_px: float,
+) -> dict[str, Any] | None:
+    if len(cluster) < 2:
+        return None
+    bounds_list = [item.get("bounds") or {} for item in cluster]
+    primary_sizes = [float(bounds["width"] if axis == "row" else bounds["height"]) for bounds in bounds_list]
+    secondary_sizes = [float(bounds["height"] if axis == "row" else bounds["width"]) for bounds in bounds_list]
+    min_primary = min(primary_sizes)
+    max_primary = max(primary_sizes)
+    if min_primary <= 0:
+        return None
+    if (max(primary_sizes) / min_primary) < ratio_threshold:
+        return None
+    if (max(secondary_sizes) - min(secondary_sizes)) > cross_axis_tolerance_px:
+        return None
+    return {
+        "type": "unexpected-flex-distribution",
+        "severity": "warning",
+        "axis": "horizontal" if axis == "row" else "vertical",
+        "target_ids": [item["target_id"] for item in cluster],
+        "sizes": primary_sizes,
+        "ratio": max_primary / min_primary,
+    }
+
+
+def _vertical_rhythm_warning(
+    targets: list[dict[str, Any]],
+    *,
+    tolerance_px: float,
+    ratio_threshold: float,
+) -> dict[str, Any] | None:
+    ordered = [
+        item
+        for item in sorted(
+            targets,
+            key=lambda entry: float(((entry.get("bounds") or {}).get("top") or 0.0)),
+        )
+        if isinstance(item.get("bounds"), dict)
+    ]
+    gaps = [gap for gap in _neighbor_gaps(ordered, axis="column") if gap["gap"] >= 0]
+    if len(gaps) < 2:
+        return None
+    values = [gap["gap"] for gap in gaps]
+    max_gap = max(values)
+    min_gap = min(values)
+    difference = max_gap - min_gap
+    dominant_gap = max_gap if max_gap > 0 else 0.0
+    difference_ratio = 0.0 if dominant_gap <= 0 else difference / dominant_gap
+    if difference <= tolerance_px or difference_ratio < ratio_threshold:
+        return None
+    return {
+        "type": "vertical-rhythm-drift",
+        "severity": "warning",
+        "target_ids": [item["target_id"] for item in ordered],
+        "gaps": gaps,
+        "difference": difference,
+        "difference_ratio": difference_ratio,
+    }
+
+
+def _layout_expectation_mismatches(rect: dict[str, float] | None, expected_layout: Any) -> list[dict[str, Any]]:
+    if rect is None or not isinstance(expected_layout, dict):
+        return []
+    mismatches: list[dict[str, Any]] = []
+    direct_fields = {
+        "width": rect["width"],
+        "height": rect["height"],
+        "left": rect["left"],
+        "top": rect["top"],
+        "right": rect["right"],
+        "bottom": rect["bottom"],
+    }
+    for key, actual in direct_fields.items():
+        expected = _coerce_float(expected_layout.get(key))
+        if expected is not None and abs(actual - expected) > 0.5:
+            mismatches.append({"field": key, "expected": expected, "actual": actual})
+    threshold_fields = {
+        "min_width": ("width", lambda actual, expected: actual >= expected),
+        "max_width": ("width", lambda actual, expected: actual <= expected),
+        "min_height": ("height", lambda actual, expected: actual >= expected),
+        "max_height": ("height", lambda actual, expected: actual <= expected),
+    }
+    for key, (field, comparator) in threshold_fields.items():
+        expected = _coerce_float(expected_layout.get(key))
+        actual = direct_fields[field]
+        if expected is not None and not comparator(actual, expected):
+            mismatches.append({"field": key, "expected": expected, "actual": actual})
+    return mismatches
+
+
+def _rects_match(a: dict[str, float] | None, b: dict[str, float] | None, tolerance: float = 1.0) -> bool:
+    if a is None or b is None:
+        return False
+    return all(abs(float(a[key]) - float(b[key])) <= tolerance for key in ("left", "top", "right", "bottom"))
+
+
+def _union_rect(rects: list[dict[str, float]]) -> dict[str, float] | None:
+    if not rects:
+        return None
+    left = min(rect["left"] for rect in rects)
+    top = min(rect["top"] for rect in rects)
+    right = max(rect["right"] for rect in rects)
+    bottom = max(rect["bottom"] for rect in rects)
+    return {
+        "left": left,
+        "top": top,
+        "right": right,
+        "bottom": bottom,
+        "width": right - left,
+        "height": bottom - top,
+    }
+
+
+def _detect_edge_gutter_warnings(
+    target_summaries: list[dict[str, Any]],
+    config: dict[str, Any],
+) -> list[dict[str, Any]]:
+    if not bool(config.get("check_edge_gutter_balance", True)):
+        return []
+    candidates = [
+        target
+        for target in target_summaries
+        if isinstance(target.get("bounds"), dict)
+        and isinstance(target.get("root_bounds"), dict)
+        and (target.get("check_statuses") or {}).get("visibility") == "passed"
+    ]
+    if not candidates:
+        return []
+    reference_root = candidates[0]["root_bounds"]
+    if any(not _rects_match(reference_root, target["root_bounds"]) for target in candidates[1:]):
+        return []
+    content_bounds = _union_rect([target["bounds"] for target in candidates])
+    if content_bounds is None:
+        return []
+    left_gutter = max(0.0, float(content_bounds["left"] - reference_root["left"]))
+    right_gutter = max(0.0, float(reference_root["right"] - content_bounds["right"]))
+    difference = abs(left_gutter - right_gutter)
+    dominant_gutter = max(left_gutter, right_gutter)
+    difference_ratio = 0.0 if dominant_gutter <= 0 else difference / dominant_gutter
+    if difference <= float(config.get("edge_gutter_balance_tolerance_px") or 0.0):
+        return []
+    if difference_ratio < float(config.get("edge_gutter_ratio_threshold") or 0.0):
+        return []
+    return [
+        {
+            "type": "edge-gutter-imbalance",
+            "severity": "warning",
+            "axis": "horizontal",
+            "target_ids": [target["target_id"] for target in candidates],
+            "root_bounds": copy.deepcopy(reference_root),
+            "content_bounds": copy.deepcopy(content_bounds),
+            "left_gutter": left_gutter,
+            "right_gutter": right_gutter,
+            "difference": difference,
+            "difference_ratio": difference_ratio,
+            "message": (
+                "Visible content gutters are not balanced across the horizontal axis. "
+                "Review whether the asymmetry is intentional."
+            ),
+        }
+    ]
+
+
+def _detect_native_group_warnings(
+    target_summaries: list[dict[str, Any]],
+    config: dict[str, Any],
+) -> list[dict[str, Any]]:
+    candidates = [
+        target
+        for target in target_summaries
+        if isinstance(target.get("bounds"), dict)
+        and isinstance(target.get("root_bounds"), dict)
+        and target.get("status") == "passed"
+        and (target.get("check_statuses") or {}).get("visibility") == "passed"
+    ]
+    if len(candidates) < 2:
+        return []
+    warnings: list[dict[str, Any]] = []
+    row_clusters = _cluster_layout_targets(candidates, axis="row")
+    column_clusters = _cluster_layout_targets(candidates, axis="column")
+    if bool(config.get("check_sibling_gap_consistency", True)):
+        gap_tolerance = float(config.get("sibling_gap_tolerance_px") or 0.0)
+        gap_ratio = float(config.get("sibling_gap_ratio_threshold") or 0.0)
+        for cluster in row_clusters:
+            warning = _gap_warning_from_cluster(
+                cluster,
+                axis="row",
+                tolerance_px=gap_tolerance,
+                ratio_threshold=gap_ratio,
+            )
+            if warning:
+                warnings.append(warning)
+        for cluster in column_clusters:
+            warning = _gap_warning_from_cluster(
+                cluster,
+                axis="column",
+                tolerance_px=gap_tolerance,
+                ratio_threshold=gap_ratio,
+            )
+            if warning:
+                warnings.append(warning)
+    if bool(config.get("check_alignment_drift", True)):
+        alignment_tolerance = float(config.get("alignment_drift_tolerance_px") or 0.0)
+        for cluster in row_clusters:
+            warning = _alignment_warning_from_cluster(cluster, axis="row", tolerance_px=alignment_tolerance)
+            if warning:
+                warnings.append(warning)
+        for cluster in column_clusters:
+            warning = _alignment_warning_from_cluster(cluster, axis="column", tolerance_px=alignment_tolerance)
+            if warning:
+                warnings.append(warning)
+    if bool(config.get("check_vertical_rhythm", True)):
+        for cluster in column_clusters:
+            if len(cluster) < 3:
+                continue
+            warning = _vertical_rhythm_warning(
+                cluster,
+                tolerance_px=float(config.get("vertical_rhythm_tolerance_px") or 0.0),
+                ratio_threshold=float(config.get("vertical_rhythm_ratio_threshold") or 0.0),
+            )
+            if warning:
+                warnings.append(warning)
+    if bool(config.get("check_flex_distribution", True)):
+        ratio_threshold = float(config.get("flex_distribution_ratio_threshold") or 0.0)
+        cross_axis_tolerance = float(config.get("flex_cross_axis_tolerance_px") or 0.0)
+        for cluster in row_clusters:
+            warning = _flex_distribution_warning_from_cluster(
+                cluster,
+                axis="row",
+                ratio_threshold=ratio_threshold,
+                cross_axis_tolerance_px=cross_axis_tolerance,
+            )
+            if warning:
+                warnings.append(warning)
+        for cluster in column_clusters:
+            warning = _flex_distribution_warning_from_cluster(
+                cluster,
+                axis="column",
+                ratio_threshold=ratio_threshold,
+                cross_axis_tolerance_px=cross_axis_tolerance,
+            )
+            if warning:
+                warnings.append(warning)
+    return warnings
+
+
+def _detect_touch_target_warnings(
+    target_summaries: list[dict[str, Any]],
+    validation_targets: list[dict[str, Any]],
+    config: dict[str, Any],
+) -> list[dict[str, Any]]:
+    if not bool(config.get("check_touch_targets", True)):
+        return []
+    target_specs = {target["target_id"]: target for target in validation_targets}
+    min_width = float(config.get("touch_target_min_width_px") or 0.0)
+    min_height = float(config.get("touch_target_min_height_px") or 0.0)
+    warnings: list[dict[str, Any]] = []
+    for target in target_summaries:
+        bounds = target.get("bounds")
+        if not isinstance(bounds, dict):
+            continue
+        target_spec = target_specs.get(target["target_id"]) or {}
+        interactions = list(target_spec.get("interactions") or [])
+        if not interactions:
+            continue
+        if float(bounds["width"]) >= min_width and float(bounds["height"]) >= min_height:
+            continue
+        warnings.append(
+            {
+                "type": "touch-target-too-small",
+                "severity": "warning",
+                "target_id": target["target_id"],
+                "bounds": copy.deepcopy(bounds),
+                "min_width": min_width,
+                "min_height": min_height,
+                "interactions": interactions,
+            }
+        )
+    return warnings
+
+
+def _finalize_native_layout_audit(
+    run_paths: dict[str, Path],
+    case: dict[str, Any],
+    result: dict[str, Any],
+) -> dict[str, Any]:
+    report_path = _resolve_native_layout_audit_report_path(run_paths, case)
+    payload = {
+        "schema_version": 1,
+        "audit_type": "native-layout-audit",
+        "case_id": case.get("id"),
+        "runner": case.get("runner"),
+        "generated_at": now_iso(),
+        "ok": result.get("status") == "passed",
+        "status": result.get("status"),
+        "reason": result.get("reason"),
+        "message": result.get("message"),
+        "issue_count": int(result.get("issue_count") or 0),
+        "issues": copy.deepcopy(result.get("issues") or []),
+        "warning_count": int(result.get("warning_count") or 0),
+        "warnings": copy.deepcopy(result.get("warnings") or []),
+        "target_count": int(result.get("target_count") or 0),
+        "validated_target_count": int(result.get("validated_target_count") or 0),
+        "checked_pairs": int(result.get("checked_pairs") or 0),
+        "source_report_path": result.get("source_report_path"),
+        "targets": copy.deepcopy(result.get("targets") or []),
+        "config": {
+            "required_checks": list((case.get("native_layout_audit") or {}).get("required_checks") or []),
+            "check_pair_overlap": bool((case.get("native_layout_audit") or {}).get("check_pair_overlap", True)),
+            "pair_overlap_tolerance_px": float((case.get("native_layout_audit") or {}).get("pair_overlap_tolerance_px", 2.0)),
+            "pair_overlap_ratio_threshold": float((case.get("native_layout_audit") or {}).get("pair_overlap_ratio_threshold", 0.04)),
+            "check_edge_gutter_balance": bool((case.get("native_layout_audit") or {}).get("check_edge_gutter_balance", True)),
+            "edge_gutter_balance_tolerance_px": float((case.get("native_layout_audit") or {}).get("edge_gutter_balance_tolerance_px", 8.0)),
+            "edge_gutter_ratio_threshold": float((case.get("native_layout_audit") or {}).get("edge_gutter_ratio_threshold", 0.25)),
+            "check_sibling_gap_consistency": bool((case.get("native_layout_audit") or {}).get("check_sibling_gap_consistency", True)),
+            "sibling_gap_tolerance_px": float((case.get("native_layout_audit") or {}).get("sibling_gap_tolerance_px", 8.0)),
+            "sibling_gap_ratio_threshold": float((case.get("native_layout_audit") or {}).get("sibling_gap_ratio_threshold", 0.3)),
+            "check_alignment_drift": bool((case.get("native_layout_audit") or {}).get("check_alignment_drift", True)),
+            "alignment_drift_tolerance_px": float((case.get("native_layout_audit") or {}).get("alignment_drift_tolerance_px", 8.0)),
+            "check_vertical_rhythm": bool((case.get("native_layout_audit") or {}).get("check_vertical_rhythm", True)),
+            "vertical_rhythm_tolerance_px": float((case.get("native_layout_audit") or {}).get("vertical_rhythm_tolerance_px", 12.0)),
+            "vertical_rhythm_ratio_threshold": float((case.get("native_layout_audit") or {}).get("vertical_rhythm_ratio_threshold", 0.3)),
+            "check_touch_targets": bool((case.get("native_layout_audit") or {}).get("check_touch_targets", True)),
+            "touch_target_min_width_px": float((case.get("native_layout_audit") or {}).get("touch_target_min_width_px", 44.0)),
+            "touch_target_min_height_px": float((case.get("native_layout_audit") or {}).get("touch_target_min_height_px", 44.0)),
+            "check_flex_distribution": bool((case.get("native_layout_audit") or {}).get("check_flex_distribution", True)),
+            "flex_distribution_ratio_threshold": float((case.get("native_layout_audit") or {}).get("flex_distribution_ratio_threshold", 1.8)),
+            "flex_cross_axis_tolerance_px": float((case.get("native_layout_audit") or {}).get("flex_cross_axis_tolerance_px", 16.0)),
+            "fail_on_missing_bounds": bool((case.get("native_layout_audit") or {}).get("fail_on_missing_bounds", True)),
+            "require_style_tokens": bool((case.get("native_layout_audit") or {}).get("require_style_tokens", True)),
+        },
+    }
+    _write_json(report_path, payload)
+    result["report_path"] = str(report_path)
+    return result
+
+
+def _validate_native_layout_audit(run_paths: dict[str, Path], case: dict[str, Any]) -> dict[str, Any]:
+    config = case.get("native_layout_audit") or {}
+    if case.get("runner") not in NATIVE_LAYOUT_AUDIT_RUNNERS or not config.get("enabled"):
+        return {
+            "enabled": False,
+            "status": "not_enabled",
+            "report_path": None,
+        }
+    source_report_path = _resolve_semantic_report_path(run_paths, case)
+    base_result = {
+        "enabled": True,
+        "source_report_path": str(source_report_path),
+        "issues": [],
+        "issue_count": 0,
+        "warnings": [],
+        "warning_count": 0,
+        "target_count": 0,
+        "validated_target_count": 0,
+        "checked_pairs": 0,
+        "targets": [],
+    }
+    unsupported_required_checks = list(config.get("unsupported_required_checks") or [])
+    if unsupported_required_checks:
+        return _finalize_native_layout_audit(
+            run_paths,
+            case,
+            {
+                **base_result,
+                "status": "failed",
+                "reason": "unsupported_required_checks",
+                "message": (
+                    f"Native layout audit checks {', '.join(unsupported_required_checks)} are not supported by "
+                    f"runner `{case.get('runner')}`."
+                ),
+            },
+        )
+    if not (case.get("semantic_assertions") or {}).get("enabled"):
+        return _finalize_native_layout_audit(
+            run_paths,
+            case,
+            {
+                **base_result,
+                "status": "failed",
+                "reason": "semantic_assertions_not_enabled",
+                "message": f"Native layout audit requires `semantic_assertions` for case {case['id']}.",
+            },
+        )
+    if not source_report_path.exists():
+        return _finalize_native_layout_audit(
+            run_paths,
+            case,
+            {
+                **base_result,
+                "status": "failed",
+                "reason": "missing_semantic_report",
+                "message": f"Semantic assertions report is missing for native layout audit case {case['id']}.",
+            },
+        )
+    try:
+        payload = _load_json(source_report_path, strict=True, purpose="native layout audit semantic report")
+    except ValueError as exc:
+        return _finalize_native_layout_audit(
+            run_paths,
+            case,
+            {
+                **base_result,
+                "status": "failed",
+                "reason": "invalid_semantic_report",
+                "message": str(exc),
+            },
+        )
+    schema_errors = _semantic_report_schema_errors(payload, case)
+    if schema_errors:
+        return _finalize_native_layout_audit(
+            run_paths,
+            case,
+            {
+                **base_result,
+                "status": "failed",
+                "reason": "invalid_semantic_report_schema",
+                "message": "Semantic assertions report does not match the shared schema.",
+                "issues": [{"type": "invalid-semantic-report-schema", "schema_errors": schema_errors}],
+                "issue_count": 1,
+            },
+        )
+    targets = _parse_semantic_report_targets(payload)
+    semantic_targets = {
+        target.get("target_id"): target
+        for target in (case.get("semantic_assertions") or {}).get("targets") or []
+        if target.get("target_id")
+    }
+    validation_target_ids = list(semantic_targets.keys()) or list(targets.keys())
+    issues: list[dict[str, Any]] = []
+    target_summaries: list[dict[str, Any]] = []
+    overlap_candidates: list[dict[str, Any]] = []
+    checked_pairs = 0
+    required_checks = list(config.get("required_checks") or [])
+    for target_id in validation_target_ids:
+        target_spec = semantic_targets.get(target_id) or {}
+        target_payload = targets.get(target_id)
+        target_summary = {
+            "target_id": target_id,
+            "status": target_payload.get("status") if target_payload else "missing",
+            "bounds": None,
+            "root_bounds": None,
+            "style_tokens": {},
+            "check_statuses": {},
+        }
+        if target_payload is None:
+            issues.append(
+                {
+                    "type": "missing-target",
+                    "target_id": target_id,
+                    "message": f"Semantic report does not include target `{target_id}`.",
+                }
+            )
+            target_summaries.append(target_summary)
+            continue
+        checks = target_payload.get("checks") or {}
+        target_summary["check_statuses"] = {
+            check_id: (check.get("status") or "unknown")
+            for check_id, check in checks.items()
+        }
+        for check_id in required_checks:
+            if check_id not in checks:
+                issues.append(
+                    {
+                        "type": "missing-required-check",
+                        "target_id": target_id,
+                        "check_id": check_id,
+                        "message": f"Native layout audit expected check `{check_id}` for target `{target_id}`.",
+                    }
+                )
+        bounds = _extract_semantic_target_bounds(target_payload)
+        root_bounds = _extract_semantic_root_bounds(target_payload)
+        style_tokens = _extract_semantic_style_tokens(target_payload)
+        target_summary["bounds"] = copy.deepcopy(bounds)
+        target_summary["root_bounds"] = copy.deepcopy(root_bounds)
+        target_summary["style_tokens"] = copy.deepcopy(style_tokens)
+        if bounds is None and config.get("fail_on_missing_bounds"):
+            issues.append(
+                {
+                    "type": "missing-layout-bounds",
+                    "target_id": target_id,
+                    "message": f"Target `{target_id}` has no usable layout bounds in the semantic report.",
+                }
+            )
+        elif bounds is not None and (bounds["width"] <= 0 or bounds["height"] <= 0):
+            issues.append(
+                {
+                    "type": "invalid-layout-bounds",
+                    "target_id": target_id,
+                    "bounds": copy.deepcopy(bounds),
+                    "message": f"Target `{target_id}` has non-positive layout bounds.",
+                }
+            )
+        layout_mismatches = _layout_expectation_mismatches(bounds, target_spec.get("expected_layout"))
+        if layout_mismatches:
+            issues.append(
+                {
+                    "type": "layout-expectation-mismatch",
+                    "target_id": target_id,
+                    "mismatches": layout_mismatches,
+                }
+            )
+        visibility_status = (checks.get("visibility") or {}).get("status") or "unknown"
+        if "visibility" in required_checks and visibility_status != "passed":
+            issues.append(
+                {
+                    "type": "visibility",
+                    "target_id": target_id,
+                    "status": visibility_status,
+                }
+            )
+        clipping = _extract_semantic_clipping(target_payload)
+        clipped = bool(clipping.get("clipped") is True)
+        if "overflow_clipping" in required_checks and not bool(target_spec.get("allow_clipping")):
+            if clipped or (checks.get("overflow_clipping") or {}).get("status") not in {None, "passed"}:
+                issues.append(
+                    {
+                        "type": "clipping",
+                        "target_id": target_id,
+                        "clipping": clipping,
+                    }
+                )
+            if bounds is not None and root_bounds is not None and not _rect_contains(
+                root_bounds,
+                bounds,
+                tolerance=float(config.get("pair_overlap_tolerance_px") or 0.0),
+            ):
+                issues.append(
+                    {
+                        "type": "root-overflow",
+                        "target_id": target_id,
+                        "bounds": copy.deepcopy(bounds),
+                        "root_bounds": copy.deepcopy(root_bounds),
+                    }
+                )
+        metadata = _extract_semantic_metadata(target_payload)
+        occluded = bool(metadata.get("occluded") is True)
+        if "occlusion" in required_checks and not bool(target_spec.get("allow_occlusion")):
+            if occluded or (checks.get("occlusion") or {}).get("status") not in {None, "passed"}:
+                issues.append(
+                    {
+                        "type": "occlusion",
+                        "target_id": target_id,
+                        "metadata": metadata,
+                    }
+                )
+        if "computed_styles" in required_checks:
+            mismatches = _extract_check_mismatches(target_payload, "computed_styles")
+            if mismatches:
+                issues.append(
+                    {
+                        "type": "style-mismatch",
+                        "target_id": target_id,
+                        "mismatches": mismatches,
+                    }
+                )
+            elif not style_tokens and bool(config.get("require_style_tokens")):
+                issues.append(
+                    {
+                        "type": "missing-style-data",
+                        "target_id": target_id,
+                        "message": f"Target `{target_id}` does not expose computed style tokens for native layout audit.",
+                    }
+                )
+            elif (checks.get("computed_styles") or {}).get("status") not in {None, "passed"}:
+                issues.append(
+                    {
+                        "type": "computed-styles",
+                        "target_id": target_id,
+                        "status": (checks.get("computed_styles") or {}).get("status"),
+                    }
+                )
+        if "text_overflow" in required_checks:
+            overflow = _extract_text_overflow(target_payload)
+            truncated = bool(overflow.get("truncated") is True)
+            if truncated or (
+                (checks.get("text_overflow") or {}).get("status") not in {None, "passed"}
+                and not bool(target_spec.get("allow_text_truncation"))
+            ):
+                issues.append(
+                    {
+                        "type": "text-overflow",
+                        "target_id": target_id,
+                        "text_overflow": overflow,
+                    }
+                )
+        if bounds is not None and visibility_status == "passed":
+            overlap_candidates.append(
+                {
+                    "target_id": target_id,
+                    "bounds": bounds,
+                    "allow_occlusion": bool(target_spec.get("allow_occlusion")),
+                }
+            )
+        target_summaries.append(target_summary)
+    if bool(config.get("check_pair_overlap")):
+        tolerance = float(config.get("pair_overlap_tolerance_px") or 0.0)
+        ratio_threshold = float(config.get("pair_overlap_ratio_threshold") or 0.0)
+        for index, left_target in enumerate(overlap_candidates):
+            for right_target in overlap_candidates[index + 1 :]:
+                if left_target["allow_occlusion"] or right_target["allow_occlusion"]:
+                    continue
+                checked_pairs += 1
+                intersection = _rect_intersection(left_target["bounds"], right_target["bounds"])
+                if intersection is None:
+                    continue
+                if intersection["width"] <= tolerance or intersection["height"] <= tolerance:
+                    continue
+                smaller_area = min(_rect_area(left_target["bounds"]), _rect_area(right_target["bounds"]))
+                overlap_ratio = 0.0 if smaller_area <= 0 else _rect_area(intersection) / smaller_area
+                if overlap_ratio < ratio_threshold:
+                    continue
+                issues.append(
+                    {
+                        "type": "pair-overlap",
+                        "target_ids": [left_target["target_id"], right_target["target_id"]],
+                        "intersection": intersection,
+                        "overlap_ratio": overlap_ratio,
+                    }
+                )
+    warnings = _detect_edge_gutter_warnings(target_summaries, config)
+    warnings.extend(_detect_native_group_warnings(target_summaries, config))
+    warnings.extend(_detect_touch_target_warnings(target_summaries, list(semantic_targets.values()), config))
+    status = "failed" if issues else "warning" if warnings else "passed"
+    return _finalize_native_layout_audit(
+        run_paths,
+        case,
+        {
+            **base_result,
+            "status": status,
+            "reason": "layout_issues_detected" if issues else "layout_warnings_detected" if warnings else None,
+            "message": (
+                f"Native layout audit detected {len(issues)} issues for case {case['id']}."
+                if issues
+                else f"Native layout audit detected {len(warnings)} warnings for case {case['id']}."
+                if warnings
+                else None
+            ),
+            "issues": issues,
+            "issue_count": len(issues),
+            "warnings": warnings,
+            "warning_count": len(warnings),
+            "target_count": len(validation_target_ids),
+            "validated_target_count": len(targets),
+            "checked_pairs": checked_pairs,
+            "targets": target_summaries,
+        },
+    )
 
 
 def _start_run(workspace: str | Path, mode: str, target_id: str, workstream_id: str | None = None) -> dict[str, Any]:
@@ -2751,6 +3919,12 @@ def _case_has_browser_layout_audit(case: dict[str, Any]) -> bool:
     return str(case.get("runner") or "").lower() == "browser-layout-audit"
 
 
+def _case_has_native_layout_audit(case: dict[str, Any]) -> bool:
+    return str(case.get("runner") or "").lower() in NATIVE_LAYOUT_AUDIT_RUNNERS and bool(
+        (case.get("native_layout_audit") or {}).get("enabled")
+    )
+
+
 def _case_counts_as_visual_web_coverage(case: dict[str, Any]) -> bool:
     return case.get("runner") in VISUAL_RUNNERS or _case_has_browser_layout_audit(case)
 
@@ -2808,8 +3982,10 @@ def audit_verification_coverage(workspace: str | Path, workstream_id: str | None
         "web_visual": False,
         "web_browser_layout_audit": False,
         "mobile": False,
+        "mobile_native_layout_audit": False,
         "android": False,
         "android_visual": False,
+        "android_native_layout_audit": False,
         "ios": False,
         "backend": False,
     }
@@ -2844,6 +4020,7 @@ def audit_verification_coverage(workspace: str | Path, workstream_id: str | None
                 )
             )
         semantic_assertions = case.get("semantic_assertions") or {}
+        native_layout_audit = case.get("native_layout_audit") or {}
         if _case_requires_web_visual_semantics(case) and not semantic_assertions.get("enabled"):
             gaps.append(
                 _coverage_gap(
@@ -2907,6 +4084,54 @@ def audit_verification_coverage(workspace: str | Path, workstream_id: str | None
                             category="visual",
                         )
                     )
+            if case.get("runner") in NATIVE_LAYOUT_AUDIT_RUNNERS:
+                missing_native_checks = [
+                    check_id
+                    for check_id in MANDATORY_NATIVE_VISUAL_SEMANTIC_CHECKS
+                    if check_id not in set(semantic_assertions.get("required_checks") or [])
+                ]
+                if missing_native_checks:
+                    gaps.append(
+                        _coverage_gap(
+                            f"{case_id}-missing-core-native-semantic-checks",
+                            f"Native visual case `{case_id}` is missing mandatory mobile semantic checks",
+                            (
+                                "Require the shared native semantic guardrail set for layout audit coverage: "
+                                f"{', '.join(missing_native_checks)}."
+                            ),
+                            category="visual",
+                        )
+                    )
+        if case.get("runner") in NATIVE_LAYOUT_AUDIT_RUNNERS and not native_layout_audit.get("enabled"):
+            gaps.append(
+                _coverage_gap(
+                    f"{case_id}-missing-native-layout-audit",
+                    f"Native visual case `{case_id}` does not enable native layout audit",
+                    "Enable `native_layout_audit` so overlap, clipping, computed-style, and bounds regressions are checked from semantic reports.",
+                    category="visual",
+                )
+            )
+        if native_layout_audit.get("enabled") and not semantic_assertions.get("enabled"):
+            gaps.append(
+                _coverage_gap(
+                    f"{case_id}-native-layout-audit-missing-semantic-assertions",
+                    f"Native layout audit case `{case_id}` has no semantic assertions input",
+                    "Enable `semantic_assertions` so the native layout audit has deterministic layout data to validate.",
+                    category="visual",
+                )
+            )
+        if native_layout_audit.get("enabled") and native_layout_audit.get("unsupported_required_checks"):
+            gaps.append(
+                _coverage_gap(
+                    f"{case_id}-native-layout-audit-unsupported-checks",
+                    f"Native layout audit case `{case_id}` requires checks the runner cannot produce",
+                    (
+                        f"Remove or replace unsupported native audit checks for `{case.get('runner')}`: "
+                        f"{', '.join(native_layout_audit.get('unsupported_required_checks') or [])}."
+                    ),
+                    category="visual",
+                )
+            )
         surface_type = str(case.get("surface_type") or "").lower()
         device = str((case.get("device_or_viewport") or {}).get("device") or "").lower()
         tags = {str(tag).lower() for tag in case.get("tags", [])}
@@ -2927,14 +4152,21 @@ def audit_verification_coverage(workspace: str | Path, workstream_id: str | None
                 coverage["web_browser_layout_audit"] = True
         if surface_type == "mobile":
             coverage["mobile"] = True
+            if _case_has_native_layout_audit(case):
+                coverage["mobile_native_layout_audit"] = True
         if case.get("runner") == "android-compose-screenshot" or "android" in device or surface_type == "android":
             coverage["android"] = True
             coverage["mobile"] = True
             if case.get("runner") in VISUAL_RUNNERS:
                 coverage["android_visual"] = True
+            if _case_has_native_layout_audit(case):
+                coverage["android_native_layout_audit"] = True
+                coverage["mobile_native_layout_audit"] = True
         if case.get("runner") == "ios-simulator-capture" or "ios" in device or surface_type == "ios":
             coverage["ios"] = True
             coverage["mobile"] = True
+            if _case_has_native_layout_audit(case):
+                coverage["mobile_native_layout_audit"] = True
         if surface_type in {"service", "backend", "infra"}:
             coverage["backend"] = True
     profiles = set(detection.get("selected_profiles", []))
@@ -2999,6 +4231,15 @@ def audit_verification_coverage(workspace: str | Path, workstream_id: str | None
                 "Add at least one deterministic mobile verification case.",
             )
         )
+    if "mobile-platform" in profiles and not coverage["mobile_native_layout_audit"]:
+        gaps.append(
+            _coverage_gap(
+                "missing-mobile-native-layout-audit",
+                "Mobile workspace has no native layout audit coverage",
+                "Add at least one `detox-visual` or `android-compose-screenshot` case with `native_layout_audit` enabled so native layout regressions are checked deterministically.",
+                category="visual",
+            )
+        )
     if "android" in stacks and not coverage["android"]:
         gaps.append(
             _coverage_gap(
@@ -3013,6 +4254,15 @@ def audit_verification_coverage(workspace: str | Path, workstream_id: str | None
                 "missing-android-visual-verification",
                 "Android signals were detected but no Android visual verification case is defined",
                 "Add `android-compose-screenshot` or Android-targeted `detox-visual` coverage for deterministic UI closeout.",
+                category="visual",
+            )
+        )
+    if "android" in stacks and not coverage["android_native_layout_audit"]:
+        gaps.append(
+            _coverage_gap(
+                "missing-android-native-layout-audit",
+                "Android signals were detected but no Android native layout audit case is defined",
+                "Enable `native_layout_audit` on an Android-targeted `detox-visual` or `android-compose-screenshot` case so overlap, clipping, and style regressions fail deterministically.",
                 category="visual",
             )
         )
@@ -3243,6 +4493,8 @@ def execute_verification_run(workspace: str | Path, run_id: str, workstream_id: 
         )
         case_state["semantic_assertions"] = semantic_assertions
         case_state["semantic_summary"] = semantic_assertions
+        native_layout_audit = _validate_native_layout_audit(run_paths, case)
+        case_state["native_layout_audit"] = native_layout_audit
         browser_layout_audit = _validate_browser_layout_audit(run_paths, case)
         case_state["browser_layout_audit"] = browser_layout_audit
         if exit_code == 0 and semantic_assertions.get("enabled") and semantic_assertions.get("status") != "passed":
@@ -3282,20 +4534,47 @@ def execute_verification_run(workspace: str | Path, run_id: str, workstream_id: 
                 optional_failed_checks=semantic_assertions.get("optional_failed_checks"),
                 report_path=semantic_assertions.get("report_path"),
             )
-        if browser_layout_audit.get("enabled") and browser_layout_audit.get("status") != "passed":
+        if native_layout_audit.get("enabled") and native_layout_audit.get("status") != "passed":
             if exit_code == 0:
                 exit_code = 1
-            message = browser_layout_audit.get("message") or f"Browser layout audit failed for case {case['id']}."
+            native_layout_status = native_layout_audit.get("status")
+            message = native_layout_audit.get("message") or (
+                f"Native layout audit {native_layout_status} for case {case['id']}."
+            )
+            log_prefix = "native-layout-audit-warning" if native_layout_status == "warning" else "native-layout-audit"
             with _verification_run_paths(workspace_path, run_id, workstream_id=workstream_id)["stderr_log"].open("a") as handle:
-                handle.write(f"\n[browser-layout-audit] {message}\n")
+                handle.write(f"\n[{log_prefix}] {message}\n")
             _append_event(
                 workspace_path,
                 run_id,
-                "browser_layout_audit_failed",
+                "native_layout_audit_warning" if native_layout_status == "warning" else "native_layout_audit_failed",
+                message,
+                workstream_id=workstream_id,
+                case_id=case["id"],
+                issue_count=native_layout_audit.get("issue_count"),
+                warning_count=native_layout_audit.get("warning_count"),
+                report_path=native_layout_audit.get("report_path"),
+                source_report_path=native_layout_audit.get("source_report_path"),
+            )
+        if browser_layout_audit.get("enabled") and browser_layout_audit.get("status") != "passed":
+            if exit_code == 0:
+                exit_code = 1
+            browser_layout_status = browser_layout_audit.get("status")
+            message = browser_layout_audit.get("message") or (
+                f"Browser layout audit {browser_layout_status} for case {case['id']}."
+            )
+            log_prefix = "browser-layout-audit-warning" if browser_layout_status == "warning" else "browser-layout-audit"
+            with _verification_run_paths(workspace_path, run_id, workstream_id=workstream_id)["stderr_log"].open("a") as handle:
+                handle.write(f"\n[{log_prefix}] {message}\n")
+            _append_event(
+                workspace_path,
+                run_id,
+                "browser_layout_audit_warning" if browser_layout_status == "warning" else "browser_layout_audit_failed",
                 message,
                 workstream_id=workstream_id,
                 case_id=case["id"],
                 issue_count=browser_layout_audit.get("issue_count"),
+                warning_count=browser_layout_audit.get("warning_count"),
                 report_path=browser_layout_audit.get("report_path"),
                 screenshot_path=browser_layout_audit.get("screenshot_path"),
             )
@@ -3335,6 +4614,28 @@ def execute_verification_run(workspace: str | Path, run_id: str, workstream_id: 
                 "failed_checks": semantic_assertions.get("failed_checks", []),
                 "optional_failed_checks": semantic_assertions.get("optional_failed_checks", []),
             }
+        if native_layout_audit.get("enabled"):
+            _append_event(
+                workspace_path,
+                run_id,
+                "native_layout_audit_validated",
+                f"Native layout audit {native_layout_audit.get('status')} for case {case['id']}.",
+                workstream_id=workstream_id,
+                case_id=case["id"],
+                status=native_layout_audit.get("status"),
+                issue_count=native_layout_audit.get("issue_count"),
+                report_path=native_layout_audit.get("report_path"),
+                source_report_path=native_layout_audit.get("source_report_path"),
+            )
+            run.setdefault("summary", {})
+            run["summary"]["native_layout_audit"] = {
+                "case_id": case["id"],
+                "status": native_layout_audit.get("status"),
+                "issue_count": native_layout_audit.get("issue_count"),
+                "warning_count": native_layout_audit.get("warning_count"),
+                "report_path": native_layout_audit.get("report_path"),
+                "source_report_path": native_layout_audit.get("source_report_path"),
+            }
         if browser_layout_audit.get("enabled"):
             _append_event(
                 workspace_path,
@@ -3367,6 +4668,7 @@ def execute_verification_run(workspace: str | Path, run_id: str, workstream_id: 
             exit_code=exit_code,
             status=case_state["status"],
             baseline_status=case_state["baseline"]["status"],
+            native_layout_status=native_layout_audit.get("status"),
             browser_layout_status=browser_layout_audit.get("status"),
             logcat_signals=(logcat_summary or {}).get("signals"),
         )
@@ -3374,8 +4676,13 @@ def execute_verification_run(workspace: str | Path, run_id: str, workstream_id: 
             run["status"] = "failed"
             run["completed_at"] = now_iso()
             run["completed_at_ns"] = time.time_ns()
+            preserved_summary = {
+                key: value
+                for key, value in (run.get("summary") or {}).items()
+                if key in {"logcat_crash_summary", "semantic_summary", "browser_layout_audit", "native_layout_audit"}
+            }
             run["summary"] = {
-                **({key: value for key, value in (run.get("summary") or {}).items() if key == "logcat_crash_summary"}),
+                **preserved_summary,
                 "total_cases": len(run["case_ids"]),
                 "passed_cases": passed_cases,
                 "failed_cases": failed_cases,
@@ -3388,8 +4695,13 @@ def execute_verification_run(workspace: str | Path, run_id: str, workstream_id: 
     run["status"] = "passed"
     run["completed_at"] = now_iso()
     run["completed_at_ns"] = time.time_ns()
+    preserved_summary = {
+        key: value
+        for key, value in (run.get("summary") or {}).items()
+        if key in {"logcat_crash_summary", "semantic_summary", "browser_layout_audit", "native_layout_audit"}
+    }
     run["summary"] = {
-        **({key: value for key, value in (run.get("summary") or {}).items() if key == "logcat_crash_summary"}),
+        **preserved_summary,
         "total_cases": len(run["case_ids"]),
         "passed_cases": passed_cases,
         "failed_cases": failed_cases,

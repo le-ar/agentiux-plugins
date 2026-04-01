@@ -34,6 +34,7 @@ The source repo remains the place where you edit and verify the plugin. The inst
 - Verification events, stdout, stderr, Android logcat, and artifacts stay in external plugin state so the repo remains clean.
 - Web visual verification must use semantic assertions with the core layout guardrail set: `presence_uniqueness`, `visibility`, `overflow_clipping`, `computed_styles`, `interaction_states`, `scroll_reachability`, and `occlusion`.
 - Web workspaces must also ship at least one live `browser-layout-audit` case so computed overlap, occlusion, clipping, and viewport regressions are checked on a real rendered page.
+- Layout-audit warning states are non-green by design. Suspicious spacing, padding, rhythm, tap-target, or contrast drift should force review instead of being treated as informational noise.
 - Local Git helpers inspect and write locally only. They do not push branches or publish pull requests.
 
 ## Recommended Flows
@@ -56,7 +57,10 @@ The source repo remains the place where you edit and verify the plugin. The inst
 - verification recipes, runs, progress events, baseline status, and logs outside project repos
 - explicit stage planning where template fragments stay advisory and concrete stage definitions are user-approved
 - deterministic verification guidance for web, mobile, backend, monorepo, and plugin-runtime work
-- coverage audits that flag any Playwright-backed web case missing semantic assertions or core layout checks, and any web workspace missing a live browser layout audit case
+- coverage audits that flag any Playwright-backed web case missing semantic assertions or core layout checks, any web workspace missing a live browser layout audit case, and any mobile workspace missing native layout audit coverage for Detox or Compose visual cases
+- a shared `catalogs/layout_audit_rules.json` rule catalog that keeps browser and native spacing, drift, tap-target, and contrast thresholds aligned
+- native layout audits that can raise non-green warning states for suspicious mobile geometry such as asymmetric gutters, inconsistent gaps, vertical-rhythm drift, unexpected flex distribution, or undersized tap targets, even when there is no hard overlap or style mismatch yet
+- browser layout audits that can raise non-green warning states for suspicious web geometry or computed-style regressions such as container-padding imbalance, ragged grids, low-contrast text, spacing drift, and undersized controls
 - release-readiness dashboard checks that seed a real cockpit fixture and run live headless browser layout audits at desktop and mobile widths
 - curated greenfield starters as thin wrappers around official CLIs
 - repository audits and upgrade plans for existing repos
