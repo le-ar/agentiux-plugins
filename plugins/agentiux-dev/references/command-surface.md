@@ -85,7 +85,7 @@ AgentiUX Dev exposes a small chat-first command surface.
 - The initialization proposal should appear proactively when stage-aware work starts, even if the user did not explicitly ask for initialization.
 - The initialization proposal must show detected stacks plus the absolute external paths it will create.
 - The tracked source keeps canonical command phrases in English.
-- Localized aliases are resolved at runtime only and must not move the tracked source away from English.
+- Any localized aliases must come from external or runtime-only data and are not bundled into tracked source.
 - If the user describes work without naming `create workstream` or `create task`, the kernel should infer the right mode first.
 - `continue work` is an execution-intent trigger only after the workspace is initialized and either a current task exists or the current workstream has a confirmed stage plan.
 - `propose stage plan changes` is a planning action. It must not mutate state.

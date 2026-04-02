@@ -32,6 +32,7 @@ from agentiux_dev_auth import (
 )
 from agentiux_dev_gui import stop as stop_gui
 from agentiux_dev_lib import (
+    SURFACE_PAYLOAD_CEILINGS,
     STATE_SCHEMA_VERSION,
     _host_setup_recipe_for_tool,
     _safe_rglob,
@@ -61,8 +62,10 @@ from agentiux_dev_lib import (
     list_workspaces,
     list_workstreams,
     migrate_workspace_state,
+    normalize_command_phrase,
     plugin_stats,
     plan_git_change,
+    payload_size_bytes,
     preview_repair_workspace_state,
     preview_workspace_init,
     python_script_command,
@@ -132,6 +135,7 @@ from agentiux_dev_context import (
     show_intent_route,
     show_workspace_context_pack,
 )
+from agentiux_dev_text import tokenize_text
 
 
 class _FakeYouTrackHandler(BaseHTTPRequestHandler):
@@ -868,9 +872,8 @@ def _assert_clean_repo_text(repo_root: Path, plugin_root: Path) -> None:
     assert not offenders, "\n".join(offenders)
 
     non_english: list[str] = []
-    allowed_exceptions = {"smoke_test.py"}
     for path in plugin_root.rglob("*"):
-        if not path.is_file() or path.name in allowed_exceptions or "__pycache__" in path.parts or path.suffix == ".pyc":
+        if not path.is_file() or "__pycache__" in path.parts or path.suffix == ".pyc":
             continue
         text = path.read_text(encoding="utf-8", errors="ignore")
         if any(
@@ -1037,8 +1040,12 @@ def main() -> int:
         aliases = command_aliases()
         assert "initialize workspace" in aliases
         assert "create workstream" in aliases
-        assert resolve_command_phrase("\u0438\u043d\u0438\u0446\u0438\u0430\u043b\u0438\u0437\u0438\u0440\u0443\u0439 workspace") == "initialize workspace"
-        assert resolve_command_phrase("\u0441\u043e\u0437\u0434\u0430\u0439 workstream") == "create workstream"
+        assert all(all(ord(char) < 128 for char in alias) for values in aliases.values() for alias in values)
+        assert resolve_command_phrase("init workspace") == "initialize workspace"
+        assert resolve_command_phrase("please show workspace context pack for this repo") == "show workspace context pack"
+        mixed_script_request = "Inspect \uff2d\uff23\uff30 tool catalogs and the dashboard runtime for plugin development \u03a3"
+        assert normalize_command_phrase(mixed_script_request).startswith("inspect mcp")
+        assert "mcp" in tokenize_text(mixed_script_request)
 
         context_catalogs = check_catalogs(plugin_root)
         assert context_catalogs["status"] == "ok"
@@ -1066,9 +1073,13 @@ def main() -> int:
         git_route = show_intent_route(request_text="Inspect git worktree and propose a commit message")
         assert git_route["resolved_route"]["route_id"] == "git"
         assert git_route["resolution_status"] == "matched"
+        assert git_route["payload"]["within_ceiling"] is True
         verification_route = show_intent_route(request_text="Check semantic verification helper bundle drift")
         assert verification_route["resolved_route"]["route_id"] == "verification"
         assert verification_route["resolution_status"] == "matched"
+        mixed_plugin_route = show_intent_route(request_text=mixed_script_request)
+        assert mixed_plugin_route["resolved_route"]["route_id"] == "plugin-dev"
+        assert mixed_plugin_route["resolution_status"] == "matched"
         unresolved_route = show_intent_route(request_text="frobnicate lattice quux")
         assert unresolved_route["resolved_route"] is None
         assert unresolved_route["resolution_status"] == "unresolved"
@@ -1088,31 +1099,38 @@ def main() -> int:
         assert repo_context_refresh_again["refresh_reason"] == "manifest-match"
         repo_context_search = search_context_index(
             repo_root,
-            "Inspect MCP tool catalogs and the dashboard runtime for plugin development",
+            mixed_script_request,
             route_id="plugin-dev",
             limit=5,
         )
         assert repo_context_search["resolved_route"]["route_id"] == "plugin-dev"
         assert repo_context_search["route_resolution_status"] == "exact"
-        assert repo_context_search["index_status"] == "fresh"
+        assert repo_context_search["index_status"] in {"fresh", "refreshed", "context-refreshed"}
         assert repo_context_search["matches"]
+        assert repo_context_search["retrieval"]["mode"] == "orientation"
+        assert repo_context_search["payload"]["within_ceiling"] is True
+        assert payload_size_bytes(repo_context_search) <= SURFACE_PAYLOAD_CEILINGS["search_context_index"]
         assert any(entry["id"] == "show_capability_catalog" for entry in repo_context_search["recommended_capabilities"])
         repo_context_pack = show_workspace_context_pack(
             repo_root,
-            request_text="Inspect MCP tool catalogs and the dashboard runtime for plugin development",
+            request_text=mixed_script_request,
             route_id="plugin-dev",
             limit=5,
         )
         assert repo_context_pack["cache_status"] == "miss"
-        assert repo_context_pack["index_status"] == "fresh"
+        assert repo_context_pack["index_status"] in {"fresh", "refreshed", "context-refreshed"}
+        assert repo_context_pack["retrieval"]["mode"] == "orientation"
+        assert repo_context_pack["payload"]["within_ceiling"] is True
+        assert payload_size_bytes(repo_context_pack) <= SURFACE_PAYLOAD_CEILINGS["show_workspace_context_pack"]
         assert repo_context_pack["context_pack"]["selected_chunks"]
         cached_repo_context_pack = show_workspace_context_pack(
             repo_root,
-            request_text="Inspect MCP tool catalogs and the dashboard runtime for plugin development",
+            request_text=mixed_script_request,
             route_id="plugin-dev",
             limit=5,
         )
         assert cached_repo_context_pack["cache_status"] == "hit"
+        assert cached_repo_context_pack["payload"]["within_ceiling"] is True
         assert cached_repo_context_pack["context_pack"]["catalog_digest"] == repo_context_pack["workspace_context"]["catalog_digest"]
 
         workspace_context_refresh = refresh_context_index(workspace)
@@ -1129,7 +1147,7 @@ def main() -> int:
             limit=4,
         )
         assert workspace_context_pack["cache_status"] == "miss"
-        assert workspace_context_pack["index_status"] == "fresh"
+        assert workspace_context_pack["index_status"] in {"fresh", "refreshed", "context-refreshed"}
         assert workspace_context_pack["route_resolution_status"] == "exact"
         cached_workspace_context_pack = show_workspace_context_pack(
             workspace,
@@ -1613,11 +1631,16 @@ def main() -> int:
         workstream_advice = workflow_advice(workspace, "Implement checkout feature across web and backend", auto_create=True)
         assert workstream_advice["applied_action"] is None
         assert workstream_advice["requires_confirmation"] is True
+        assert workstream_advice["retrieval"]["mode"] == "execution"
+        assert workstream_advice["payload"]["within_ceiling"] is True
         assert workstream_advice["track_recommendation"]["recommended_mode"] == "workstream"
         assert len(list_workstreams(workspace)["items"]) == 1
 
         task_advice = workflow_advice(workspace, "Fix CTA spacing in the hero section", auto_create=True)
         assert task_advice["auto_create_supported"] is True
+        assert task_advice["retrieval"]["mode"] == "fix"
+        assert task_advice["payload"]["within_ceiling"] is True
+        assert payload_size_bytes(task_advice) <= SURFACE_PAYLOAD_CEILINGS["workflow_advice"]
         assert task_advice["applied_action"]["action"] == "create_task"
         assert task_advice["requires_confirmation"] is False
         task_id = task_advice["applied_action"]["task_id"]

@@ -11,10 +11,31 @@ import subprocess
 import sys
 import textwrap
 import time
+import unicodedata
 import uuid
 from datetime import datetime, timezone
+from functools import lru_cache
 from pathlib import Path
 from typing import Any
+
+from agentiux_dev_request_intent import (
+    CANONICAL_COMMAND_SURFACE,
+    SMALL_TASK_HINTS,
+    STARTER_PRESETS,
+    analyze_request_text as _analyze_request_text,
+    command_aliases,
+    recommend_starter_preset as _recommend_starter_preset,
+    resolve_command_phrase,
+)
+from agentiux_dev_retrieval import (
+    RETRIEVAL_MODE_PROFILES,
+    SURFACE_PAYLOAD_CEILINGS,
+    infer_retrieval_mode,
+    payload_size_bytes,
+    retrieval_mode_profile,
+    retrieval_policy_payload,
+)
+from agentiux_dev_text import match_keywords as _matched_keywords, normalize_command_phrase
 
 
 PLUGIN_NAME = "agentiux-dev"
@@ -99,804 +120,6 @@ DISCOVERY_EXCLUDED_DIRS = {
     "build",
 }
 
-CANONICAL_COMMAND_SURFACE = [
-    "initialize workspace",
-    "preview reset workspace state",
-    "reset workspace state",
-    "preview repair workspace state",
-    "repair workspace state",
-    "show state paths",
-    "show stages",
-    "show active brief",
-    "propose stage plan changes",
-    "apply stage plan changes",
-    "continue work",
-    "close current stage",
-    "launch gui",
-    "stop gui",
-    "show gui url",
-    "run verification case",
-    "run verification suite",
-    "show verification log",
-    "show verification recipes",
-    "show verification helper catalog",
-    "audit verification coverage",
-    "sync verification helpers",
-    "resolve verification",
-    "show capability catalog",
-    "show intent route",
-    "show workspace context pack",
-    "search context index",
-    "refresh context index",
-    "approve verification baseline",
-    "update verification baseline",
-    "show host support",
-    "show host setup plan",
-    "install host requirements",
-    "repair host requirements",
-    "create workstream",
-    "list workstreams",
-    "switch workstream",
-    "show current workstream",
-    "close current workstream",
-    "create task",
-    "switch task",
-    "list tasks",
-    "show current task",
-    "close current task",
-    "show auth profiles",
-    "write auth profile",
-    "remove auth profile",
-    "resolve auth profile",
-    "list auth sessions",
-    "get auth session",
-    "write auth session",
-    "invalidate auth session",
-    "remove auth session",
-    "list project notes",
-    "get project note",
-    "write project note",
-    "archive project note",
-    "search project notes",
-    "get analytics snapshot",
-    "list learning entries",
-    "write learning entry",
-    "update learning entry",
-    "show youtrack connections",
-    "connect youtrack",
-    "update youtrack connection",
-    "remove youtrack connection",
-    "search youtrack issues",
-    "show youtrack issue queue",
-    "propose youtrack workstream plan",
-    "apply youtrack workstream plan",
-    "audit repository",
-    "show upgrade plan",
-    "apply upgrade plan",
-    "create starter",
-    "show starter presets",
-    "suggest branch name",
-    "suggest commit message",
-    "suggest pr title",
-    "suggest pr body",
-    "show git workflow advice",
-    "show git state",
-    "plan git change",
-    "create git branch",
-    "stage git files",
-    "create git commit",
-]
-
-EXECUTION_INTENT_HINTS = [
-    "implement",
-    "build",
-    "create",
-    "add",
-    "fix",
-    "update",
-    "refactor",
-    "develop",
-    "continue work",
-    "ship",
-    "\u0441\u0434\u0435\u043b\u0430\u0439",
-    "\u0440\u0435\u0430\u043b\u0438\u0437\u0443\u0439",
-    "\u0434\u043e\u0431\u0430\u0432\u044c",
-    "\u0438\u0441\u043f\u0440\u0430\u0432\u044c",
-    "\u043f\u043e\u0447\u0438\u043d\u0438",
-    "\u043f\u0440\u043e\u0434\u043e\u043b\u0436\u0430\u0439",
-]
-
-GREENFIELD_HINTS = [
-    "from scratch",
-    "greenfield",
-    "new project",
-    "new app",
-    "create project",
-    "create app",
-    "bootstrap",
-    "starter",
-    "scaffold",
-    "\u0441 \u043d\u0443\u043b\u044f",
-    "\u043d\u043e\u0432\u044b\u0439 \u043f\u0440\u043e\u0435\u043a\u0442",
-    "\u0441\u043e\u0437\u0434\u0430\u0439 \u043f\u0440\u043e\u0435\u043a\u0442",
-    "\u0441\u0442\u0430\u0440\u0442\u0435\u0440",
-]
-
-LARGE_WORK_HINTS = [
-    "feature",
-    "epic",
-    "flow",
-    "screen",
-    "module",
-    "system",
-    "architecture",
-    "migration",
-    "checkout",
-    "authentication",
-    "onboarding",
-    "dashboard",
-    "fullstack",
-    "multi-step",
-    "parallel",
-    "\u0444\u0438\u0447",
-    "\u0431\u043e\u043b\u044c\u0448",
-    "\u0430\u0440\u0445\u0438\u0442\u0435\u043a\u0442",
-    "\u043c\u0438\u0433\u0440\u0430\u0446",
-    "\u044d\u043a\u0440\u0430\u043d",
-    "\u043c\u043e\u0434\u0443\u043b",
-    "\u0432\u0435\u0442\u043a",
-]
-
-SMALL_TASK_HINTS = [
-    "fix",
-    "bug",
-    "typo",
-    "spacing",
-    "padding",
-    "margin",
-    "rename",
-    "adjust",
-    "tweak",
-    "patch",
-    "button",
-    "copy",
-    "text",
-    "lint",
-    "warning",
-    "\u043f\u043e\u0444\u0438\u043a\u0441",
-    "\u0438\u0441\u043f\u0440\u0430\u0432",
-    "\u043f\u043e\u043f\u0440\u0430\u0432",
-    "\u043e\u0442\u0441\u0442\u0443\u043f",
-    "\u043a\u043d\u043e\u043f\u043a",
-    "\u0442\u0435\u043a\u0441\u0442",
-    "\u043e\u043f\u0435\u0447\u0430\u0442",
-]
-
-AUDIT_HINTS = [
-    "audit repository",
-    "upgrade plan",
-    "audit",
-    "review repository",
-    "assess repository",
-    "onboard repository",
-    "\u0430\u0443\u0434\u0438\u0442",
-    "upgrade plan",
-]
-
-COMMIT_HINTS = [
-    "commit",
-    "git commit",
-    "commit changes",
-    "commit this",
-    "\u0437\u0430\u043a\u043e\u043c\u0438\u0442",
-    "\u043a\u043e\u043c\u043c\u0438\u0442",
-]
-
-STARTER_PRESET_HINTS = {
-    "next-web": [
-        "next",
-        "web",
-        "website",
-        "landing",
-        "tailwind",
-        "react app",
-        "\u0432\u0435\u0431",
-        "\u0441\u0430\u0439\u0442",
-    ],
-    "expo-mobile": [
-        "expo",
-        "mobile",
-        "ios",
-        "android",
-        "react native",
-        "nativewind",
-        "\u043c\u043e\u0431\u0438\u043b",
-        "\u0430\u043d\u0434\u0440\u043e\u0438\u0434",
-        "\u0430\u0439\u043e\u0441",
-    ],
-    "nestjs-api": [
-        "nestjs",
-        "api",
-        "backend",
-        "service",
-        "node api",
-        "\u0431\u044d\u043a",
-        "\u0430\u043f\u0438",
-    ],
-    "rust-service": [
-        "rust",
-        "worker",
-        "daemon",
-        "service",
-        "\u0440\u0430\u0441\u0442",
-        "\u0441\u0435\u0440\u0432\u0438\u0441",
-    ],
-    "nx-fullstack": [
-        "nx",
-        "monorepo",
-        "fullstack",
-        "workspace",
-        "\u043c\u043e\u043d\u043e\u0440\u0435\u043f",
-        "\u0444\u0443\u043b\u043b\u0441\u0442\u0435\u043a",
-    ],
-}
-
-# Localized aliases stay runtime-only and use ASCII escape sequences so tracked source remains English-only.
-COMMAND_ALIAS_TABLE = {
-    "initialize workspace": [
-        "initialize workspace",
-        "\u0438\u043d\u0438\u0446\u0438\u0430\u043b\u0438\u0437\u0438\u0440\u0443\u0439 workspace",
-    ],
-    "reset workspace state": [
-        "reset workspace state",
-        "\u0441\u0431\u0440\u043e\u0441\u044c workspace state",
-    ],
-    "preview repair workspace state": [
-        "preview repair workspace state",
-        "\u043f\u043e\u043a\u0430\u0436\u0438 repair workspace state",
-    ],
-    "repair workspace state": [
-        "repair workspace state",
-        "\u043f\u043e\u0447\u0438\u043d\u0438 workspace state",
-    ],
-    "show state paths": [
-        "show state paths",
-        "\u043f\u043e\u043a\u0430\u0436\u0438 state paths",
-    ],
-    "show stages": [
-        "show stages",
-        "\u043f\u043e\u043a\u0430\u0436\u0438 \u0441\u0442\u0430\u0434\u0438\u0438",
-    ],
-    "show active brief": [
-        "show active brief",
-        "\u043f\u043e\u043a\u0430\u0436\u0438 \u0430\u043a\u0442\u0438\u0432\u043d\u044b\u0439 brief",
-    ],
-    "propose stage plan changes": [
-        "propose stage plan changes",
-        "\u043f\u0440\u0435\u0434\u043b\u043e\u0436\u0438 \u0438\u0437\u043c\u0435\u043d\u0435\u043d\u0438\u044f stage plan",
-    ],
-    "apply stage plan changes": [
-        "apply stage plan changes",
-        "\u043f\u0440\u0438\u043c\u0435\u043d\u0438 \u0438\u0437\u043c\u0435\u043d\u0435\u043d\u0438\u044f stage plan",
-    ],
-    "continue work": [
-        "continue work",
-        "\u043f\u0440\u043e\u0434\u043e\u043b\u0436\u0430\u0439 \u0440\u0430\u0431\u043e\u0442\u0443",
-    ],
-    "close current stage": [
-        "close current stage",
-        "\u0437\u0430\u043a\u0440\u043e\u0439 \u0442\u0435\u043a\u0443\u0449\u0443\u044e \u0441\u0442\u0430\u0434\u0438\u044e",
-    ],
-    "launch gui": [
-        "launch gui",
-        "\u0437\u0430\u043f\u0443\u0441\u0442\u0438 gui",
-    ],
-    "stop gui": [
-        "stop gui",
-        "\u043e\u0441\u0442\u0430\u043d\u043e\u0432\u0438 gui",
-    ],
-    "show gui url": [
-        "show gui url",
-        "\u043f\u043e\u043a\u0430\u0436\u0438 gui url",
-    ],
-    "run verification case": [
-        "run verification case",
-        "\u0437\u0430\u043f\u0443\u0441\u0442\u0438 verification case",
-    ],
-    "run verification suite": [
-        "run verification suite",
-        "\u0437\u0430\u043f\u0443\u0441\u0442\u0438 verification suite",
-    ],
-    "show verification log": [
-        "show verification log",
-        "\u043f\u043e\u043a\u0430\u0436\u0438 verification log",
-    ],
-    "show verification recipes": [
-        "show verification recipes",
-        "\u043f\u043e\u043a\u0430\u0436\u0438 verification recipes",
-    ],
-    "show verification helper catalog": [
-        "show verification helper catalog",
-        "\u043f\u043e\u043a\u0430\u0436\u0438 verification helper catalog",
-    ],
-    "audit verification coverage": [
-        "audit verification coverage",
-        "\u043f\u0440\u043e\u0432\u0435\u0440\u044c verification coverage",
-    ],
-    "sync verification helpers": [
-        "sync verification helpers",
-        "\u0441\u0438\u043d\u0445\u0440\u043e\u043d\u0438\u0437\u0438\u0440\u0443\u0439 verification helpers",
-    ],
-    "resolve verification": [
-        "resolve verification",
-        "\u043f\u043e\u043a\u0430\u0436\u0438 verification plan",
-    ],
-    "show capability catalog": [
-        "show capability catalog",
-        "\u043f\u043e\u043a\u0430\u0436\u0438 capability catalog",
-    ],
-    "show intent route": [
-        "show intent route",
-        "\u043f\u043e\u043a\u0430\u0436\u0438 intent route",
-    ],
-    "show workspace context pack": [
-        "show workspace context pack",
-        "\u043f\u043e\u043a\u0430\u0436\u0438 workspace context pack",
-    ],
-    "search context index": [
-        "search context index",
-        "\u043f\u043e\u0438\u0449\u0438 context index",
-    ],
-    "refresh context index": [
-        "refresh context index",
-        "\u043e\u0431\u043d\u043e\u0432\u0438 context index",
-    ],
-    "approve verification baseline": [
-        "approve verification baseline",
-        "\u043f\u043e\u0434\u0442\u0432\u0435\u0440\u0434\u0438 verification baseline",
-    ],
-    "update verification baseline": [
-        "update verification baseline",
-        "\u043e\u0431\u043d\u043e\u0432\u0438 verification baseline",
-    ],
-    "show host support": [
-        "show host support",
-        "\u043f\u043e\u043a\u0430\u0436\u0438 host support",
-    ],
-    "show host setup plan": [
-        "show host setup plan",
-        "\u043f\u043e\u043a\u0430\u0436\u0438 host setup plan",
-    ],
-    "install host requirements": [
-        "install host requirements",
-        "\u0443\u0441\u0442\u0430\u043d\u043e\u0432\u0438 host requirements",
-    ],
-    "repair host requirements": [
-        "repair host requirements",
-        "\u043f\u043e\u0447\u0438\u043d\u0438 host requirements",
-    ],
-    "create workstream": [
-        "create workstream",
-        "\u0441\u043e\u0437\u0434\u0430\u0439 workstream",
-    ],
-    "list workstreams": [
-        "list workstreams",
-        "\u043f\u043e\u043a\u0430\u0436\u0438 workstreams",
-    ],
-    "switch workstream": [
-        "switch workstream",
-        "\u043f\u0435\u0440\u0435\u043a\u043b\u044e\u0447\u0438 workstream",
-    ],
-    "show current workstream": [
-        "show current workstream",
-        "\u043f\u043e\u043a\u0430\u0436\u0438 current workstream",
-    ],
-    "close current workstream": [
-        "close current workstream",
-        "\u0437\u0430\u043a\u0440\u043e\u0439 current workstream",
-    ],
-    "create task": [
-        "create task",
-        "\u0441\u043e\u0437\u0434\u0430\u0439 task",
-    ],
-    "switch task": [
-        "switch task",
-        "\u043f\u0435\u0440\u0435\u043a\u043b\u044e\u0447\u0438 task",
-    ],
-    "list tasks": [
-        "list tasks",
-        "\u043f\u043e\u043a\u0430\u0436\u0438 tasks",
-    ],
-    "show current task": [
-        "show current task",
-        "\u043f\u043e\u043a\u0430\u0436\u0438 current task",
-    ],
-    "close current task": [
-        "close current task",
-        "\u0437\u0430\u043a\u0440\u043e\u0439 current task",
-    ],
-    "show auth profiles": [
-        "show auth profiles",
-        "\u043f\u043e\u043a\u0430\u0436\u0438 auth profiles",
-    ],
-    "write auth profile": [
-        "write auth profile",
-        "\u0437\u0430\u043f\u0438\u0448\u0438 auth profile",
-    ],
-    "remove auth profile": [
-        "remove auth profile",
-        "\u0443\u0434\u0430\u043b\u0438 auth profile",
-    ],
-    "resolve auth profile": [
-        "resolve auth profile",
-        "\u0440\u0435\u0437\u043e\u043b\u0432\u0438 auth profile",
-    ],
-    "list auth sessions": [
-        "list auth sessions",
-        "\u043f\u043e\u043a\u0430\u0436\u0438 auth sessions",
-    ],
-    "get auth session": [
-        "get auth session",
-        "\u043f\u043e\u043a\u0430\u0436\u0438 auth session",
-    ],
-    "write auth session": [
-        "write auth session",
-        "\u0437\u0430\u043f\u0438\u0448\u0438 auth session",
-    ],
-    "invalidate auth session": [
-        "invalidate auth session",
-        "\u0438\u043d\u0432\u0430\u043b\u0438\u0434\u0438\u0440\u0443\u0439 auth session",
-    ],
-    "remove auth session": [
-        "remove auth session",
-        "\u0443\u0434\u0430\u043b\u0438 auth session",
-    ],
-    "list project notes": [
-        "list project notes",
-        "\u043f\u043e\u043a\u0430\u0436\u0438 project notes",
-    ],
-    "get project note": [
-        "get project note",
-        "\u043f\u043e\u043a\u0430\u0436\u0438 project note",
-    ],
-    "write project note": [
-        "write project note",
-        "\u0437\u0430\u043f\u0438\u0448\u0438 project note",
-    ],
-    "archive project note": [
-        "archive project note",
-        "\u0430\u0440\u0445\u0438\u0432\u0438\u0440\u0443\u0439 project note",
-    ],
-    "search project notes": [
-        "search project notes",
-        "\u043f\u043e\u0438\u0449\u0438 project notes",
-    ],
-    "get analytics snapshot": [
-        "get analytics snapshot",
-        "\u043f\u043e\u043a\u0430\u0436\u0438 analytics snapshot",
-    ],
-    "list learning entries": [
-        "list learning entries",
-        "\u043f\u043e\u043a\u0430\u0436\u0438 learning entries",
-    ],
-    "write learning entry": [
-        "write learning entry",
-        "\u0437\u0430\u043f\u0438\u0448\u0438 learning entry",
-    ],
-    "update learning entry": [
-        "update learning entry",
-        "\u043e\u0431\u043d\u043e\u0432\u0438 learning entry",
-    ],
-    "show youtrack connections": [
-        "show youtrack connections",
-        "\u043f\u043e\u043a\u0430\u0436\u0438 youtrack connections",
-    ],
-    "connect youtrack": [
-        "connect youtrack",
-        "\u043f\u043e\u0434\u043a\u043b\u044e\u0447\u0438 youtrack",
-    ],
-    "update youtrack connection": [
-        "update youtrack connection",
-        "\u043e\u0431\u043d\u043e\u0432\u0438 youtrack connection",
-    ],
-    "remove youtrack connection": [
-        "remove youtrack connection",
-        "\u0443\u0434\u0430\u043b\u0438 youtrack connection",
-    ],
-    "search youtrack issues": [
-        "search youtrack issues",
-        "\u043d\u0430\u0439\u0434\u0438 youtrack issues",
-    ],
-    "show youtrack issue queue": [
-        "show youtrack issue queue",
-        "\u043f\u043e\u043a\u0430\u0436\u0438 youtrack issue queue",
-    ],
-    "propose youtrack workstream plan": [
-        "propose youtrack workstream plan",
-        "\u043f\u0440\u0435\u0434\u043b\u043e\u0436\u0438 youtrack workstream plan",
-    ],
-    "apply youtrack workstream plan": [
-        "apply youtrack workstream plan",
-        "\u043f\u0440\u0438\u043c\u0435\u043d\u0438 youtrack workstream plan",
-    ],
-    "audit repository": [
-        "audit repository",
-        "\u0430\u0443\u0434\u0438\u0442 repo",
-    ],
-    "show upgrade plan": [
-        "show upgrade plan",
-        "\u043f\u043e\u043a\u0430\u0436\u0438 upgrade plan",
-    ],
-    "apply upgrade plan": [
-        "apply upgrade plan",
-        "\u043f\u0440\u0438\u043c\u0435\u043d\u0438 upgrade plan",
-    ],
-    "create starter": [
-        "create starter",
-        "\u0441\u043e\u0437\u0434\u0430\u0439 starter",
-    ],
-    "show starter presets": [
-        "show starter presets",
-        "\u043f\u043e\u043a\u0430\u0436\u0438 starter presets",
-    ],
-    "suggest branch name": [
-        "suggest branch name",
-        "\u043f\u0440\u0435\u0434\u043b\u043e\u0436\u0438 branch name",
-    ],
-    "suggest commit message": [
-        "suggest commit message",
-        "\u043f\u0440\u0435\u0434\u043b\u043e\u0436\u0438 commit message",
-    ],
-    "suggest pr title": [
-        "suggest pr title",
-        "\u043f\u0440\u0435\u0434\u043b\u043e\u0436\u0438 pr title",
-    ],
-    "suggest pr body": [
-        "suggest pr body",
-        "\u043f\u0440\u0435\u0434\u043b\u043e\u0436\u0438 pr body",
-    ],
-    "show git workflow advice": [
-        "show git workflow advice",
-        "\u043f\u043e\u043a\u0430\u0436\u0438 git workflow advice",
-    ],
-    "show git state": [
-        "show git state",
-        "\u043f\u043e\u043a\u0430\u0436\u0438 git state",
-    ],
-    "plan git change": [
-        "plan git change",
-        "\u0441\u043f\u043b\u0430\u043d\u0438\u0440\u0443\u0439 git change",
-    ],
-    "create git branch": [
-        "create git branch",
-        "\u0441\u043e\u0437\u0434\u0430\u0439 git branch",
-    ],
-    "stage git files": [
-        "stage git files",
-        "\u0434\u043e\u0431\u0430\u0432\u044c git files \u0432 stage",
-    ],
-    "create git commit": [
-        "create git commit",
-        "\u0441\u043e\u0437\u0434\u0430\u0439 git commit",
-    ],
-}
-
-STARTER_PRESETS: dict[str, dict[str, Any]] = {
-    "next-web": {
-        "preset_id": "next-web",
-        "display_name": "Next.js Web Starter",
-        "description": "Next.js, TypeScript, Tailwind, Docker Compose local infra hooks, and Playwright-ready verification setup.",
-        "kind": "web",
-        "required_commands": ["npx"],
-        "bootstrap_commands": [
-            {
-                "argv": [
-                    "npx",
-                    "create-next-app@latest",
-                    "__PROJECT_NAME__",
-                    "--ts",
-                    "--tailwind",
-                    "--eslint",
-                    "--app",
-                    "--src-dir",
-                    "--use-npm",
-                    "--yes",
-                ],
-                "cwd": "__DESTINATION_ROOT__",
-            }
-        ],
-        "post_setup": {
-            "docker_compose": False,
-            "verification_profile": "web",
-            "design_platform": "web",
-        },
-    },
-    "expo-mobile": {
-        "preset_id": "expo-mobile",
-        "display_name": "Expo Mobile Starter",
-        "description": "Expo, React Native, TypeScript, Nativewind, and deterministic mobile verification hooks.",
-        "kind": "mobile",
-        "required_commands": ["npx"],
-        "bootstrap_commands": [
-            {
-                "argv": [
-                    "npx",
-                    "create-expo-app@latest",
-                    "__PROJECT_NAME__",
-                    "--template",
-                    "blank-typescript",
-                ],
-                "cwd": "__DESTINATION_ROOT__",
-            }
-        ],
-        "post_setup": {
-            "docker_compose": False,
-            "verification_profile": "mobile",
-            "design_platform": "expo",
-        },
-    },
-    "nestjs-api": {
-        "preset_id": "nestjs-api",
-        "display_name": "NestJS API Starter",
-        "description": "NestJS API with Docker Compose local infra notes and backend verification hooks.",
-        "kind": "backend",
-        "required_commands": ["npx"],
-        "bootstrap_commands": [
-            {
-                "argv": [
-                    "npx",
-                    "@nestjs/cli",
-                    "new",
-                    "__PROJECT_NAME__",
-                    "--package-manager",
-                    "npm",
-                    "--skip-git",
-                ],
-                "cwd": "__DESTINATION_ROOT__",
-            }
-        ],
-        "post_setup": {
-            "docker_compose": True,
-            "verification_profile": "backend",
-            "design_platform": None,
-        },
-    },
-    "rust-service": {
-        "preset_id": "rust-service",
-        "display_name": "Rust Service Starter",
-        "description": "Rust service with Docker Compose local infra notes and service smoke verification hooks.",
-        "kind": "service",
-        "required_commands": ["cargo"],
-        "bootstrap_commands": [
-            {
-                "argv": ["cargo", "new", "__PROJECT_NAME__", "--bin"],
-                "cwd": "__DESTINATION_ROOT__",
-            }
-        ],
-        "post_setup": {
-            "docker_compose": True,
-            "verification_profile": "backend",
-            "design_platform": None,
-        },
-    },
-    "nx-fullstack": {
-        "preset_id": "nx-fullstack",
-        "display_name": "Nx Fullstack Starter",
-        "description": "Nx monorepo with Next.js web, NestJS API, shared libs, and monorepo-aware verification.",
-        "kind": "monorepo",
-        "required_commands": ["npx"],
-        "bootstrap_commands": [
-            {
-                "argv": [
-                    "npx",
-                    "create-nx-workspace@latest",
-                    "__PROJECT_NAME__",
-                    "--preset=apps",
-                    "--appName=web",
-                    "--style=tailwind",
-                    "--bundler=next",
-                    "--routing",
-                    "--interactive=false",
-                    "--packageManager=npm",
-                ],
-                "cwd": "__DESTINATION_ROOT__",
-            },
-            {
-                "argv": [
-                    "npx",
-                    "nx",
-                    "g",
-                    "@nx/nest:app",
-                    "api",
-                    "--frontendProject=web",
-                ],
-                "cwd": "__PROJECT_ROOT__",
-            },
-            {
-                "argv": [
-                    "npx",
-                    "nx",
-                    "g",
-                    "@nx/js:lib",
-                    "shared",
-                    "--bundler=none",
-                    "--unitTestRunner=none",
-                ],
-                "cwd": "__PROJECT_ROOT__",
-            },
-        ],
-        "post_setup": {
-            "docker_compose": True,
-            "verification_profile": "monorepo",
-            "design_platform": "web",
-        },
-    },
-}
-
-GREENFIELD_HINTS = [
-    "from scratch",
-    "new project",
-    "new repo",
-    "new repository",
-    "new app",
-    "start a project",
-    "bootstrap",
-    "scaffold",
-    "starter",
-    "boilerplate",
-    "greenfield",
-    "\u0441 \u043d\u0443\u043b\u044f",
-    "\u043d\u043e\u0432\u044b\u0439 \u043f\u0440\u043e\u0435\u043a\u0442",
-    "\u0441\u043e\u0437\u0434\u0430\u0439 \u043f\u0440\u043e\u0435\u043a\u0442",
-    "\u0441\u043e\u0437\u0434\u0430\u0439 \u043f\u0440\u0438\u043b\u043e\u0436\u0435\u043d\u0438\u0435",
-]
-
-LARGE_REQUEST_HINTS = [
-    "feature",
-    "epic",
-    "module",
-    "flow",
-    "integration",
-    "architecture",
-    "refactor",
-    "migration",
-    "dashboard",
-    "payment",
-    "auth",
-    "admin panel",
-    "multi-step",
-    "\u0444\u0438\u0447",
-    "\u044d\u043f\u0438\u043a",
-    "\u043c\u043e\u0434\u0443\u043b",
-    "\u0438\u043d\u0442\u0435\u0433\u0440\u0430\u0446",
-    "\u0430\u0440\u0445\u0438\u0442\u0435\u043a\u0442",
-    "\u0440\u0435\u0444\u0430\u043a\u0442",
-    "\u043c\u0438\u0433\u0440\u0430\u0446",
-]
-
-SMALL_REQUEST_HINTS = [
-    "fix",
-    "bug",
-    "rename",
-    "spacing",
-    "padding",
-    "margin",
-    "text",
-    "copy",
-    "button",
-    "color",
-    "one screen",
-    "small",
-    "minor",
-    "hotfix",
-    "\u0438\u0441\u043f\u0440\u0430\u0432",
-    "\u043f\u043e\u043f\u0440\u0430\u0432",
-    "\u043f\u0435\u0440\u0435\u0438\u043c\u0435\u043d",
-    "\u0442\u0435\u043a\u0441\u0442",
-    "\u043e\u0442\u0441\u0442\u0443\u043f",
-    "\u043a\u043d\u043e\u043f\u043a",
-]
-
 PROD_READY_BACKLOG = [
     {
         "title": "Deepen platform verification adapters",
@@ -931,32 +154,37 @@ PROD_READY_BACKLOG = [
 ]
 
 
+@lru_cache(maxsize=32)
+def _resolved_env_path(value: str) -> Path:
+    return Path(value).expanduser().resolve()
+
+
 def plugin_root() -> Path:
     override = os.getenv("AGENTIUX_DEV_PLUGIN_ROOT")
     if override:
-        return Path(override).expanduser().resolve()
-    return Path(__file__).resolve().parents[1]
+        return _resolved_env_path(override)
+    return _resolved_env_path(str(Path(__file__).resolve().parents[1]))
 
 
 def install_root() -> Path:
     override = os.getenv("AGENTIUX_DEV_INSTALL_ROOT")
     if override:
-        return Path(override).expanduser().resolve()
-    return (Path.home() / "plugins" / PLUGIN_NAME).resolve()
+        return _resolved_env_path(override)
+    return _resolved_env_path(str(Path.home() / "plugins" / PLUGIN_NAME))
 
 
 def marketplace_path() -> Path:
     override = os.getenv("AGENTIUX_DEV_MARKETPLACE_PATH")
     if override:
-        return Path(override).expanduser().resolve()
-    return (Path.home() / ".agents" / "plugins" / "marketplace.json").resolve()
+        return _resolved_env_path(override)
+    return _resolved_env_path(str(Path.home() / ".agents" / "plugins" / "marketplace.json"))
 
 
 def state_root() -> Path:
     override = os.getenv("AGENTIUX_DEV_STATE_ROOT")
     if override:
-        return Path(override).expanduser().resolve()
-    return (Path.home() / ".agentiux" / PLUGIN_NAME).resolve()
+        return _resolved_env_path(override)
+    return _resolved_env_path(str(Path.home() / ".agentiux" / PLUGIN_NAME))
 
 
 def runtime_root() -> Path:
@@ -1838,40 +1066,6 @@ def workspace_hash(workspace_path: Path) -> str:
     return hashlib.sha1(str(workspace_path).encode("utf-8")).hexdigest()[:10]
 
 
-def normalize_command_phrase(phrase: str) -> str:
-    lowered = (phrase or "").strip().lower()
-    return re.sub(r"\s+", " ", lowered)
-
-
-def command_aliases() -> dict[str, list[str]]:
-    return {
-        canonical: [normalize_command_phrase(alias) for alias in aliases]
-        for canonical, aliases in COMMAND_ALIAS_TABLE.items()
-    }
-
-
-def resolve_command_phrase(phrase: str) -> str | None:
-    normalized = normalize_command_phrase(phrase)
-    if not normalized:
-        return None
-    aliases = command_aliases()
-    for canonical, variants in aliases.items():
-        if normalized in variants:
-            return canonical
-    for canonical, variants in aliases.items():
-        if any(normalized.startswith(f"{variant} ") or f" {variant} " in f" {normalized} " for variant in variants):
-            return canonical
-    return None
-
-
-def _matched_keywords(normalized_text: str, keywords: list[str]) -> list[str]:
-    return [keyword for keyword in keywords if keyword in normalized_text]
-
-
-def _request_has_execution_intent(normalized_text: str) -> bool:
-    return bool(_matched_keywords(normalized_text, EXECUTION_INTENT_HINTS))
-
-
 def _suggested_title_from_request(request_text: str | None, fallback: str) -> str:
     text = re.sub(r"\s+", " ", (request_text or "").strip())
     if not text:
@@ -1907,82 +1101,6 @@ def _workspace_initialized(paths: dict[str, str]) -> bool:
     if workspace_state_path.exists():
         return True
     return compatibility_register.exists()
-
-
-def _recommend_starter_preset(request_text: str | None) -> dict[str, Any] | None:
-    normalized = normalize_command_phrase(request_text or "")
-    if not normalized:
-        return None
-    scored: list[tuple[int, str]] = []
-    for preset_id, keywords in STARTER_PRESET_HINTS.items():
-        score = len(_matched_keywords(normalized, keywords))
-        if score:
-            scored.append((score, preset_id))
-    scored.sort(key=lambda item: (-item[0], item[1]))
-    if not scored:
-        return None
-    recommended = scored[0][1]
-    alternatives = [preset_id for _, preset_id in scored[1:4]]
-    return {
-        "recommended_preset_id": recommended,
-        "recommended_preset": STARTER_PRESETS[recommended],
-        "alternative_preset_ids": alternatives,
-        "alternatives": [STARTER_PRESETS[preset_id] for preset_id in alternatives],
-        "reason": "Request text matches the preset signals for this starter.",
-    }
-
-
-def _analyze_request_text(request_text: str | None) -> dict[str, Any]:
-    normalized = normalize_command_phrase(request_text or "")
-    recognized_command = resolve_command_phrase(normalized) if normalized else None
-    greenfield_matches = _matched_keywords(normalized, GREENFIELD_HINTS)
-    large_matches = _matched_keywords(normalized, LARGE_WORK_HINTS)
-    small_matches = _matched_keywords(normalized, SMALL_TASK_HINTS)
-    audit_matches = _matched_keywords(normalized, AUDIT_HINTS)
-    commit_matches = _matched_keywords(normalized, COMMIT_HINTS)
-    execution_intent = _request_has_execution_intent(normalized)
-    word_count = len(normalized.split())
-
-    request_kind = "neutral"
-    recommended_mode = None
-    reason = "No stage-aware routing recommendation is required yet."
-
-    if greenfield_matches:
-        request_kind = "greenfield"
-        recommended_mode = "workstream"
-        reason = "Greenfield product work is better tracked through a dedicated workstream."
-    elif commit_matches:
-        request_kind = "commit"
-        reason = "Commit requests should inspect repo commit history or commit rules before generating a message."
-    elif audit_matches:
-        request_kind = "repository_audit"
-        reason = "Repository audits should stay read-only until an upgrade plan is explicitly approved."
-    elif large_matches or (execution_intent and word_count >= 18 and len(small_matches) <= 1):
-        request_kind = "large_feature"
-        recommended_mode = "workstream"
-        reason = "Large or multi-slice implementation work should use a named workstream."
-    elif small_matches or (execution_intent and word_count <= 14):
-        request_kind = "point_task"
-        recommended_mode = "task"
-        reason = "Narrow corrections and point fixes are cheaper to track as lightweight tasks."
-
-    return {
-        "request_text": request_text or "",
-        "normalized_request": normalized,
-        "recognized_command": recognized_command,
-        "execution_intent": execution_intent,
-        "word_count": word_count,
-        "request_kind": request_kind,
-        "recommended_mode": recommended_mode,
-        "reason": reason,
-        "matched_keywords": {
-            "greenfield": greenfield_matches,
-            "large_work": large_matches,
-            "small_task": small_matches,
-            "audit": audit_matches,
-            "commit": commit_matches,
-        },
-    }
 
 
 def _state_file_error(path: Path, exc: Exception, purpose: str | None = None) -> StateFileError:
@@ -2094,6 +1212,13 @@ def _current_workspace_state_payload(workspace_dir: Path) -> dict[str, Any]:
     return _normalize_workspace_state_payload(_load_json(workspace_dir / "workspace.json", default={}) or {})
 
 
+def _workspace_state_from_paths(paths: dict[str, str]) -> dict[str, Any] | None:
+    workspace_state_path = Path(paths["workspace_state"])
+    if not workspace_state_path.exists():
+        return None
+    return _normalize_workspace_state_payload(_load_json(workspace_state_path, default={}) or {})
+
+
 def _sanitize_nullable_identifier(value: Any) -> str | None:
     if value is None:
         return None
@@ -2151,6 +1276,36 @@ def _workspace_state_storage_payload(workspace_state: dict[str, Any]) -> dict[st
         if key in workspace_state:
             persisted[key] = copy.deepcopy(workspace_state[key])
     return _normalize_workspace_state_payload(persisted)
+
+
+def _current_workstream_record_from_paths(
+    paths: dict[str, str],
+    *,
+    workspace_state: dict[str, Any] | None = None,
+) -> dict[str, Any] | None:
+    state = workspace_state or _workspace_state_from_paths(paths)
+    workstream_id = _sanitize_nullable_identifier((state or {}).get("current_workstream_id"))
+    if not workstream_id or not Path(paths["workstreams_index"]).exists():
+        return None
+    try:
+        return copy.deepcopy(_workstream_record_by_id(_load_workstreams_index(paths, strict=False), workstream_id))
+    except FileNotFoundError:
+        return None
+
+
+def _current_task_record_from_paths(
+    paths: dict[str, str],
+    *,
+    workspace_state: dict[str, Any] | None = None,
+) -> dict[str, Any] | None:
+    state = workspace_state or _workspace_state_from_paths(paths)
+    task_id = sanitize_identifier((state or {}).get("current_task_id"), "") if (state or {}).get("current_task_id") else ""
+    if not task_id or not Path(paths["tasks_index"]).exists():
+        return None
+    try:
+        return copy.deepcopy(_task_record_by_id(_load_tasks_index(paths, strict=False), task_id))
+    except FileNotFoundError:
+        return None
 
 
 def workspace_paths(workspace: str | Path, workstream_id: str | None = None, task_id: str | None = None) -> dict[str, str]:
@@ -2489,11 +1644,89 @@ def detect_workspace(workspace: str | Path) -> dict[str, Any]:
     }
 
 
+def _workflow_workspace_state_summary(payload: dict[str, Any] | None) -> dict[str, Any] | None:
+    if not payload:
+        return None
+    local_dev_policy = payload.get("local_dev_policy") or {}
+    return {
+        "workspace_mode": payload.get("workspace_mode"),
+        "current_workstream_id": payload.get("current_workstream_id"),
+        "current_task_id": payload.get("current_task_id"),
+        "detected_stacks": (payload.get("detected_stacks") or [])[:8],
+        "selected_profiles": (payload.get("selected_profiles") or [])[:8],
+        "support_warnings": (payload.get("support_warnings") or [])[:4],
+        "local_dev_policy": {
+            "infra_mode": local_dev_policy.get("infra_mode"),
+            "app_runtime_mode": local_dev_policy.get("app_runtime_mode"),
+            "orchestration": local_dev_policy.get("orchestration"),
+        },
+        "updated_at": payload.get("updated_at"),
+    }
+
+
+def _workflow_workstream_summary(payload: dict[str, Any] | None) -> dict[str, Any] | None:
+    if not payload:
+        return None
+    summary = {
+        "workstream_id": payload.get("workstream_id"),
+        "title": payload.get("title"),
+        "kind": payload.get("kind"),
+        "status": payload.get("status"),
+        "plan_status": payload.get("plan_status"),
+        "branch_hint": payload.get("branch_hint"),
+        "scope_summary": payload.get("scope_summary"),
+        "current_stage": payload.get("current_stage"),
+        "current_slice": payload.get("current_slice"),
+        "last_completed_stage": payload.get("last_completed_stage"),
+        "updated_at": payload.get("updated_at"),
+    }
+    if payload.get("register"):
+        register = payload["register"]
+        summary["open_decisions"] = (register.get("open_decisions") or [])[:3]
+        summary["blockers"] = (register.get("blockers") or [])[:3]
+        summary["remaining_slice_count"] = len(register.get("remaining_slices") or [])
+    return summary
+
+
+def _workflow_task_summary(payload: dict[str, Any] | None) -> dict[str, Any] | None:
+    if not payload:
+        return None
+    return {
+        "task_id": payload.get("task_id"),
+        "title": payload.get("title"),
+        "status": payload.get("status"),
+        "linked_workstream_id": payload.get("linked_workstream_id"),
+        "stage_id": payload.get("stage_id"),
+        "verification_target": payload.get("verification_target"),
+        "verification_mode_default": payload.get("verification_mode_default"),
+        "docs_sync_required": payload.get("docs_sync_required"),
+        "updated_at": payload.get("updated_at"),
+    }
+
+
+def _finalize_workflow_advice_payload(payload: dict[str, Any]) -> dict[str, Any]:
+    ceiling = SURFACE_PAYLOAD_CEILINGS["workflow_advice"]
+    payload["payload"] = {
+        "surface": "workflow_advice",
+        "ceiling_bytes": ceiling,
+    }
+    actual_bytes = payload_size_bytes(payload)
+    payload["payload"].update(
+        {
+            "bytes": actual_bytes,
+            "within_ceiling": actual_bytes <= ceiling,
+            "overage_bytes": max(actual_bytes - ceiling, 0),
+        }
+    )
+    return payload
+
+
 def workflow_advice(workspace: str | Path, request_text: str | None = None, auto_create: bool = False) -> dict[str, Any]:
     detection = detect_workspace(workspace)
     paths = detection["paths"]
     initialized = _workspace_initialized(paths)
     analysis = _analyze_request_text(request_text)
+    retrieval_mode = infer_retrieval_mode(request_text, execution_intent=analysis["execution_intent"])
     starter = _recommend_starter_preset(request_text) if analysis["request_kind"] == "greenfield" else None
     current_workstream_payload = None
     current_task_payload = None
@@ -2502,10 +1735,9 @@ def workflow_advice(workspace: str | Path, request_text: str | None = None, auto
     applied_action: dict[str, Any] | None = None
 
     if initialized:
-        workspace_state_payload = read_workspace_state(workspace)
-        if workspace_state_payload.get("current_workstream_id"):
-            current_workstream_payload = current_workstream(workspace)
-        current_task_payload = current_task(workspace)
+        workspace_state_payload = _workspace_state_from_paths(paths)
+        current_workstream_payload = _current_workstream_record_from_paths(paths, workspace_state=workspace_state_payload)
+        current_task_payload = _current_task_record_from_paths(paths, workspace_state=workspace_state_payload)
 
     if analysis["recommended_mode"] == "workstream":
         should_create = current_workstream_payload is None
@@ -2539,9 +1771,16 @@ def workflow_advice(workspace: str | Path, request_text: str | None = None, auto
                     title=track_recommendation["title"],
                     objective=track_recommendation["objective"],
                     linked_workstream_id=track_recommendation.get("linked_workstream_id"),
+                    hydrate_task=False,
+                    include_task_listing=False,
                 )
                 current_task_payload = created_task["task"]
-                workspace_state_payload = read_workspace_state(workspace)
+                workspace_state_payload = {
+                    **(workspace_state_payload or {}),
+                    "current_task_id": created_task["created_task_id"],
+                    "workspace_mode": "task",
+                    "updated_at": current_task_payload.get("updated_at"),
+                }
                 applied_action = {
                     "action": "create_task",
                     "mode": "task",
@@ -2581,23 +1820,26 @@ def workflow_advice(workspace: str | Path, request_text: str | None = None, auto
     if analysis["request_kind"] == "commit":
         next_actions.append("Inspect existing commit history or commitlint-style rules before writing a commit message.")
 
-    return {
+    return _finalize_workflow_advice_payload(
+        {
         "workspace_path": detection["workspace_path"],
         "workspace_label": detection["workspace_label"],
         "workspace_initialized": initialized,
         "request_analysis": analysis,
+        "retrieval": retrieval_policy_payload("workflow_advice", retrieval_mode),
         "initialization_advice": initialization_advice,
         "starter_recommendation": starter,
         "track_recommendation": track_recommendation,
-        "workspace_state": workspace_state_payload,
-        "current_workstream": current_workstream_payload,
-        "current_task": current_task_payload,
+        "workspace_state": _workflow_workspace_state_summary(workspace_state_payload),
+        "current_workstream": _workflow_workstream_summary(current_workstream_payload),
+        "current_task": _workflow_task_summary(current_task_payload),
         "language_policy": language_policy(),
         "applied_action": applied_action,
         "requires_confirmation": bool(initialization_advice or starter or (track_recommendation and not track_recommendation.get("auto_applied"))),
         "auto_create_supported": bool(initialized and analysis["request_kind"] == "point_task"),
         "next_actions": next_actions,
-    }
+        }
+    )
 
 
 CONVENTIONAL_COMMIT_RE = re.compile(
@@ -2786,7 +2028,7 @@ def _infer_commit_type(summary: str, files: list[str] | None = None) -> str:
         return "docs"
     if any(keyword in normalized or keyword in file_text for keyword in ("test", "spec", "verification", "smoke")):
         return "test"
-    if any(keyword in normalized for keyword in ("fix", "bug", "repair", "hotfix", "\u0438\u0441\u043f\u0440\u0430\u0432", "\u043f\u043e\u0447\u0438\u043d")):
+    if any(keyword in normalized for keyword in ("fix", "bug", "repair", "hotfix")):
         return "fix"
     if any(keyword in normalized or keyword in file_text for keyword in ("ci", "workflow", "github actions")):
         return "ci"
@@ -4312,30 +3554,33 @@ def _save_tasks_index(paths: dict[str, str], index: dict[str, Any]) -> dict[str,
     return index
 
 
-def _write_registry_entry(workspace: str | Path, workspace_state: dict[str, Any]) -> None:
-    detection = detect_workspace(workspace)
-    paths = detection["paths"]
+def _write_registry_entry(workspace: str | Path, workspace_state: dict[str, Any], *, paths: dict[str, str] | None = None) -> None:
+    resolved_paths = paths or workspace_paths(workspace)
+    normalized_state = _normalize_workspace_state_payload(workspace_state)
+    workspace_path = normalized_state.get("workspace_path") or resolved_paths["workspace_path"]
+    workspace_hash = normalized_state.get("workspace_hash") or resolved_paths["workspace_hash"]
+    workspace_slug = normalized_state.get("workspace_slug") or resolved_paths["workspace_slug"]
     registry = _load_registry()
-    key = _workspace_key(detection)
+    key = f"{workspace_path}::{workspace_hash}"
     registry["plugin"] = plugin_info()
     registry["workspaces"][key] = {
-        "workspace_path": detection["workspace_path"],
-        "workspace_label": workspace_state["workspace_label"],
-        "workspace_slug": detection["workspace_slug"],
-        "workspace_hash": detection["workspace_hash"],
-        "workspace_root": paths["workspace_root"],
-        "workspace_state": paths["workspace_state"],
-        "stage_register": paths["stage_register"],
-        "active_brief": paths["active_brief"],
-        "current_workstream_id": workspace_state.get("current_workstream_id"),
-        "current_task_id": workspace_state.get("current_task_id"),
-        "workstreams_index": paths["workstreams_index"],
-        "tasks_index": paths["tasks_index"],
-        "current_audit": paths["current_audit"],
-        "current_upgrade_plan": paths["current_upgrade_plan"],
-        "starter_runs_root": paths["starter_runs_root"],
-        "workspace_mode": workspace_state.get("workspace_mode"),
-        "initialized_at": workspace_state["initialized_at"],
+        "workspace_path": workspace_path,
+        "workspace_label": normalized_state["workspace_label"],
+        "workspace_slug": workspace_slug,
+        "workspace_hash": workspace_hash,
+        "workspace_root": resolved_paths["workspace_root"],
+        "workspace_state": resolved_paths["workspace_state"],
+        "stage_register": resolved_paths["stage_register"],
+        "active_brief": resolved_paths["active_brief"],
+        "current_workstream_id": normalized_state.get("current_workstream_id"),
+        "current_task_id": normalized_state.get("current_task_id"),
+        "workstreams_index": resolved_paths["workstreams_index"],
+        "tasks_index": resolved_paths["tasks_index"],
+        "current_audit": resolved_paths["current_audit"],
+        "current_upgrade_plan": resolved_paths["current_upgrade_plan"],
+        "starter_runs_root": resolved_paths["starter_runs_root"],
+        "workspace_mode": normalized_state.get("workspace_mode"),
+        "initialized_at": normalized_state["initialized_at"],
         "updated_at": now_iso(),
     }
     registry["updated_at"] = now_iso()
@@ -4599,9 +3844,6 @@ def _migrate_legacy_workspace(workspace: str | Path) -> None:
 
     state = _normalize_workspace_state_payload(_load_json(workspace_state_path, default={}) or {})
     if state.get("schema_version", 0) >= STATE_SCHEMA_VERSION and Path(paths["workstreams_index"]).exists():
-        for workstream_id in _workstream_ids(paths):
-            _remove_stage_docs(_workstream_paths(workspace, workstream_id))
-        _mirror_current_workstream(workspace, state.get("current_workstream_id"))
         return
 
     detection = detect_workspace(workspace)
@@ -4706,14 +3948,7 @@ def _migrate_legacy_workspace(workspace: str | Path) -> None:
         shutil.rmtree(legacy_default_root)
 
 
-def _ensure_workspace_initialized(workspace: str | Path) -> dict[str, str]:
-    paths = workspace_paths(workspace)
-    if not Path(paths["workspace_state"]).exists() and not Path(paths["stage_register"]).exists():
-        raise FileNotFoundError(f"Workspace is not initialized in AgentiUX Dev state: {paths['workspace_root']}")
-    _migrate_legacy_workspace(workspace)
-    paths = workspace_paths(workspace)
-    if not Path(paths["workspace_state"]).exists():
-        raise FileNotFoundError(f"Workspace is not initialized in AgentiUX Dev state: {paths['workspace_root']}")
+def _ensure_workspace_runtime_files(paths: dict[str, str]) -> None:
     if not Path(paths["workstreams_index"]).exists():
         _write_json(Path(paths["workstreams_index"]), _default_workstream_index())
     if not Path(paths["tasks_index"]).exists():
@@ -4735,6 +3970,21 @@ def _ensure_workspace_initialized(workspace: str | Path) -> dict[str, str]:
         from agentiux_dev_analytics import _default_analytics_index
 
         _write_json(Path(paths["analytics_index"]), _default_analytics_index())
+
+
+def _ensure_workspace_initialized(workspace: str | Path, *, paths: dict[str, str] | None = None) -> dict[str, str]:
+    paths = paths or workspace_paths(workspace)
+    if not Path(paths["workspace_state"]).exists() and not Path(paths["stage_register"]).exists():
+        raise FileNotFoundError(f"Workspace is not initialized in AgentiUX Dev state: {paths['workspace_root']}")
+    state = _workspace_state_from_paths(paths)
+    if state and state.get("schema_version", 0) >= STATE_SCHEMA_VERSION and Path(paths["workstreams_index"]).exists():
+        _ensure_workspace_runtime_files(paths)
+        return paths
+    _migrate_legacy_workspace(workspace)
+    paths = workspace_paths(workspace)
+    if not Path(paths["workspace_state"]).exists():
+        raise FileNotFoundError(f"Workspace is not initialized in AgentiUX Dev state: {paths['workspace_root']}")
+    _ensure_workspace_runtime_files(paths)
     return paths
 
 
@@ -4858,13 +4108,13 @@ def _decorate_stage_register(workspace: str | Path, register: dict[str, Any], wo
     return register
 
 
-def _decorate_workspace_state(workspace: str | Path, state: dict[str, Any]) -> dict[str, Any]:
-    paths = workspace_paths(workspace)
+def _decorate_workspace_state(workspace: str | Path, state: dict[str, Any], *, paths: dict[str, str] | None = None) -> dict[str, Any]:
+    resolved_paths = paths or workspace_paths(workspace)
     decorated = _normalize_workspace_state_payload(state)
-    decorated["workspace_path"] = decorated.get("workspace_path") or paths["workspace_path"]
-    decorated["workspace_label"] = decorated.get("workspace_label") or Path(paths["workspace_path"]).name
-    decorated["workspace_slug"] = decorated.get("workspace_slug") or paths["workspace_slug"]
-    decorated["workspace_hash"] = decorated.get("workspace_hash") or paths["workspace_hash"]
+    decorated["workspace_path"] = decorated.get("workspace_path") or resolved_paths["workspace_path"]
+    decorated["workspace_label"] = decorated.get("workspace_label") or Path(resolved_paths["workspace_path"]).name
+    decorated["workspace_slug"] = decorated.get("workspace_slug") or resolved_paths["workspace_slug"]
+    decorated["workspace_hash"] = decorated.get("workspace_hash") or resolved_paths["workspace_hash"]
     decorated["state_repair_status"] = decorated.get("state_repair_status") or {
         "last_checked_at": now_iso(),
         "last_repaired_at": None,
@@ -4884,10 +4134,16 @@ def _decorate_workspace_state(workspace: str | Path, state: dict[str, Any]) -> d
     return decorated
 
 
-def _persist_workspace_state(workspace: str | Path, workspace_state: dict[str, Any]) -> dict[str, Any]:
-    decorated = _decorate_workspace_state(workspace, workspace_state)
-    _write_json(Path(workspace_paths(workspace)["workspace_state"]), _workspace_state_storage_payload(decorated))
-    _write_registry_entry(workspace, decorated)
+def _persist_workspace_state(
+    workspace: str | Path,
+    workspace_state: dict[str, Any],
+    *,
+    paths: dict[str, str] | None = None,
+) -> dict[str, Any]:
+    resolved_paths = paths or workspace_paths(workspace)
+    decorated = _decorate_workspace_state(workspace, workspace_state, paths=resolved_paths)
+    _write_json(Path(resolved_paths["workspace_state"]), _workspace_state_storage_payload(decorated))
+    _write_registry_entry(workspace, decorated, paths=resolved_paths)
     return decorated
 
 
@@ -6148,9 +5404,14 @@ def create_task(
     task_id: str | None = None,
     make_current: bool = True,
     sync_issue_ledger: bool = True,
+    hydrate_task: bool = True,
+    include_task_listing: bool = True,
 ) -> dict[str, Any]:
     paths = _ensure_workspace_initialized(workspace)
-    previous_task = _deactivate_current_task(workspace, next_status="planned") if make_current else None
+    previous_task = None
+    if make_current and _current_task_id(paths):
+        previous_task = _deactivate_current_task(workspace, next_status="planned")
+        paths = _ensure_workspace_initialized(workspace, paths=paths)
     index = _load_tasks_index(paths)
     target_id = sanitize_identifier(task_id or title, f"task-{uuid.uuid4().hex[:6]}")
     if any(item.get("task_id") == target_id for item in index.get("items", [])):
@@ -6181,19 +5442,20 @@ def create_task(
     if make_current:
         index["current_task_id"] = target_id
     _save_tasks_index(paths, index)
-    state = read_workspace_state(workspace)
+    state = _workspace_state_from_paths(paths) or {}
     if make_current:
         state["current_task_id"] = target_id
         state["workspace_mode"] = "task"
-    _persist_workspace_state(workspace, state)
+    _persist_workspace_state(workspace, state, paths=paths)
     if sync_issue_ledger:
         _sync_linked_issue_ledger(workspace, payload)
+    task_payload = read_task(workspace, task_id=target_id) if hydrate_task else copy.deepcopy(payload)
     return {
         "workspace_path": paths["workspace_path"],
         "created_task_id": target_id,
         "previous_task": previous_task,
-        "task": read_task(workspace, task_id=target_id),
-        "tasks": list_tasks(workspace),
+        "task": task_payload,
+        "tasks": list_tasks(workspace) if include_task_listing else None,
     }
 
 

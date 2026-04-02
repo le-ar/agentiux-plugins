@@ -157,9 +157,8 @@ def _assert_clean_repo_text(repo_root: Path, plugin_root: Path) -> None:
         raise AssertionError("\n".join(offenders))
 
     non_english: list[str] = []
-    allowed_exceptions = {"smoke_test.py"}
     for path in plugin_root.rglob("*"):
-        if not path.is_file() or path.name in allowed_exceptions or any(part in DISCOVERY_EXCLUDED_DIRS for part in path.parts) or path.suffix == ".pyc":
+        if not path.is_file() or any(part in DISCOVERY_EXCLUDED_DIRS for part in path.parts) or path.suffix == ".pyc":
             continue
         text = path.read_text(encoding="utf-8", errors="ignore")
         if any(

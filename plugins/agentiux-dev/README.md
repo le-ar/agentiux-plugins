@@ -84,6 +84,15 @@ Codex should prefer the low-token retrieval ladder before reading large docs or 
 6. targeted file reads
 7. broad manual exploration only when the earlier layers are insufficient
 
+Cheap retrieval surfaces now expose explicit retrieval-mode metadata and payload ceilings:
+
+- `orientation`: bounded initial repo orientation without broad scan as a default
+- `audit`: broader but still capped analysis for hotspot or drift inspection
+- `fix`: nearest-context retrieval for narrow bug or regression work
+- `execution`: active-slice retrieval for implementation once the boundary is already known
+
+`show intent route`, `workflow-advice`, `show workspace context pack`, and `search context index` stay Unicode-safe for mixed-script and non-ASCII requests when canonical tool names, paths, and schema fields remain in English.
+
 The plugin keeps canonical versioned catalogs in `catalogs/` and stores project-derived context indexes globally under `~/.agentiux/agentiux-dev/cache/context/<workspace-fingerprint>/`. No project-derived context cache is written into repositories.
 
 ## Public Command Surface
@@ -327,6 +336,8 @@ python3 scripts/agentiux_dev_state.py show-capability-catalog --route-id workstr
 python3 scripts/agentiux_dev_state.py show-workspace-context-pack --workspace /path/to/repo --request-text "Implement checkout flow across web and backend" --route-id workstream
 python3 scripts/agentiux_dev_state.py search-context-index --workspace /path/to/repo --query-text "checkout flow verification selectors"
 ```
+
+Each response includes a `retrieval` block with the inferred mode and bounded-read policy, plus a `payload` block with the serialized size and ceiling for that cheap surface.
 
 ## Working With Workstreams And Tasks
 

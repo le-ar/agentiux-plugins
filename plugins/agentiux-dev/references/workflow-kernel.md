@@ -13,6 +13,7 @@ AgentiUX Dev combines the strongest workflow rules from the user's reference rep
 ## Core Rules
 
 - Codex replies in the user's language unless the user asks to switch languages.
+- Stage 1 retrieval guarantees are Unicode-safe and mixed-script-safe around English canonical literals; localized semantic alias packs stay external to tracked source.
 - If the workspace is not initialized, Codex proposes initialization at the beginning of the workflow instead of waiting for a dedicated command.
 - Implementation starts only for explicit execution intent.
 - Workstream execution requires a confirmed concrete stage plan; empty workstreams are planning containers only.
