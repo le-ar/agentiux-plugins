@@ -13,9 +13,14 @@ from agentiux_dev_analytics import (
     write_learning_entry,
 )
 from agentiux_dev_auth import (
+    get_auth_session,
+    invalidate_auth_session,
+    list_auth_sessions,
     remove_auth_profile,
+    remove_auth_session,
     resolve_auth_profile,
     show_auth_profiles,
+    write_auth_session,
     write_auth_profile,
 )
 from agentiux_dev_memory import (
@@ -285,6 +290,23 @@ TOOLS = {
         "List configured E2E auth profiles for the workspace.",
         lambda args: show_auth_profiles(args["workspacePath"]),
     ),
+    "list_auth_sessions": _read_tool(
+        "list_auth_sessions",
+        "List persisted auth sessions for the workspace.",
+        lambda args: list_auth_sessions(args["workspacePath"], profile_id=args.get("profileId")),
+        {
+            "profileId": {"type": "string"},
+        },
+    ),
+    "get_auth_session": _read_tool(
+        "get_auth_session",
+        "Read one persisted auth session with a redacted summary.",
+        lambda args: get_auth_session(args["workspacePath"], args["sessionId"]),
+        {
+            "sessionId": {"type": "string"},
+        },
+        ["workspacePath", "sessionId"],
+    ),
     "write_auth_profile": _write_tool(
         "write_auth_profile",
         "Create or update an E2E auth profile and its secret payload.",
@@ -300,6 +322,21 @@ TOOLS = {
         },
         ["workspacePath", "profile"],
     ),
+    "write_auth_session": _write_tool(
+        "write_auth_session",
+        "Create or update a persisted auth session and its secret payload.",
+        lambda args: write_auth_session(
+            args["workspacePath"],
+            args["session"],
+            secret_payload=args.get("secretPayload"),
+        ),
+        {
+            "workspacePath": {"type": "string"},
+            "session": {"type": "object"},
+            "secretPayload": {},
+        },
+        ["workspacePath", "session"],
+    ),
     "remove_auth_profile": _write_tool(
         "remove_auth_profile",
         "Remove an E2E auth profile and its persisted secret payload.",
@@ -309,6 +346,26 @@ TOOLS = {
             "profileId": {"type": "string"},
         },
         ["workspacePath", "profileId"],
+    ),
+    "invalidate_auth_session": _write_tool(
+        "invalidate_auth_session",
+        "Invalidate one persisted auth session without deleting its revision history.",
+        lambda args: invalidate_auth_session(args["workspacePath"], args["sessionId"]),
+        {
+            "workspacePath": {"type": "string"},
+            "sessionId": {"type": "string"},
+        },
+        ["workspacePath", "sessionId"],
+    ),
+    "remove_auth_session": _write_tool(
+        "remove_auth_session",
+        "Remove a persisted auth session, its secret payload, and revisions.",
+        lambda args: remove_auth_session(args["workspacePath"], args["sessionId"]),
+        {
+            "workspacePath": {"type": "string"},
+            "sessionId": {"type": "string"},
+        },
+        ["workspacePath", "sessionId"],
     ),
     "resolve_auth_profile": _read_tool(
         "resolve_auth_profile",
@@ -320,6 +377,13 @@ TOOLS = {
             external_issue=args.get("externalIssue"),
             case=args.get("case"),
             workstream_id=args.get("workstreamId"),
+            request_mode=args.get("requestMode"),
+            action_tags=args.get("actionTags"),
+            session_binding=args.get("sessionBinding"),
+            context_overrides=args.get("contextOverrides"),
+            prefer_cached=args.get("preferCached", True),
+            force_refresh=args.get("forceRefresh", False),
+            surface_mode="mcp",
         ),
         {
             "profileId": {"type": "string"},
@@ -327,6 +391,12 @@ TOOLS = {
             "externalIssue": {"type": "object"},
             "case": {"type": "object"},
             "workstreamId": {"type": "string"},
+            "requestMode": {"type": "string", "enum": ["read_only", "mutating"]},
+            "actionTags": {"type": "array", "items": {"type": "string"}},
+            "sessionBinding": {},
+            "contextOverrides": {},
+            "preferCached": {"type": "boolean"},
+            "forceRefresh": {"type": "boolean"},
         },
     ),
     "install_host_requirements": _write_tool(

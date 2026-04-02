@@ -112,6 +112,7 @@
         "get_analytics_snapshot",
         "get_dashboard_snapshot",
         "get_plugin_stats",
+        "list_auth_sessions",
         "list_learning_entries",
         "list_project_notes",
         "refresh_context_index",
@@ -122,7 +123,7 @@
         "show_workspace_context_pack"
       ],
       "route_id": "plugin-dev",
-      "summary": "Orient on plugin source, auth profiles, project memory, learnings, MCP interfaces, scripts, catalogs, and self-host development surfaces.",
+      "summary": "Orient on plugin source, auth profiles and sessions, project memory, learnings, MCP interfaces, scripts, catalogs, and self-host development surfaces.",
       "summary_surfaces": [
         "get_dashboard_snapshot",
         "get_plugin_stats",
@@ -137,11 +138,13 @@
         "memory",
         "plugin",
         "python",
-        "self-host"
+        "self-host",
+        "session"
       ],
       "title": "Plugin Development",
       "triggers": [
         "auth profile",
+        "auth session",
         "catalog",
         "learning entry",
         "mcp",
@@ -258,6 +261,7 @@
       "recommended_tools": [
         "approve_verification_baseline",
         "audit_verification_coverage",
+        "list_auth_sessions",
         "list_verification_runs",
         "resolve_auth_profile",
         "resolve_verification",
@@ -271,7 +275,7 @@
         "update_verification_baseline"
       ],
       "route_id": "verification",
-      "summary": "Resolve semantic checks, auth artifacts, helper bundle sync, verification plans, runs, baselines, and artifacts.",
+      "summary": "Resolve semantic checks, auth profiles and sessions, helper bundle sync, verification plans, runs, baselines, and artifacts.",
       "summary_surfaces": [
         "audit_verification_coverage",
         "get_workspace_detail",
@@ -282,12 +286,14 @@
         "baseline",
         "helper bundle",
         "semantic",
+        "session",
         "verification",
         "visual"
       ],
       "title": "Deterministic Verification",
       "triggers": [
         "auth profile",
+        "auth session",
         "baseline",
         "playwright",
         "semantic",

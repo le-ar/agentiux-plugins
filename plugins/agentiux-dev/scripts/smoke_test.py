@@ -11,6 +11,7 @@ import sys
 import tempfile
 import threading
 import time
+import urllib.error
 import urllib.parse
 import urllib.request
 from datetime import datetime, timedelta, timezone
@@ -19,7 +20,16 @@ from pathlib import Path
 from unittest import mock
 
 from agentiux_dev_analytics import get_analytics_snapshot, list_learning_entries
-from agentiux_dev_auth import show_auth_profiles
+from agentiux_dev_auth import (
+    get_auth_session,
+    invalidate_auth_session,
+    list_auth_sessions,
+    remove_auth_session,
+    resolve_auth_profile,
+    show_auth_profiles,
+    write_auth_profile,
+    write_auth_session,
+)
 from agentiux_dev_gui import stop as stop_gui
 from agentiux_dev_lib import (
     STATE_SCHEMA_VERSION,
@@ -628,8 +638,12 @@ def _http_json(url: str, *, method: str = "GET", payload: dict | None = None, ti
         headers={"Content-Type": "application/json; charset=utf-8"},
         method=method,
     )
-    with urllib.request.urlopen(request, timeout=timeout) as response:
-        return json.loads(response.read().decode("utf-8"))
+    try:
+        with urllib.request.urlopen(request, timeout=timeout) as response:
+            return json.loads(response.read().decode("utf-8"))
+    except urllib.error.HTTPError as exc:
+        detail = exc.read().decode("utf-8", errors="replace")
+        raise AssertionError(f"HTTP {exc.code} for {method} {url}: {detail}") from exc
 
 
 def _wait_for_run_started(
@@ -4371,6 +4385,65 @@ def main() -> int:
                     )
                     final_connections = _http_json(f"{gui_launch['url']}/api/youtrack/connections?workspace={encoded_workspace}")
                     assert len(final_connections["items"]) == 1
+                    resolver_script = temp_root / "auth_resolver_v2.py"
+                    resolver_script.write_text(
+                        (
+                            "from __future__ import annotations\n"
+                            "import json\n"
+                            "import sys\n"
+                            "from datetime import datetime, timedelta, timezone\n"
+                            "\n"
+                            "def iso_after(seconds: int) -> str:\n"
+                            "    return (datetime.now(timezone.utc) + timedelta(seconds=seconds)).replace(microsecond=0).isoformat().replace('+00:00', 'Z')\n"
+                            "\n"
+                            "payload = json.loads(sys.stdin.read() or '{}')\n"
+                            "reason = payload.get('resolution_reason') or 'initial'\n"
+                            "request_mode = payload.get('request_mode') or 'read_only'\n"
+                            "action_tags = payload.get('action_tags') or []\n"
+                            "secret_payload = payload.get('secret_payload') or {}\n"
+                            "cached_payload = payload.get('cached_session_secret_payload') or {}\n"
+                            "if not cached_payload:\n"
+                            "    cached_payload = (payload.get('cached_session_secret_record') or {}).get('payload') or {}\n"
+                            "context_overrides = payload.get('context_overrides') or {}\n"
+                            "subject_ref = context_overrides.get('subject_ref') or cached_payload.get('subject_ref') or secret_payload.get('login') or 'neutral-subject'\n"
+                            "if reason in {'refresh', 'manual_seed'}:\n"
+                            "    access_token = f'{reason}-access'\n"
+                            "    refresh_token = cached_payload.get('refresh_token') or secret_payload.get('refresh_token') or 'resolver-refresh'\n"
+                            "else:\n"
+                            "    access_token = 'initial-access'\n"
+                            "    refresh_token = secret_payload.get('refresh_token') or 'initial-refresh'\n"
+                            "artifact_payload = {\n"
+                            "    'access_token': access_token,\n"
+                            "    'refresh_token': refresh_token,\n"
+                            "    'token_type': 'Bearer',\n"
+                            "    'access_expires_at': iso_after(900),\n"
+                            "    'refresh_expires_at': iso_after(3600),\n"
+                            "    'base_url': 'https://neutral.example.test',\n"
+                            "    'subject_ref': subject_ref,\n"
+                            "    'headers': {'X-Resolver-Mode': reason},\n"
+                            "}\n"
+                            "print(json.dumps({\n"
+                            "    'artifact': {\n"
+                            "        'artifact_type': 'token_bundle',\n"
+                            "        'expires_at': artifact_payload['access_expires_at'],\n"
+                            "        'payload': artifact_payload,\n"
+                            "    },\n"
+                            "    'session_persistence': {\n"
+                            "        'persist': True,\n"
+                            "        'request_mode': request_mode,\n"
+                            "        'action_tags': action_tags,\n"
+                            "        'access_expires_at': artifact_payload['access_expires_at'],\n"
+                            "        'refresh_expires_at': artifact_payload['refresh_expires_at'],\n"
+                            "        'secret_payload': artifact_payload,\n"
+                            "    },\n"
+                            "    'session_summary': {\n"
+                            "        'resolution_reason': reason,\n"
+                            "        'subject_ref': subject_ref,\n"
+                            "    },\n"
+                            "}))\n"
+                        ),
+                        encoding="utf-8",
+                    )
                     auth_profiles = _http_json(
                         f"{gui_launch['url']}/api/auth/profiles",
                         method="POST",
@@ -4381,6 +4454,14 @@ def main() -> int:
                                 "label": "Smoke auth",
                                 "scope_type": "workspace",
                                 "is_default": True,
+                                "usage_policy": {
+                                    "default_request_mode": "read_only",
+                                    "allowed_request_modes": ["read_only"],
+                                    "allowed_surface_modes": ["dashboard", "verification", "mcp", "cli", "resolver_only"],
+                                    "action_tags": [],
+                                    "allow_session_persistence": True,
+                                    "allow_session_refresh": True,
+                                },
                             },
                             "secretPayload": {
                                 "login": "qa@example.com",
@@ -4389,8 +4470,104 @@ def main() -> int:
                         },
                     )
                     assert auth_profiles["profile"]["profile_id"] == "smoke-auth"
+                    resolver_profile = _http_json(
+                        f"{gui_launch['url']}/api/auth/profiles",
+                        method="POST",
+                        payload={
+                            "workspacePath": str(workspace.resolve()),
+                            "profile": {
+                                "profile_id": "resolver-auth",
+                                "label": "Resolver auth",
+                                "scope_type": "workspace",
+                                "resolver": {
+                                    "kind": "command_v2",
+                                    "argv": [sys.executable, str(resolver_script)],
+                                    "cwd": ".",
+                                    "timeout_seconds": 10,
+                                },
+                                "usage_policy": {
+                                    "default_request_mode": "read_only",
+                                    "allowed_request_modes": ["read_only"],
+                                    "allowed_surface_modes": ["dashboard", "verification", "mcp", "cli", "resolver_only"],
+                                    "action_tags": ["tag.read"],
+                                    "allow_session_persistence": True,
+                                    "allow_session_refresh": True,
+                                },
+                            },
+                            "secretPayload": {
+                                "login": "reader@example.com",
+                                "password": "reader-password",
+                                "refresh_token": "profile-refresh-token",
+                            },
+                        },
+                    )
+                    assert resolver_profile["profile"]["resolver"]["kind"] == "command_v2"
+                    mutating_profile = _http_json(
+                        f"{gui_launch['url']}/api/auth/profiles",
+                        method="POST",
+                        payload={
+                            "workspacePath": str(workspace.resolve()),
+                            "profile": {
+                                "profile_id": "mutating-auth",
+                                "label": "Mutating auth",
+                                "scope_type": "workspace",
+                                "resolver": {
+                                    "kind": "command_v2",
+                                    "argv": [sys.executable, str(resolver_script)],
+                                    "cwd": ".",
+                                    "timeout_seconds": 10,
+                                },
+                                "usage_policy": {
+                                    "default_request_mode": "read_only",
+                                    "allowed_request_modes": ["read_only", "mutating"],
+                                    "allowed_surface_modes": ["dashboard", "verification", "mcp", "cli", "resolver_only"],
+                                    "action_tags": ["tag.read", "tag.write"],
+                                    "allow_session_persistence": True,
+                                    "allow_session_refresh": True,
+                                },
+                            },
+                            "secretPayload": {
+                                "login": "writer@example.com",
+                                "password": "writer-password",
+                                "refresh_token": "writer-refresh-token",
+                            },
+                        },
+                    )
+                    assert mutating_profile["profile"]["usage_policy"]["allowed_request_modes"] == ["read_only", "mutating"]
+                    binding_profile = _http_json(
+                        f"{gui_launch['url']}/api/auth/profiles",
+                        method="POST",
+                        payload={
+                            "workspacePath": str(workspace.resolve()),
+                            "profile": {
+                                "profile_id": "binding-auth",
+                                "label": "Binding auth",
+                                "scope_type": "workspace",
+                                "resolver": {
+                                    "kind": "command_v2",
+                                    "argv": [sys.executable, str(resolver_script)],
+                                    "cwd": ".",
+                                    "timeout_seconds": 10,
+                                },
+                                "usage_policy": {
+                                    "default_request_mode": "read_only",
+                                    "allowed_request_modes": ["read_only"],
+                                    "allowed_surface_modes": ["dashboard", "verification", "mcp", "cli", "resolver_only"],
+                                    "action_tags": ["tag.read"],
+                                    "allow_session_persistence": True,
+                                    "allow_session_refresh": True,
+                                },
+                            },
+                            "secretPayload": {
+                                "login": "binding@example.com",
+                                "password": "binding-password",
+                                "refresh_token": "binding-refresh-token",
+                            },
+                        },
+                    )
+                    assert binding_profile["profile"]["profile_id"] == "binding-auth"
                     auth_listing = _http_json(f"{gui_launch['url']}/api/auth/profiles?workspace={encoded_memory_workspace}")
-                    assert auth_listing["counts"]["total"] == 1
+                    assert auth_listing["counts"]["total"] >= 4
                     assert "qa-password" not in json.dumps(auth_listing)
                     auth_preview = _http_json(
                         f"{gui_launch['url']}/api/auth/profiles/resolve",
@@ -4401,18 +4578,212 @@ def main() -> int:
                         },
                     )
                     assert auth_preview["artifact"]["artifact_type"] == "credentials"
+                    auth_sessions_after_profile_resolve = _http_json(
+                        f"{gui_launch['url']}/api/auth/sessions?workspace={encoded_memory_workspace}"
+                    )
+                    assert auth_sessions_after_profile_resolve["counts"]["total"] >= 1
+                    assert "qa-password" not in json.dumps(auth_sessions_after_profile_resolve)
+                    assert "initial-access" not in json.dumps(auth_sessions_after_profile_resolve)
+                    manual_access_expires = (datetime.now(timezone.utc) + timedelta(minutes=30)).replace(microsecond=0).isoformat().replace("+00:00", "Z")
+                    manual_refresh_expires = (datetime.now(timezone.utc) + timedelta(hours=2)).replace(microsecond=0).isoformat().replace("+00:00", "Z")
+                    resolver_session = _http_json(
+                        f"{gui_launch['url']}/api/auth/sessions",
+                        method="POST",
+                        payload={
+                            "workspacePath": str(workspace.resolve()),
+                            "session": {
+                                "profile_id": "resolver-auth",
+                                "source_kind": "manual",
+                                "request_mode": "read_only",
+                                "action_tags": ["tag.read"],
+                                "summary": {"seed_kind": "token_bundle"},
+                            },
+                            "secretPayload": {
+                                "access_token": "seed-access",
+                                "refresh_token": "seed-refresh",
+                                "token_type": "Bearer",
+                                "access_expires_at": manual_access_expires,
+                                "refresh_expires_at": manual_refresh_expires,
+                                "subject_ref": "dashboard-seed",
+                            },
+                        },
+                    )
+                    resolver_session_id = resolver_session["session"]["session_id"]
+                    binding_session = _http_json(
+                        f"{gui_launch['url']}/api/auth/sessions",
+                        method="POST",
+                        payload={
+                            "workspacePath": str(workspace.resolve()),
+                            "session": {
+                                "profile_id": "binding-auth",
+                                "source_kind": "manual",
+                                "request_mode": "read_only",
+                                "action_tags": ["tag.read"],
+                                "session_binding": {
+                                    "primary_ref": "backend.shared",
+                                    "refs": [
+                                        "backend.shared",
+                                        "https://neutral-a.example.test",
+                                        "https://neutral-b.example.test",
+                                    ],
+                                },
+                                "summary": {"seed_kind": "token_bundle"},
+                            },
+                            "secretPayload": {
+                                "access_token": "binding-seed-access",
+                                "refresh_token": "binding-seed-refresh",
+                                "token_type": "Bearer",
+                                "access_expires_at": manual_access_expires,
+                                "refresh_expires_at": manual_refresh_expires,
+                                "subject_ref": "binding-dashboard-seed",
+                            },
+                        },
+                    )
+                    binding_session_id = binding_session["session"]["session_id"]
+                    session_listing = _http_json(f"{gui_launch['url']}/api/auth/sessions?workspace={encoded_memory_workspace}")
+                    assert session_listing["counts"]["total"] >= 3
+                    assert "seed-access" not in json.dumps(session_listing)
+                    assert "seed-refresh" not in json.dumps(session_listing)
+                    resolver_session_detail = _http_json(
+                        f"{gui_launch['url']}/api/auth/sessions/{urllib.parse.quote(resolver_session_id)}?workspace={encoded_memory_workspace}"
+                    )
+                    assert resolver_session_detail["session"]["session_id"] == resolver_session_id
+                    assert "seed-access" not in json.dumps(resolver_session_detail)
+                    resolver_preview = _http_json(
+                        f"{gui_launch['url']}/api/auth/profiles/resolve",
+                        method="POST",
+                        payload={
+                            "workspacePath": str(workspace.resolve()),
+                            "profileId": "resolver-auth",
+                            "requestMode": "read_only",
+                            "actionTags": ["tag.read"],
+                            "preferCached": True,
+                        },
+                    )
+                    assert resolver_preview["artifact"]["artifact_type"] == "token_bundle"
+                    assert resolver_preview["resolution_reason"] == "reuse"
+                    assert resolver_preview["session"]["session_id"] == resolver_session_id
+                    refreshed_preview = _http_json(
+                        f"{gui_launch['url']}/api/auth/profiles/resolve",
+                        method="POST",
+                        payload={
+                            "workspacePath": str(workspace.resolve()),
+                            "profileId": "resolver-auth",
+                            "requestMode": "read_only",
+                            "actionTags": ["tag.read"],
+                            "contextOverrides": {"subject_ref": "dashboard-refresh"},
+                            "preferCached": False,
+                            "forceRefresh": True,
+                        },
+                    )
+                    assert refreshed_preview["artifact"]["artifact_type"] == "token_bundle"
+                    assert refreshed_preview["resolution_reason"] == "manual_seed"
+                    assert refreshed_preview["session"]["session_id"] == resolver_session_id
+                    binding_preview = _http_json(
+                        f"{gui_launch['url']}/api/auth/profiles/resolve",
+                        method="POST",
+                        payload={
+                            "workspacePath": str(workspace.resolve()),
+                            "profileId": "binding-auth",
+                            "requestMode": "read_only",
+                            "actionTags": ["tag.read"],
+                            "sessionBinding": {
+                                "refs": [
+                                    "backend.shared",
+                                    "https://neutral-b.example.test",
+                                ],
+                            },
+                            "preferCached": True,
+                        },
+                    )
+                    assert binding_preview["artifact"]["artifact_type"] == "token_bundle"
+                    assert binding_preview["resolution_reason"] == "reuse"
+                    assert binding_preview["session"]["session_id"] == binding_session_id
+                    mutating_session = _http_json(
+                        f"{gui_launch['url']}/api/auth/sessions",
+                        method="POST",
+                        payload={
+                            "workspacePath": str(workspace.resolve()),
+                            "session": {
+                                "profile_id": "mutating-auth",
+                                "source_kind": "manual",
+                                "request_mode": "mutating",
+                                "action_tags": ["tag.read", "tag.write"],
+                            },
+                            "secretPayload": {
+                                "access_token": "writer-access",
+                                "refresh_token": "writer-refresh",
+                                "token_type": "Bearer",
+                                "access_expires_at": manual_access_expires,
+                                "refresh_expires_at": manual_refresh_expires,
+                                "subject_ref": "writer-subject",
+                            },
+                        },
+                    )
+                    mutating_session_id = mutating_session["session"]["session_id"]
+                    allowed_mutating_preview = _http_json(
+                        f"{gui_launch['url']}/api/auth/profiles/resolve",
+                        method="POST",
+                        payload={
+                            "workspacePath": str(workspace.resolve()),
+                            "profileId": "mutating-auth",
+                            "requestMode": "mutating",
+                            "actionTags": ["tag.write"],
+                        },
+                    )
+                    assert allowed_mutating_preview["resolution_reason"] == "reuse"
+                    assert allowed_mutating_preview["session"]["session_id"] == mutating_session_id
+                    try:
+                        _http_json(
+                            f"{gui_launch['url']}/api/auth/profiles/resolve",
+                            method="POST",
+                            payload={
+                                "workspacePath": str(workspace.resolve()),
+                                "profileId": "smoke-auth",
+                                "requestMode": "mutating",
+                            },
+                        )
+                        raise AssertionError("Expected mutating auth preview to be rejected for read-only profile")
+                    except AssertionError as exc:
+                        assert "not allowed" in str(exc)
+                    try:
+                        _http_json(
+                            f"{gui_launch['url']}/api/auth/profiles/resolve",
+                            method="POST",
+                            payload={
+                                "workspacePath": str(workspace.resolve()),
+                                "profileId": "mutating-auth",
+                                "requestMode": "mutating",
+                                "actionTags": ["tag.blocked"],
+                            },
+                        )
+                        raise AssertionError("Expected auth action tag policy rejection")
+                    except AssertionError as exc:
+                        assert "action_tags" in str(exc)
+                    invalidated_session = _http_json(
+                        f"{gui_launch['url']}/api/auth/sessions/{urllib.parse.quote(mutating_session_id)}/invalidate",
+                        method="POST",
+                        payload={"workspacePath": str(workspace.resolve())},
+                    )
+                    assert invalidated_session["session"]["status"] == "invalidated"
+                    removed_session = _http_json(
+                        f"{gui_launch['url']}/api/auth/sessions/{urllib.parse.quote(mutating_session_id)}",
+                        method="DELETE",
+                        payload={"workspacePath": str(workspace.resolve())},
+                    )
+                    assert removed_session["removed_session_id"] == mutating_session_id
                     _http_json(
                         f"{gui_launch['url']}/api/project-notes",
                         method="POST",
                         payload={
                             "workspacePath": str(workspace.resolve()),
                             "note": {
-                                "note_id": "checkout-auth-note",
-                                "title": "Checkout auth note",
-                                "tags": ["checkout", "auth"],
+                                "note_id": "bootstrap-auth-note",
+                                "title": "Bootstrap auth note",
+                                "tags": ["bootstrap", "auth"],
                                 "pin_state": "pinned",
                                 "source": "web",
-                                "body_markdown": "Temporary admin deep link is required for checkout auth smoke.",
+                                "body_markdown": "Temporary bootstrap URL is required for auth smoke.",
                             },
                         },
                     )
@@ -4438,9 +4809,9 @@ def main() -> int:
                     note_listing = _http_json(f"{gui_launch['url']}/api/project-notes?workspace={encoded_memory_workspace}")
                     assert note_listing["counts"]["pinned"] >= 1
                     searched_notes = _http_json(
-                        f"{gui_launch['url']}/api/project-notes/search?workspace={encoded_memory_workspace}&query={urllib.parse.quote('temporary admin deep link')}"
+                        f"{gui_launch['url']}/api/project-notes/search?workspace={encoded_memory_workspace}&query={urllib.parse.quote('temporary bootstrap url')}"
                     )
-                    assert any(item["note_id"] == "checkout-auth-note" for item in searched_notes["matches"])
+                    assert any(item["note_id"] == "bootstrap-auth-note" for item in searched_notes["matches"])
                     created_learning = _http_json(
                         f"{gui_launch['url']}/api/learnings",
                         method="POST",
@@ -4504,71 +4875,264 @@ def main() -> int:
         workspace_auth_profiles = show_auth_profiles(workspace)
         assert workspace_auth_profiles["counts"]["total"] >= 1
         assert "qa-password" not in json.dumps(workspace_auth_profiles)
+        workspace_auth_sessions = list_auth_sessions(workspace)
+        assert workspace_auth_sessions["counts"]["total"] >= 2
+        assert workspace_auth_sessions["counts"]["read_only"] >= 1
+        assert "seed-access" not in json.dumps(workspace_auth_sessions)
+        resolver_session_record = get_auth_session(workspace, resolver_session_id)
+        assert resolver_session_record["session"]["session_id"] == resolver_session_id
+        assert "refresh_token" not in json.dumps(resolver_session_record)
+        refreshed_resolve = resolve_auth_profile(
+            workspace,
+            profile_id="resolver-auth",
+            request_mode="read_only",
+            action_tags=["tag.read"],
+            context_overrides={"subject_ref": "direct-refresh"},
+            prefer_cached=False,
+            force_refresh=True,
+            surface_mode="cli",
+        )
+        assert refreshed_resolve["artifact"]["artifact_type"] == "token_bundle"
+        assert refreshed_resolve["resolution_reason"] == "manual_seed"
+        bound_resolve = resolve_auth_profile(
+            workspace,
+            profile_id="binding-auth",
+            request_mode="read_only",
+            action_tags=["tag.read"],
+            session_binding={
+                "refs": [
+                    "backend.shared",
+                    "https://neutral-a.example.test",
+                ]
+            },
+            surface_mode="cli",
+        )
+        assert bound_resolve["resolution_reason"] == "reuse"
+        assert bound_resolve["session"]["session_id"] == binding_session_id
+        isolated_resolve = resolve_auth_profile(
+            workspace,
+            profile_id="binding-auth",
+            request_mode="read_only",
+            action_tags=["tag.read"],
+            session_binding={
+                "primary_ref": "backend.isolated",
+                "refs": [
+                    "backend.isolated",
+                    "https://isolated.example.test",
+                ],
+            },
+            surface_mode="cli",
+        )
+        assert isolated_resolve["artifact"]["artifact_type"] == "token_bundle"
+        assert isolated_resolve["resolution_reason"] == "initial"
+        assert isolated_resolve["session"]["session_id"] != binding_session_id
+        assert isolated_resolve["session"]["session_binding"]["primary_ref"] == "backend.isolated"
+        isolated_reuse = resolve_auth_profile(
+            workspace,
+            profile_id="binding-auth",
+            request_mode="read_only",
+            action_tags=["tag.read"],
+            session_binding={
+                "refs": [
+                    "backend.isolated",
+                    "https://isolated.example.test",
+                ]
+            },
+            surface_mode="cli",
+        )
+        assert isolated_reuse["resolution_reason"] == "reuse"
+        assert isolated_reuse["session"]["session_id"] == isolated_resolve["session"]["session_id"]
+        binding_sessions = list_auth_sessions(workspace, profile_id="binding-auth")
+        assert binding_sessions["counts"]["total"] >= 2
+        temporary_session = write_auth_session(
+            workspace,
+            {
+                "profile_id": "resolver-auth",
+                "source_kind": "manual",
+                "request_mode": "read_only",
+                "action_tags": ["tag.read"],
+            },
+            secret_payload={
+                "access_token": "temporary-access",
+                "refresh_token": "temporary-refresh",
+                "token_type": "Bearer",
+                "access_expires_at": (datetime.now(timezone.utc) + timedelta(minutes=10)).replace(microsecond=0).isoformat().replace("+00:00", "Z"),
+                "refresh_expires_at": (datetime.now(timezone.utc) + timedelta(hours=1)).replace(microsecond=0).isoformat().replace("+00:00", "Z"),
+            },
+        )
+        temporary_session_id = temporary_session["session"]["session_id"]
+        invalidated_session = invalidate_auth_session(workspace, temporary_session_id)
+        assert invalidated_session["session"]["status"] == "invalidated"
+        removed_session = remove_auth_session(workspace, temporary_session_id)
+        assert removed_session["removed_session_id"] == temporary_session_id
         workspace_notes = list_project_notes(workspace)
         assert workspace_notes["counts"]["active"] >= 1
         assert workspace_notes["counts"]["archived"] >= 1
         assert workspace_notes["counts"]["pinned"] >= 1
         assert get_project_note(workspace, "archived-visual-note")["status"] == "archived"
-        direct_note_search = search_project_notes(workspace, "temporary admin deep link", limit=8)
-        assert any(item["note_id"] == "checkout-auth-note" for item in direct_note_search["matches"])
+        direct_note_search = search_project_notes(workspace, "temporary bootstrap url", limit=8)
+        assert any(item["note_id"] == "bootstrap-auth-note" for item in direct_note_search["matches"])
         analytics_snapshot = get_analytics_snapshot(workspace)
         assert analytics_snapshot["learning_counts"]["resolved"] >= 1
         workspace_learning_entries = list_learning_entries(workspace=workspace)
         assert any(item["entry_id"] == "visual-review-learning" for item in workspace_learning_entries["items"])
         packed_context = show_workspace_context_pack(
             workspace,
-            request_text="temporary admin deep link checkout auth memory",
+            request_text="temporary bootstrap url auth memory",
             route_id="plugin-dev",
             force_refresh=True,
         )
         assert any(
-            item["path"] == "external/project-memory/checkout-auth-note.md"
+            item["path"] == "external/project-memory/bootstrap-auth-note.md"
             for item in packed_context["context_pack"]["selected_chunks"]
         )
-        searched_context = search_context_index(workspace, "temporary admin deep link checkout auth", route_id="plugin-dev")
-        assert any(match["path"] == "external/project-memory/checkout-auth-note.md" for match in searched_context["matches"])
+        searched_context = search_context_index(workspace, "temporary bootstrap url auth", route_id="plugin-dev")
+        assert any(match["path"] == "external/project-memory/bootstrap-auth-note.md" for match in searched_context["matches"])
         archived_context = search_context_index(workspace, "repeated manual rechecks visual history", route_id="plugin-dev")
         assert any(match["path"] == "external/project-memory/archived-visual-note.md" for match in archived_context["matches"])
 
         recipes_with_auth_case = read_verification_recipes(workspace, workstream_id=verification_workstream_id)
-        if not any(case["id"] == "auth-smoke" for case in recipes_with_auth_case["cases"]):
+        existing_case_ids = {case["id"] for case in recipes_with_auth_case["cases"]}
+        missing_auth_cases = []
+        if "auth-smoke" not in existing_case_ids:
+            missing_auth_cases.append(
+                {
+                    "id": "auth-smoke",
+                    "title": "Auth artifact smoke check",
+                    "surface_type": "service",
+                    "runner": "shell-contract",
+                    "tags": ["auth", "smoke"],
+                    "host_requirements": ["python"],
+                    "auth_profile_ref": "smoke-auth",
+                    "auth_request_mode": "read_only",
+                    "argv": [
+                        sys.executable,
+                        "-c",
+                        (
+                            "import json, os, pathlib; "
+                            "artifact_path = pathlib.Path(os.environ['VERIFICATION_AUTH_ARTIFACT_PATH']); "
+                            "summary_path = pathlib.Path(os.environ['VERIFICATION_AUTH_SUMMARY_PATH']); "
+                            "assert artifact_path.exists(), artifact_path; "
+                            "assert summary_path.exists(), summary_path; "
+                            "artifact = json.loads(artifact_path.read_text()); "
+                            "summary = json.loads(summary_path.read_text()); "
+                            "assert os.environ['VERIFICATION_AUTH_PROFILE_ID'] == 'smoke-auth'; "
+                            "assert os.environ['VERIFICATION_AUTH_REQUEST_MODE'] == 'read_only'; "
+                            "assert json.loads(os.environ['VERIFICATION_AUTH_ACTION_TAGS']) == []; "
+                            "assert artifact['artifact_type'] == 'credentials'; "
+                            "assert artifact['payload']['login'] == 'qa@example.com'; "
+                            "assert summary['profile_id'] == 'smoke-auth'; "
+                            "artifact_dir = pathlib.Path(os.environ['VERIFICATION_ARTIFACT_DIR']); "
+                            "artifact_dir.mkdir(parents=True, exist_ok=True); "
+                            "(artifact_dir / 'auth-smoke.txt').write_text('auth ok\\n'); "
+                            "print('auth smoke ok')"
+                        ),
+                    ],
+                    "retry_policy": {"attempts": 1, "slow_after_seconds": 1},
+                }
+            )
+        if "auth-session-smoke" not in existing_case_ids:
+            missing_auth_cases.append(
+                {
+                    "id": "auth-session-smoke",
+                    "title": "Auth session reuse smoke check",
+                    "surface_type": "service",
+                    "runner": "shell-contract",
+                    "tags": ["auth", "session", "smoke"],
+                    "host_requirements": ["python"],
+                    "auth_profile_ref": "resolver-auth",
+                    "auth_request_mode": "read_only",
+                    "auth_action_tags": ["tag.read"],
+                    "auth_context": {"subject_ref": "verification-neutral"},
+                    "argv": [
+                        sys.executable,
+                        "-c",
+                        (
+                            "import json, os, pathlib; "
+                            "artifact_path = pathlib.Path(os.environ['VERIFICATION_AUTH_ARTIFACT_PATH']); "
+                            "summary_path = pathlib.Path(os.environ['VERIFICATION_AUTH_SUMMARY_PATH']); "
+                            "artifact = json.loads(artifact_path.read_text()); "
+                            "summary = json.loads(summary_path.read_text()); "
+                            "assert artifact['artifact_type'] == 'token_bundle'; "
+                            "assert summary['request_mode'] == 'read_only'; "
+                            "assert json.loads(os.environ['VERIFICATION_AUTH_ACTION_TAGS']) == ['tag.read']; "
+                            "assert os.environ['VERIFICATION_AUTH_REQUEST_MODE'] == 'read_only'; "
+                            "assert summary['session_id']; "
+                            "assert os.environ['VERIFICATION_AUTH_SESSION_ID'] == summary['session_id']; "
+                            "assert os.environ['VERIFICATION_AUTH_RESOLUTION_REASON'] in {'reuse', 'manual_seed', 'refresh', 'initial'}; "
+                            "artifact_dir = pathlib.Path(os.environ['VERIFICATION_ARTIFACT_DIR']); "
+                            "artifact_dir.mkdir(parents=True, exist_ok=True); "
+                            "(artifact_dir / 'auth-session-smoke.txt').write_text(summary['session_id']); "
+                            "print('auth session smoke ok')"
+                        ),
+                    ],
+                    "retry_policy": {"attempts": 1, "slow_after_seconds": 1},
+                }
+            )
+        if "auth-session-binding-smoke" not in existing_case_ids:
+            missing_auth_cases.append(
+                {
+                    "id": "auth-session-binding-smoke",
+                    "title": "Auth session binding reuse smoke check",
+                    "surface_type": "service",
+                    "runner": "shell-contract",
+                    "tags": ["auth", "session", "binding"],
+                    "host_requirements": ["python"],
+                    "auth_profile_ref": "binding-auth",
+                    "auth_request_mode": "read_only",
+                    "auth_action_tags": ["tag.read"],
+                    "auth_session_binding": {
+                        "refs": [
+                            "backend.shared",
+                            "https://neutral-b.example.test",
+                        ]
+                    },
+                    "argv": [
+                        sys.executable,
+                        "-c",
+                        (
+                            "import json, os, pathlib; "
+                            "artifact_path = pathlib.Path(os.environ['VERIFICATION_AUTH_ARTIFACT_PATH']); "
+                            "summary_path = pathlib.Path(os.environ['VERIFICATION_AUTH_SUMMARY_PATH']); "
+                            "artifact = json.loads(artifact_path.read_text()); "
+                            "summary = json.loads(summary_path.read_text()); "
+                            "assert artifact['artifact_type'] == 'token_bundle'; "
+                            "assert summary['request_mode'] == 'read_only'; "
+                            "assert json.loads(os.environ['VERIFICATION_AUTH_ACTION_TAGS']) == ['tag.read']; "
+                            "assert os.environ['VERIFICATION_AUTH_REQUEST_MODE'] == 'read_only'; "
+                            "assert summary['session_id']; "
+                            "artifact_dir = pathlib.Path(os.environ['VERIFICATION_ARTIFACT_DIR']); "
+                            "artifact_dir.mkdir(parents=True, exist_ok=True); "
+                            "(artifact_dir / 'auth-session-binding-smoke.txt').write_text(summary['session_id']); "
+                            "print('auth session binding smoke ok')"
+                        ),
+                    ],
+                    "retry_policy": {"attempts": 1, "slow_after_seconds": 1},
+                }
+            )
+        if "auth-mutating-blocked" not in existing_case_ids:
+            missing_auth_cases.append(
+                {
+                    "id": "auth-mutating-blocked",
+                    "title": "Read-only auth rejects mutating verification",
+                    "surface_type": "service",
+                    "runner": "shell-contract",
+                    "tags": ["auth", "policy"],
+                    "host_requirements": ["python"],
+                    "auth_profile_ref": "smoke-auth",
+                    "auth_request_mode": "mutating",
+                    "argv": [sys.executable, "-c", "raise SystemExit('runner should not execute')"],
+                    "retry_policy": {"attempts": 1, "slow_after_seconds": 1},
+                }
+            )
+        if missing_auth_cases:
             write_verification_recipes(
                 workspace,
                 {
                     **recipes_with_auth_case,
                     "cases": [
                         *recipes_with_auth_case["cases"],
-                        {
-                            "id": "auth-smoke",
-                            "title": "Auth artifact smoke check",
-                            "surface_type": "service",
-                            "runner": "shell-contract",
-                            "tags": ["auth", "smoke"],
-                            "host_requirements": ["python"],
-                            "auth_profile_ref": "smoke-auth",
-                            "argv": [
-                                sys.executable,
-                                "-c",
-                                (
-                                    "import json, os, pathlib; "
-                                    "artifact_path = pathlib.Path(os.environ['VERIFICATION_AUTH_ARTIFACT_PATH']); "
-                                    "summary_path = pathlib.Path(os.environ['VERIFICATION_AUTH_SUMMARY_PATH']); "
-                                    "assert artifact_path.exists(), artifact_path; "
-                                    "assert summary_path.exists(), summary_path; "
-                                    "artifact = json.loads(artifact_path.read_text()); "
-                                    "summary = json.loads(summary_path.read_text()); "
-                                    "assert os.environ['VERIFICATION_AUTH_PROFILE_ID'] == 'smoke-auth'; "
-                                    "assert artifact['artifact_type'] == 'credentials'; "
-                                    "assert artifact['payload']['login'] == 'qa@example.com'; "
-                                    "assert summary['profile_id'] == 'smoke-auth'; "
-                                    "artifact_dir = pathlib.Path(os.environ['VERIFICATION_ARTIFACT_DIR']); "
-                                    "artifact_dir.mkdir(parents=True, exist_ok=True); "
-                                    "(artifact_dir / 'auth-smoke.txt').write_text('auth ok\\n'); "
-                                    "print('auth smoke ok')"
-                                ),
-                            ],
-                            "retry_policy": {"attempts": 1, "slow_after_seconds": 1},
-                        },
+                        *missing_auth_cases,
                     ],
                 },
                 workstream_id=verification_workstream_id,
@@ -4578,11 +5142,41 @@ def main() -> int:
         assert any(event["event_type"] == "auth_resolved" for event in read_verification_events(workspace, auth_run["run_id"], workstream_id=verification_workstream_id)["events"])
         auth_case_state = next(case for case in auth_run["cases"] if case["case_id"] == "auth-smoke")
         assert auth_case_state["auth"]["profile_id"] == "smoke-auth"
+        assert auth_case_state["auth"]["request_mode"] == "read_only"
         transient_auth_dir = Path(auth_run["transient_auth_dir"])
         if transient_auth_dir.exists():
             assert not any(transient_auth_dir.iterdir())
+        auth_session_run = start_verification_case(workspace, "auth-session-smoke", wait=True, workstream_id=verification_workstream_id)
+        assert auth_session_run["status"] == "passed"
+        auth_session_case_state = next(case for case in auth_session_run["cases"] if case["case_id"] == "auth-session-smoke")
+        assert auth_session_case_state["auth"]["profile_id"] == "resolver-auth"
+        assert auth_session_case_state["auth"]["request_mode"] == "read_only"
+        assert auth_session_case_state["auth"]["session_id"] == resolver_session_id
+        auth_session_run_repeat = start_verification_case(workspace, "auth-session-smoke", wait=True, workstream_id=verification_workstream_id)
+        assert auth_session_run_repeat["status"] == "passed"
+        repeat_case_state = next(case for case in auth_session_run_repeat["cases"] if case["case_id"] == "auth-session-smoke")
+        assert repeat_case_state["auth"]["session_id"] == resolver_session_id
+        binding_auth_run = start_verification_case(workspace, "auth-session-binding-smoke", wait=True, workstream_id=verification_workstream_id)
+        assert binding_auth_run["status"] == "passed"
+        binding_case_state = next(case for case in binding_auth_run["cases"] if case["case_id"] == "auth-session-binding-smoke")
+        assert binding_case_state["auth"]["profile_id"] == "binding-auth"
+        assert binding_case_state["auth"]["session_id"] == binding_session_id
+        binding_auth_run_repeat = start_verification_case(
+            workspace,
+            "auth-session-binding-smoke",
+            wait=True,
+            workstream_id=verification_workstream_id,
+        )
+        assert binding_auth_run_repeat["status"] == "passed"
+        binding_repeat_case_state = next(
+            case for case in binding_auth_run_repeat["cases"] if case["case_id"] == "auth-session-binding-smoke"
+        )
+        assert binding_repeat_case_state["auth"]["session_id"] == binding_session_id
+        blocked_auth_run = start_verification_case(workspace, "auth-mutating-blocked", wait=True, workstream_id=verification_workstream_id)
+        assert blocked_auth_run["status"] == "failed"
         auth_snapshot = dashboard_snapshot(workspace)
         assert auth_snapshot["workspace_cockpit"]["integrations"]["auth"]["summary"]["profile_count"] >= 1
+        assert auth_snapshot["workspace_cockpit"]["integrations"]["auth"]["summary"]["active_session_count"] >= 1
         assert auth_snapshot["workspace_cockpit"]["memory"]["project_notes"]["counts"]["pinned"] >= 1
         assert auth_snapshot["workspace_cockpit"]["memory"]["learnings"]["counts"]["resolved"] >= 1
         assert auth_snapshot["workspace_cockpit"]["quality"]["auth_resolution"]["status"] in {"ok", "not_configured", "warning"}
@@ -4722,7 +5316,7 @@ def main() -> int:
         )
         assert response["result"]["isError"] is False
         assert response["result"]["structuredContent"]["workspace_cockpit"]["workspace_path"] == str(workspace.resolve())
-        assert response["result"]["structuredContent"]["workspace_cockpit"]["quality"]["latest_run"]["run_id"] == auth_run["run_id"]
+        assert response["result"]["structuredContent"]["workspace_cockpit"]["quality"]["latest_run"]["run_id"] == blocked_auth_run["run_id"]
 
         response = _call_mcp(
             plugin_root / "scripts" / "agentiux_dev_mcp.py",
@@ -4910,6 +5504,21 @@ def main() -> int:
             },
         )
         assert response["result"]["structuredContent"]["counts"]["total"] >= 1
+        response = _call_mcp(
+            plugin_root / "scripts" / "agentiux_dev_mcp.py",
+            {
+                "jsonrpc": "2.0",
+                "id": 1111,
+                "method": "tools/call",
+                "params": {
+                    "name": "list_auth_sessions",
+                    "arguments": {
+                        "workspacePath": str(workspace),
+                    },
+                },
+            },
+        )
+        assert response["result"]["structuredContent"]["counts"]["total"] >= 1
 
         response = _call_mcp(
             plugin_root / "scripts" / "agentiux_dev_mcp.py",
@@ -5015,7 +5624,7 @@ def main() -> int:
                 with urllib.request.urlopen(f"{gui_launch['url']}/api/workspace-detail?workspace={encoded_workspace}", timeout=20) as response_handle:
                     detail_payload = json.loads(response_handle.read().decode("utf-8"))
                 assert detail_payload["workspace_label"] == "demo-workspace"
-                assert detail_payload["quality"]["latest_run"]["run_id"] == auth_run["run_id"]
+                assert detail_payload["quality"]["latest_run"]["run_id"] == blocked_auth_run["run_id"]
                 assert detail_payload["plan"]["workstreams"]
                 uninitialized_workspace = temp_root / "uninitialized-cockpit"
                 uninitialized_workspace.mkdir()

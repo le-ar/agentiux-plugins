@@ -13,9 +13,14 @@ from agentiux_dev_analytics import (
     write_learning_entry,
 )
 from agentiux_dev_auth import (
+    get_auth_session,
+    invalidate_auth_session,
+    list_auth_sessions,
     remove_auth_profile,
+    remove_auth_session,
     resolve_auth_profile,
     show_auth_profiles,
+    write_auth_session,
     write_auth_profile,
 )
 from agentiux_dev_memory import (
@@ -417,6 +422,34 @@ def parse_args() -> argparse.Namespace:
     cmd.add_argument("--external-issue-file")
     cmd.add_argument("--case-file")
     cmd.add_argument("--workstream-id")
+    cmd.add_argument("--request-mode", choices=["read_only", "mutating"])
+    cmd.add_argument("--action-tag", action="append", default=[])
+    cmd.add_argument("--session-binding-file")
+    cmd.add_argument("--context-overrides-file")
+    cmd.add_argument("--prefer-cached", action=argparse.BooleanOptionalAction, default=True)
+    cmd.add_argument("--force-refresh", action="store_true")
+
+    cmd = subparsers.add_parser("list-auth-sessions")
+    add_workspace_arg(cmd)
+    cmd.add_argument("--profile-id")
+
+    cmd = subparsers.add_parser("get-auth-session")
+    add_workspace_arg(cmd)
+    cmd.add_argument("--session-id", required=True)
+
+    cmd = subparsers.add_parser("write-auth-session")
+    add_workspace_arg(cmd)
+    cmd.add_argument("--session-file", help="Path to JSON auth session payload")
+    cmd.add_argument("--secret-file", help="Optional path to JSON session secret payload")
+    cmd.add_argument("--stdin", action="store_true", help="Read JSON payload from stdin")
+
+    cmd = subparsers.add_parser("invalidate-auth-session")
+    add_workspace_arg(cmd)
+    cmd.add_argument("--session-id", required=True)
+
+    cmd = subparsers.add_parser("remove-auth-session")
+    add_workspace_arg(cmd)
+    cmd.add_argument("--session-id", required=True)
 
     cmd = subparsers.add_parser("list-project-notes")
     add_workspace_arg(cmd)
@@ -850,7 +883,29 @@ def main() -> int:
                 external_issue=_read_json(args.external_issue_file) if args.external_issue_file else None,
                 case=_read_json(args.case_file) if args.case_file else None,
                 workstream_id=args.workstream_id,
+                request_mode=args.request_mode,
+                action_tags=args.action_tag,
+                session_binding=_read_json(args.session_binding_file) if args.session_binding_file else None,
+                context_overrides=_read_json(args.context_overrides_file) if args.context_overrides_file else None,
+                prefer_cached=args.prefer_cached,
+                force_refresh=args.force_refresh,
+                surface_mode="cli",
             )
+        elif args.command == "list-auth-sessions":
+            payload = list_auth_sessions(args.workspace, profile_id=args.profile_id)
+        elif args.command == "get-auth-session":
+            payload = get_auth_session(args.workspace, args.session_id)
+        elif args.command == "write-auth-session":
+            incoming = _read_json_input(path=args.session_file, stdin=args.stdin, label="auth session payload")
+            session = incoming.get("session") if isinstance(incoming.get("session"), dict) else incoming
+            secret_payload = incoming.get("secret_payload")
+            if secret_payload is None and args.secret_file:
+                secret_payload = _read_json(args.secret_file)
+            payload = write_auth_session(args.workspace, session, secret_payload=secret_payload)
+        elif args.command == "invalidate-auth-session":
+            payload = invalidate_auth_session(args.workspace, args.session_id)
+        elif args.command == "remove-auth-session":
+            payload = remove_auth_session(args.workspace, args.session_id)
         elif args.command == "list-project-notes":
             payload = list_project_notes(args.workspace, status=args.status)
         elif args.command == "get-project-note":

@@ -924,6 +924,10 @@ def _normalize_case(case: dict[str, Any]) -> dict[str, Any]:
         "retry_policy": payload.get("retry_policy", {"attempts": 1}),
         "baseline": baseline,
         "auth_profile_ref": payload.get("auth_profile_ref"),
+        "auth_request_mode": payload.get("auth_request_mode") or "read_only",
+        "auth_action_tags": payload.get("auth_action_tags", []),
+        "auth_session_binding": copy.deepcopy(payload.get("auth_session_binding")),
+        "auth_context": payload.get("auth_context"),
         "android_logcat": _normalize_android_logcat(payload.get("android_logcat")),
     }
     normalized["semantic_assertions"] = _normalize_semantic_assertions(payload.get("semantic_assertions"), normalized)
@@ -1278,6 +1282,9 @@ def _case_selection_summary(workspace: str | Path, case: dict[str, Any], state: 
         "surface_type": case.get("surface_type"),
         "runner": case.get("runner"),
         "auth_profile_ref": case.get("auth_profile_ref"),
+        "auth_request_mode": case.get("auth_request_mode") or "read_only",
+        "auth_action_tags": copy.deepcopy(case.get("auth_action_tags") or []),
+        "auth_session_binding": copy.deepcopy(case.get("auth_session_binding")),
         "baseline_source": _case_baseline_source(workspace, case),
         "host_requirements": case.get("host_requirements") or [],
         "host_compatibility": requirements,
@@ -1968,6 +1975,10 @@ def _auth_runtime_summary(resolved_auth: dict[str, Any]) -> dict[str, Any]:
     return {
         "profile_id": ((resolved_auth.get("profile") or {}).get("profile_id")),
         "label": ((resolved_auth.get("profile") or {}).get("label")),
+        "session_id": ((resolved_auth.get("session") or {}).get("session_id")),
+        "resolution_reason": resolved_auth.get("resolution_reason"),
+        "request_mode": resolved_auth.get("request_mode"),
+        "action_tags": copy.deepcopy(resolved_auth.get("action_tags") or []),
         "artifact_type": artifact.get("artifact_type"),
         "expires_at": artifact.get("expires_at"),
         "summary": copy.deepcopy(resolved_auth.get("artifact_summary") or {}),
@@ -2026,6 +2037,11 @@ def _resolve_case_auth_runtime(
             external_issue=copy.deepcopy(run.get("external_issue")),
             case=case,
             workstream_id=run.get("workstream_id"),
+            request_mode=case.get("auth_request_mode"),
+            action_tags=case.get("auth_action_tags"),
+            session_binding=case.get("auth_session_binding"),
+            context_overrides=case.get("auth_context"),
+            surface_mode="verification",
         )
     except FileNotFoundError:
         if case.get("auth_profile_ref"):
@@ -2107,6 +2123,10 @@ def _run_case_attempt(
         env["VERIFICATION_AUTH_ARTIFACT_PATH"] = str(auth_runtime["artifact_path"])
         env["VERIFICATION_AUTH_PROFILE_ID"] = str(auth_runtime["profile_id"])
         env["VERIFICATION_AUTH_SUMMARY_PATH"] = str(auth_runtime["summary_path"])
+        env["VERIFICATION_AUTH_REQUEST_MODE"] = str((auth_runtime.get("summary") or {}).get("request_mode") or "read_only")
+        env["VERIFICATION_AUTH_ACTION_TAGS"] = json.dumps((auth_runtime.get("summary") or {}).get("action_tags") or [])
+        env["VERIFICATION_AUTH_SESSION_ID"] = str((auth_runtime.get("summary") or {}).get("session_id") or "")
+        env["VERIFICATION_AUTH_RESOLUTION_REASON"] = str((auth_runtime.get("summary") or {}).get("resolution_reason") or "")
     cwd = _resolve_case_cwd(workspace, case)
     if case.get("runner") == "browser-layout-audit":
         return _run_browser_layout_audit_case(workspace, run, case, cwd, env)

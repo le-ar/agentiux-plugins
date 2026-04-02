@@ -96,7 +96,7 @@ def _redact_payload(value: Any) -> Any:
     if isinstance(value, dict):
         redacted = {}
         for key, item in value.items():
-            if re.search(r"(password|secret|token|cookie|authorization)", str(key), flags=re.IGNORECASE):
+            if re.search(r"(password|secret|token|cookie|authorization|storage[_-]?state)", str(key), flags=re.IGNORECASE):
                 redacted[key] = "[redacted]"
             else:
                 redacted[key] = _redact_payload(item)

@@ -22,7 +22,17 @@ else:
     import fcntl
 
 from agentiux_dev_analytics import get_analytics_snapshot, get_learning_entry, list_learning_entries, update_learning_entry, write_learning_entry
-from agentiux_dev_auth import remove_auth_profile, resolve_auth_profile, show_auth_profiles, write_auth_profile
+from agentiux_dev_auth import (
+    get_auth_session,
+    invalidate_auth_session,
+    list_auth_sessions,
+    remove_auth_profile,
+    remove_auth_session,
+    resolve_auth_profile,
+    show_auth_profiles,
+    write_auth_profile,
+    write_auth_session,
+)
 from agentiux_dev_lib import (
     dashboard_overview_snapshot,
     get_state_paths,
@@ -389,6 +399,20 @@ class DashboardHandler(BaseHTTPRequestHandler):
                     return
                 self._send_json(show_auth_profiles(workspace))
                 return
+            if parsed.path == "/api/auth/sessions":
+                if not workspace:
+                    self._send_json({"error": "workspace query parameter is required"}, status=400)
+                    return
+                profile_id = query.get("profileId", [None])[0] or query.get("profile_id", [None])[0]
+                self._send_json(list_auth_sessions(workspace, profile_id=profile_id))
+                return
+            session_match = re.match(r"^/api/auth/sessions/([^/]+)$", parsed.path)
+            if session_match:
+                if not workspace:
+                    self._send_json({"error": "workspace query parameter is required"}, status=400)
+                    return
+                self._send_json(get_auth_session(workspace, urllib.parse.unquote(session_match.group(1))))
+                return
             if parsed.path == "/api/project-notes":
                 if not workspace:
                     self._send_json({"error": "workspace query parameter is required"}, status=400)
@@ -490,8 +514,28 @@ class DashboardHandler(BaseHTTPRequestHandler):
                         external_issue=body.get("externalIssue"),
                         case=body.get("case"),
                         workstream_id=body.get("workstreamId"),
+                        request_mode=body.get("requestMode"),
+                        action_tags=body.get("actionTags"),
+                        session_binding=body.get("sessionBinding"),
+                        context_overrides=body.get("contextOverrides"),
+                        prefer_cached=body.get("preferCached", True),
+                        force_refresh=body.get("forceRefresh", False),
+                        surface_mode="dashboard",
                     )
                 )
+                return
+            if parsed.path == "/api/auth/sessions":
+                self._send_json(
+                    write_auth_session(
+                        workspace,
+                        body["session"],
+                        secret_payload=body.get("secretPayload"),
+                    )
+                )
+                return
+            match = re.match(r"^/api/auth/sessions/([^/]+)/invalidate$", parsed.path)
+            if match:
+                self._send_json(invalidate_auth_session(workspace, urllib.parse.unquote(match.group(1))))
                 return
             if parsed.path == "/api/project-notes":
                 self._send_json(write_project_note(workspace, body["note"]))
@@ -522,6 +566,15 @@ class DashboardHandler(BaseHTTPRequestHandler):
                         write_auth_profile(
                             workspace,
                             body["profile"],
+                            secret_payload=body.get("secretPayload"),
+                        )
+                    )
+                    return
+                if parsed.path == "/api/auth/sessions":
+                    self._send_json(
+                        write_auth_session(
+                            workspace,
+                            body["session"],
                             secret_payload=body.get("secretPayload"),
                         )
                     )
@@ -567,6 +620,10 @@ class DashboardHandler(BaseHTTPRequestHandler):
             if parsed.path != "/api/youtrack/connections":
                 if parsed.path == "/api/auth/profiles":
                     self._send_json(remove_auth_profile(workspace, body["profileId"]))
+                    return
+                match = re.match(r"^/api/auth/sessions/([^/]+)$", parsed.path)
+                if match:
+                    self._send_json(remove_auth_session(workspace, urllib.parse.unquote(match.group(1))))
                     return
                 self._send_json({"error": f"Unsupported DELETE path: {parsed.path}"}, status=404)
                 return

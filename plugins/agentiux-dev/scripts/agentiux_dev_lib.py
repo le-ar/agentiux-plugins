@@ -148,6 +148,11 @@ CANONICAL_COMMAND_SURFACE = [
     "write auth profile",
     "remove auth profile",
     "resolve auth profile",
+    "list auth sessions",
+    "get auth session",
+    "write auth session",
+    "invalidate auth session",
+    "remove auth session",
     "list project notes",
     "get project note",
     "write project note",
@@ -525,6 +530,26 @@ COMMAND_ALIAS_TABLE = {
     "resolve auth profile": [
         "resolve auth profile",
         "\u0440\u0435\u0437\u043e\u043b\u0432\u0438 auth profile",
+    ],
+    "list auth sessions": [
+        "list auth sessions",
+        "\u043f\u043e\u043a\u0430\u0436\u0438 auth sessions",
+    ],
+    "get auth session": [
+        "get auth session",
+        "\u043f\u043e\u043a\u0430\u0436\u0438 auth session",
+    ],
+    "write auth session": [
+        "write auth session",
+        "\u0437\u0430\u043f\u0438\u0448\u0438 auth session",
+    ],
+    "invalidate auth session": [
+        "invalidate auth session",
+        "\u0438\u043d\u0432\u0430\u043b\u0438\u0434\u0438\u0440\u0443\u0439 auth session",
+    ],
+    "remove auth session": [
+        "remove auth session",
+        "\u0443\u0434\u0430\u043b\u0438 auth session",
     ],
     "list project notes": [
         "list project notes",
@@ -2203,6 +2228,10 @@ def workspace_paths(workspace: str | Path, workstream_id: str | None = None, tas
         "auth_profiles_dir": str(auth_root / "profiles"),
         "auth_secrets_dir": str(auth_root / "secrets"),
         "auth_index": str(auth_root / "index.json"),
+        "auth_sessions_dir": str(auth_root / "sessions"),
+        "auth_sessions_index": str(auth_root / "sessions" / "index.json"),
+        "auth_session_secrets_dir": str(auth_root / "session-secrets"),
+        "auth_session_revisions_dir": str(auth_root / "session-revisions"),
         "youtrack_root": str(youtrack_root),
         "youtrack_connections_dir": str(youtrack_root / "connections"),
         "youtrack_secrets_dir": str(youtrack_root / "secrets"),
@@ -4069,6 +4098,9 @@ def _ensure_state_dirs(paths: dict[str, str]) -> None:
         "auth_root",
         "auth_profiles_dir",
         "auth_secrets_dir",
+        "auth_sessions_dir",
+        "auth_session_secrets_dir",
+        "auth_session_revisions_dir",
         "youtrack_root",
         "youtrack_connections_dir",
         "youtrack_secrets_dir",
@@ -4687,9 +4719,14 @@ def _ensure_workspace_initialized(workspace: str | Path) -> dict[str, str]:
     if not Path(paths["tasks_index"]).exists():
         _write_json(Path(paths["tasks_index"]), _default_task_index())
     if not Path(paths["auth_index"]).exists():
-        from agentiux_dev_auth import _default_auth_index
+        from agentiux_dev_auth import _default_auth_index, _default_auth_sessions_index
 
         _write_json(Path(paths["auth_index"]), _default_auth_index())
+        _write_json(Path(paths["auth_sessions_index"]), _default_auth_sessions_index())
+    elif not Path(paths["auth_sessions_index"]).exists():
+        from agentiux_dev_auth import _default_auth_sessions_index
+
+        _write_json(Path(paths["auth_sessions_index"]), _default_auth_sessions_index())
     if not Path(paths["memory_notes_index"]).exists():
         from agentiux_dev_memory import _default_notes_index
 
@@ -4711,10 +4748,13 @@ def _collect_verification_runs(paths: dict[str, str]) -> list[dict[str, Any]]:
 
 
 def _workspace_counts(paths: dict[str, str]) -> dict[str, Any]:
+    from agentiux_dev_auth import _policy_mismatch_items
+
     workstreams_index = _load_workstreams_index(paths)
     tasks_index = _load_tasks_index(paths)
     runs = _collect_verification_runs(paths)
     auth_items = (_load_json(Path(paths["auth_index"]), default={"items": []}, strict=False) or {}).get("items") or []
+    auth_session_items = (_load_json(Path(paths["auth_sessions_index"]), default={"items": []}, strict=False) or {}).get("items") or []
     note_items = (_load_json(Path(paths["memory_notes_index"]), default={"items": []}, strict=False) or {}).get("items") or []
     learning_items = (_load_json(Path(paths["analytics_index"]), default={"learning_entries": []}, strict=False) or {}).get("learning_entries") or []
     total_stages = 0
@@ -4751,6 +4791,7 @@ def _workspace_counts(paths: dict[str, str]) -> dict[str, Any]:
     passed_runs = [run for run in runs if run.get("status") == "passed"]
 
     visible_workstreams = [item for item in workstreams_index.get("items", []) if item.get("visibility") != "system-hidden"]
+    auth_policy_mismatch_count = len(_policy_mismatch_items(auth_items, auth_session_items))
     return {
         "workstreams": len(visible_workstreams),
         "hidden_workstreams": len(workstreams_index.get("items", [])) - len(visible_workstreams),
@@ -4771,6 +4812,13 @@ def _workspace_counts(paths: dict[str, str]) -> dict[str, Any]:
         "starter_runs": len(list(_starter_runs_root().glob("*/run.json"))),
         "audit_reports": len(_recent_audit_files(paths)),
         "auth_profiles": len(auth_items),
+        "auth_sessions": len(auth_session_items),
+        "active_auth_sessions": sum(1 for item in auth_session_items if item.get("status") == "active"),
+        "read_only_auth_sessions": sum(1 for item in auth_session_items if item.get("request_mode") == "read_only"),
+        "expired_auth_sessions": sum(1 for item in auth_session_items if item.get("status") == "expired"),
+        "expiring_auth_sessions": sum(1 for item in auth_session_items if item.get("expires_state") == "expiring"),
+        "mutating_auth_sessions": sum(1 for item in auth_session_items if item.get("request_mode") == "mutating"),
+        "auth_policy_mismatch_items": auth_policy_mismatch_count,
         "project_notes": len(note_items),
         "pinned_project_notes": sum(
             1
@@ -4845,7 +4893,7 @@ def _persist_workspace_state(workspace: str | Path, workspace_state: dict[str, A
 
 def init_workspace(workspace: str | Path, force: bool = False) -> dict[str, Any]:
     from agentiux_dev_analytics import _default_analytics_index
-    from agentiux_dev_auth import _default_auth_index
+    from agentiux_dev_auth import _default_auth_index, _default_auth_sessions_index
     from agentiux_dev_memory import _default_notes_index
 
     detection = detect_workspace(workspace)
@@ -4863,6 +4911,7 @@ def init_workspace(workspace: str | Path, force: bool = False) -> dict[str, Any]
     _save_workstreams_index(paths, _default_workstream_index())
     _save_tasks_index(paths, _default_task_index())
     _write_json(Path(paths["auth_index"]), _default_auth_index())
+    _write_json(Path(paths["auth_sessions_index"]), _default_auth_sessions_index())
     _write_json(Path(paths["memory_notes_index"]), _default_notes_index())
     analytics_index_path = Path(paths["analytics_index"])
     if not analytics_index_path.exists():
@@ -5181,7 +5230,7 @@ def preview_repair_workspace_state(workspace: str | Path) -> dict[str, Any]:
 
 def repair_workspace_state(workspace: str | Path) -> dict[str, Any]:
     from agentiux_dev_analytics import _default_analytics_index
-    from agentiux_dev_auth import _default_auth_index
+    from agentiux_dev_auth import _default_auth_index, _default_auth_sessions_index
     from agentiux_dev_memory import _default_notes_index
 
     plan = _repair_plan(workspace)
@@ -5191,6 +5240,8 @@ def repair_workspace_state(workspace: str | Path) -> dict[str, Any]:
     _ensure_state_dirs(paths)
     if not Path(paths["auth_index"]).exists():
         _write_json(Path(paths["auth_index"]), _default_auth_index())
+    if not Path(paths["auth_sessions_index"]).exists():
+        _write_json(Path(paths["auth_sessions_index"]), _default_auth_sessions_index())
     if not Path(paths["memory_notes_index"]).exists():
         _write_json(Path(paths["memory_notes_index"]), _default_notes_index())
     if not Path(paths["analytics_index"]).exists():
@@ -6823,6 +6874,7 @@ def _plugin_stats_from_workspaces(workspaces: list[dict[str, Any]]) -> dict[str,
         "active_verification_runs": sum(workspace["summary_counts"]["active_verification_runs"] for workspace in workspaces),
         "failed_verification_runs": sum(workspace["summary_counts"]["failed_verification_runs"] for workspace in workspaces),
         "auth_profiles": sum(workspace["summary_counts"].get("auth_profiles", 0) for workspace in workspaces),
+        "auth_sessions": sum(workspace["summary_counts"].get("auth_sessions", 0) for workspace in workspaces),
         "project_notes": sum(workspace["summary_counts"].get("project_notes", 0) for workspace in workspaces),
         "pinned_project_notes": sum(workspace["summary_counts"].get("pinned_project_notes", 0) for workspace in workspaces),
         "learning_entries": int((analytics_snapshot.get("learning_counts") or {}).get("total") or 0),
@@ -7289,6 +7341,12 @@ def _dashboard_workspace_card(summary: dict[str, Any]) -> dict[str, Any]:
                 hint="Configured auth profiles",
             ),
             _dashboard_metric(
+                "Auth sessions",
+                counts.get("active_auth_sessions", 0),
+                tone="ok" if counts.get("active_auth_sessions", 0) else "neutral",
+                hint="Active cached sessions",
+            ),
+            _dashboard_metric(
                 "Pinned notes",
                 counts.get("pinned_project_notes", 0),
                 tone="ok" if counts.get("pinned_project_notes", 0) else "neutral",
@@ -7342,13 +7400,20 @@ def _verification_auth_resolution_summary(
                     "runner": case.get("runner"),
                     "surface_type": case.get("surface_type"),
                     "auth_profile_ref": case.get("auth_profile_ref"),
+                    "auth_request_mode": case.get("auth_request_mode"),
+                    "auth_action_tags": copy.deepcopy(case.get("auth_action_tags") or []),
                 },
                 workstream_id=workstream_id,
+                request_mode=case.get("auth_request_mode"),
+                action_tags=case.get("auth_action_tags"),
+                surface_mode="dashboard",
             )
             resolved_cases.append(
                 {
                     "case_id": case.get("case_id"),
                     "profile_id": ((resolved.get("profile") or {}).get("profile_id")),
+                    "session_id": ((resolved.get("session") or {}).get("session_id")),
+                    "request_mode": resolved.get("request_mode"),
                     "artifact_type": ((resolved.get("artifact") or {}).get("artifact_type")),
                 }
             )
@@ -7400,6 +7465,7 @@ def _dashboard_overview_model(workspaces: list[dict[str, Any]], starter_runs: di
                 tone="bad",
             ),
             _dashboard_metric("Auth profiles", sum((workspace.get("summary_counts") or {}).get("auth_profiles", 0) for workspace in workspaces)),
+            _dashboard_metric("Active auth sessions", sum((workspace.get("summary_counts") or {}).get("active_auth_sessions", 0) for workspace in workspaces)),
             _dashboard_metric("Pinned notes", sum((workspace.get("summary_counts") or {}).get("pinned_project_notes", 0) for workspace in workspaces)),
             _dashboard_metric(
                 "Open learnings",
@@ -7651,6 +7717,26 @@ def _dashboard_cockpit_from_detail(detail: dict[str, Any]) -> dict[str, Any]:
                 section="quality",
             )
         )
+    if int((auth_detail.get("summary") or {}).get("policy_mismatch_count") or 0):
+        attention.append(
+            _dashboard_attention_item(
+                "auth-policy-mismatch",
+                "warn",
+                "Auth session policy mismatch",
+                f"{int((auth_detail.get('summary') or {}).get('policy_mismatch_count') or 0)} persisted auth sessions need policy review.",
+                section="integrations",
+            )
+        )
+    if int((auth_detail.get("summary") or {}).get("expired_session_count") or 0):
+        attention.append(
+            _dashboard_attention_item(
+                "auth-expired-sessions",
+                "warn",
+                "Expired auth sessions",
+                f"{int((auth_detail.get('summary') or {}).get('expired_session_count') or 0)} cached auth sessions are expired.",
+                section="integrations",
+            )
+        )
     if not int((summary.get("youtrack") or {}).get("connection_count") or 0):
         attention.append(
             _dashboard_attention_item(
@@ -7692,6 +7778,7 @@ def _dashboard_cockpit_from_detail(detail: dict[str, Any]) -> dict[str, Any]:
                 _dashboard_metric("Current task", summary.get("current_task_id") or "none"),
                 _dashboard_metric("Verification", verification_status["label"], tone=verification_status["tone"], hint=verification_status.get("detail")),
                 _dashboard_metric("Auth profiles", int((summary.get("auth") or {}).get("profile_count") or 0), tone="ok" if int((summary.get("auth") or {}).get("profile_count") or 0) else "warn"),
+                _dashboard_metric("Auth sessions", int((summary.get("auth") or {}).get("active_session_count") or 0), tone="ok" if int((summary.get("auth") or {}).get("active_session_count") or 0) else "neutral"),
                 _dashboard_metric("Pinned notes", int((summary.get("memory") or {}).get("pinned_note_count") or 0)),
                 _dashboard_metric("YouTrack", youtrack_summary["label"], tone=youtrack_summary["tone"], hint=youtrack_summary.get("detail")),
                 _dashboard_metric("Updated", summary.get("updated_at") or "unknown"),
@@ -7820,7 +7907,13 @@ def _dashboard_cockpit_from_detail(detail: dict[str, Any]) -> dict[str, Any]:
                     int((summary.get("auth") or {}).get("profile_count") or 0),
                     tone="ok" if int((summary.get("auth") or {}).get("profile_count") or 0) else "warn",
                 ),
+                _dashboard_metric(
+                    "Auth sessions",
+                    int((summary.get("auth") or {}).get("active_session_count") or 0),
+                    tone="ok" if int((summary.get("auth") or {}).get("active_session_count") or 0) else "neutral",
+                ),
                 _dashboard_metric("Default auth", (summary.get("auth") or {}).get("default_profile_id") or "none"),
+                _dashboard_metric("Policy alerts", int((summary.get("auth") or {}).get("policy_mismatch_count") or 0), tone="warn" if int((summary.get("auth") or {}).get("policy_mismatch_count") or 0) else "ok"),
                 _dashboard_metric(
                     "Connections",
                     int((summary.get("youtrack") or {}).get("connection_count") or 0),

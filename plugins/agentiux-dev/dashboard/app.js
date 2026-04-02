@@ -12,6 +12,7 @@ const state = {
   error: null,
   editingConnection: null,
   editingAuthProfile: null,
+  editingAuthSession: null,
   authResolvePreview: null,
   editingNote: null,
   editingLearning: null,
@@ -215,6 +216,7 @@ async function fetchDashboard(workspacePath, options = {}) {
     state.forceOverview = !resolvedWorkspace && forceOverview;
     const connections = cockpitModel?.integrations?.youtrack?.connections?.items || [];
     const authProfiles = cockpitModel?.integrations?.auth?.items || [];
+    const authSessions = cockpitModel?.integrations?.auth?.sessions?.items || [];
     const notes = cockpitModel?.memory?.project_notes?.items || [];
     const learningEntries = cockpitModel?.memory?.learnings?.items || [];
     if (state.editingConnection) {
@@ -224,6 +226,10 @@ async function fetchDashboard(workspacePath, options = {}) {
     if (state.editingAuthProfile) {
       state.editingAuthProfile =
         authProfiles.find((item) => item.profile_id === state.editingAuthProfile.profile_id) || null;
+    }
+    if (state.editingAuthSession) {
+      state.editingAuthSession =
+        authSessions.find((item) => item.session_id === state.editingAuthSession.session_id) || null;
     }
     if (state.editingNote) {
       state.editingNote = notes.find((item) => item.note_id === state.editingNote.note_id) || null;
@@ -235,6 +241,7 @@ async function fetchDashboard(workspacePath, options = {}) {
     if (!resolvedWorkspace) {
       state.editingConnection = null;
       state.editingAuthProfile = null;
+      state.editingAuthSession = null;
       state.authResolvePreview = null;
       state.editingNote = null;
       state.editingLearning = null;
@@ -1062,6 +1069,13 @@ function renderAuthProfileList(items) {
                 <span class="pill-chip">${escapeHtml(item.has_secret ? "secret stored" : "no secret")}</span>
                 <span class="pill-chip">${escapeHtml(item.is_default ? "default" : "non-default")}</span>
                 <span class="pill-chip">${escapeHtml(item.resolver?.kind || "resolver")}</span>
+                <span class="pill-chip ${toneClass(item.usage_policy?.default_request_mode === "mutating" ? "warn" : "ok")}">${escapeHtml(
+                  item.usage_policy?.default_request_mode || "read_only",
+                )}</span>
+              </div>
+              <div class="chip-row">
+                <span class="pill-chip">${escapeHtml(`allowed modes: ${(item.usage_policy?.allowed_request_modes || []).join(", ") || "read_only"}`)}</span>
+                <span class="pill-chip">${escapeHtml(`action tags: ${(item.usage_policy?.action_tags || []).join(", ") || "none"}`)}</span>
               </div>
               <div class="action-row">
                 <button onclick='window.__agentiux.editAuthProfile(${JSON.stringify(item.profile_id)})'>Edit</button>
@@ -1099,6 +1113,8 @@ function renderAuthProfileForm(auth, isEnabled) {
           is_default: editing.is_default,
           resolver: editing.resolver,
           artifact_policy: editing.artifact_policy,
+          usage_policy: editing.usage_policy,
+          notes: editing.notes,
         },
         {},
       )
@@ -1108,6 +1124,15 @@ function renderAuthProfileForm(auth, isEnabled) {
           scope_type: "workspace",
           scope_ref: null,
           is_default: false,
+          usage_policy: {
+            default_request_mode: "read_only",
+            allowed_request_modes: ["read_only"],
+            allowed_surface_modes: [],
+            action_tags: [],
+            allow_session_persistence: true,
+            allow_session_refresh: true,
+            notes: null,
+          },
         },
         {},
       );
@@ -1121,12 +1146,41 @@ function renderAuthProfileForm(auth, isEnabled) {
       <div class="form-grid">
         <label>
           <span>Profile JSON</span>
-          <textarea id="auth-profile-json" rows="12" placeholder='{"label":"Checkout user","scope_type":"workspace","is_default":true}'>${escapeHtml(profileJson)}</textarea>
+          <textarea id="auth-profile-json" rows="16" placeholder='{"label":"Read-only API user","scope_type":"workspace","is_default":true,"usage_policy":{"default_request_mode":"read_only","allowed_request_modes":["read_only"]}}'>${escapeHtml(profileJson)}</textarea>
         </label>
         <label>
           <span>Secret JSON</span>
-          <textarea id="auth-secret-json" rows="10" placeholder='{"login":"qa@example.com","password":"secret"}'></textarea>
+          <textarea id="auth-secret-json" rows="12" placeholder='{"login":"reader@example.com","password":"secret"}'></textarea>
         </label>
+        <label>
+          <span>Resolve request mode</span>
+          <select id="auth-resolve-request-mode">
+            <option value="read_only">read_only</option>
+            <option value="mutating">mutating</option>
+          </select>
+        </label>
+        <label>
+          <span>Resolve action tags</span>
+          <input id="auth-resolve-action-tags" placeholder="tag.read, tag.write" />
+        </label>
+        <label>
+          <span>Resolve context JSON</span>
+          <textarea id="auth-resolve-context-json" rows="8" placeholder='{"opaque_ref":"value"}'></textarea>
+        </label>
+        <label>
+          <span>Resolve session binding JSON</span>
+          <textarea id="auth-resolve-binding-json" rows="6" placeholder='{"primary_ref":"backend.shared","refs":["backend.shared","https://api-a.example","https://api-b.example"]}'></textarea>
+        </label>
+        <div class="chip-row">
+          <label class="checkbox-row">
+            <input id="auth-resolve-prefer-cached" type="checkbox" checked />
+            <span>Prefer cached session</span>
+          </label>
+          <label class="checkbox-row">
+            <input id="auth-resolve-force-refresh" type="checkbox" />
+            <span>Force refresh</span>
+          </label>
+        </div>
         <div class="action-row">
           <button onclick="window.__agentiux.submitAuthProfile()">${editing ? "Update profile" : "Add profile"}</button>
           ${editing ? `<button class="secondary" onclick="window.__agentiux.clearAuthProfileForm()">Cancel</button>` : ""}
@@ -1144,9 +1198,114 @@ function renderAuthProfileForm(auth, isEnabled) {
   `;
 }
 
+function renderAuthSessionList(items) {
+  if (!items?.length) {
+    return `<div class="empty-note">No persisted auth sessions for this workspace.</div>`;
+  }
+  return `
+    <div class="stack-list">
+      ${items
+        .map(
+          (item) => `
+            <article class="stack-item">
+              <div class="stack-item-head">
+                <strong>${escapeHtml(item.session_id || "session")}</strong>
+                <span class="pill-chip ${toneClass(item.status === "active" ? "ok" : item.status === "expired" ? "warn" : "bad")}">${escapeHtml(
+                  item.status || "active",
+                )}</span>
+              </div>
+              <p>${escapeHtml(item.profile_id || "profile")} · ${escapeHtml(item.source_kind || "manual")} · ${escapeHtml(item.artifact_type || "artifact")}</p>
+              <div class="chip-row">
+                <span class="pill-chip ${toneClass(item.request_mode === "mutating" ? "warn" : "ok")}">${escapeHtml(item.request_mode || "read_only")}</span>
+                <span class="pill-chip">${escapeHtml(`action tags: ${(item.action_tags || []).join(", ") || "none"}`)}</span>
+                <span class="pill-chip">${escapeHtml(`expires: ${item.expires_state || "unknown"}`)}</span>
+              </div>
+              <div class="chip-row">
+                <span class="pill-chip">${escapeHtml(item.has_secret ? "secret stored" : "no secret")}</span>
+                <span class="pill-chip">${escapeHtml(`refresh: ${item.refresh_expires_state || "unknown"}`)}</span>
+                ${
+                  item.session_binding?.refs?.length
+                    ? `<span class="pill-chip">${escapeHtml(`binding refs: ${item.session_binding.refs.join(", ")}`)}</span>`
+                    : ""
+                }
+              </div>
+              <div class="action-row">
+                <button onclick='window.__agentiux.editAuthSession(${JSON.stringify(item.session_id)})'>Edit</button>
+                <button class="secondary" onclick='window.__agentiux.invalidateAuthSession(${JSON.stringify(item.session_id)})'>Invalidate</button>
+                <button class="secondary" onclick='window.__agentiux.removeAuthSession(${JSON.stringify(item.session_id)})'>Remove</button>
+              </div>
+            </article>
+          `,
+        )
+        .join("")}
+    </div>
+  `;
+}
+
+function renderAuthSessionForm(auth, isEnabled) {
+  if (!isEnabled) {
+    return "";
+  }
+  const editing = state.editingAuthSession;
+  const sessionJson = editing
+    ? prettyJson(
+        {
+          session_id: editing.session_id,
+          profile_id: editing.profile_id,
+          source_kind: editing.source_kind,
+          request_mode: editing.request_mode,
+          action_tags: editing.action_tags,
+          session_binding: editing.session_binding,
+          status: editing.status,
+          artifact_type: editing.artifact_type,
+          access_expires_at: editing.access_expires_at,
+          refresh_expires_at: editing.refresh_expires_at,
+          summary: editing.summary,
+        },
+        {},
+      )
+    : prettyJson(
+        {
+          profile_id: auth?.items?.[0]?.profile_id || "",
+          source_kind: "manual",
+          request_mode: "read_only",
+          action_tags: [],
+          session_binding: {
+            primary_ref: "backend.shared",
+            refs: ["backend.shared", "https://api-a.example", "https://api-b.example"],
+          },
+        },
+        {},
+      );
+  return `
+    <section class="surface-card">
+      <div class="section-heading">
+        <h3>${editing ? "Edit auth session" : "Add auth session"}</h3>
+        <span class="muted-copy">${escapeHtml(auth?.sessions?.items?.length || 0)} total</span>
+      </div>
+      <div class="form-grid">
+        <label>
+          <span>Session JSON</span>
+          <textarea id="auth-session-json" rows="12" placeholder='{"profile_id":"reader","source_kind":"manual","request_mode":"read_only","action_tags":["tag.read"],"session_binding":{"primary_ref":"backend.shared","refs":["backend.shared","https://api-a.example"]}}'>${escapeHtml(sessionJson)}</textarea>
+        </label>
+        <label>
+          <span>Secret JSON</span>
+          <textarea id="auth-session-secret-json" rows="12" placeholder='{"access_token":"token","refresh_token":"refresh"}'></textarea>
+        </label>
+        <p class="muted-copy">Manual intake supports login/password, direct token bundles, cookies, and storage_state through the secret JSON payload.</p>
+        <div class="action-row">
+          <button onclick="window.__agentiux.submitAuthSession()">${editing ? "Update session" : "Add session"}</button>
+          ${editing ? `<button class="secondary" onclick="window.__agentiux.clearAuthSessionForm()">Cancel</button>` : ""}
+        </div>
+      </div>
+    </section>
+  `;
+}
+
 function renderIntegrationsPanel(cockpit) {
   const integrations = cockpit.integrations || {};
   const auth = integrations.auth || {};
+  const authSummary = auth.summary || {};
   const youtrack = integrations.youtrack || {};
   const summary = youtrack.summary || {};
   const currentSearch = youtrack.current_search_session || null;
@@ -1162,6 +1321,9 @@ function renderIntegrationsPanel(cockpit) {
         ${renderMetricGrid(integrations.summary_cards || [])}
         <div class="chip-row">
           <span class="pill-chip">${escapeHtml(`auth profiles: ${auth.summary?.profile_count || 0}`)}</span>
+          <span class="pill-chip">${escapeHtml(`active sessions: ${authSummary.active_session_count || 0}`)}</span>
+          <span class="pill-chip">${escapeHtml(`mutating sessions: ${authSummary.mutating_session_count || 0}`)}</span>
+          <span class="pill-chip">${escapeHtml(`policy alerts: ${authSummary.policy_mismatch_count || 0}`)}</span>
           <span class="pill-chip">${escapeHtml(`workstream issues: ${summary.current_workstream_issue_count || 0}`)}</span>
           <span class="pill-chip">${escapeHtml(`default: ${summary.default_connection_id || "none"}`)}</span>
         </div>
@@ -1174,6 +1336,14 @@ function renderIntegrationsPanel(cockpit) {
         ${renderAuthProfileList(auth.items || [])}
       </section>
       ${renderAuthProfileForm(auth, cockpit.state_kind === "initialized")}
+      <section class="surface-card">
+        <div class="section-heading">
+          <h3>Auth sessions</h3>
+          <span class="muted-copy">${escapeHtml(auth.sessions?.items?.length || 0)}</span>
+        </div>
+        ${renderAuthSessionList(auth.sessions?.items || [])}
+      </section>
+      ${renderAuthSessionForm(auth, cockpit.state_kind === "initialized")}
       <section class="surface-card">
         <div class="section-heading">
           <h3>Connections</h3>
@@ -1707,9 +1877,24 @@ function editAuthProfile(profileId) {
 
 async function resolveAuthProfilePreview(profileId) {
   if (!state.selectedWorkspace || state.cockpitModel?.state_kind !== "initialized") return;
+  const requestMode = document.getElementById("auth-resolve-request-mode")?.value || "read_only";
+  const actionTags = parseCommaList(document.getElementById("auth-resolve-action-tags")?.value || "");
+  const sessionBinding = parseJsonTextarea("auth-resolve-binding-json", null);
+  const contextOverrides = parseJsonTextarea("auth-resolve-context-json", null);
+  const preferCached = Boolean(document.getElementById("auth-resolve-prefer-cached")?.checked);
+  const forceRefresh = Boolean(document.getElementById("auth-resolve-force-refresh")?.checked);
   state.authResolvePreview = await apiJson("/api/auth/profiles/resolve", {
     method: "POST",
-    body: JSON.stringify({ workspacePath: state.selectedWorkspace, profileId }),
+    body: JSON.stringify({
+      workspacePath: state.selectedWorkspace,
+      profileId,
+      requestMode,
+      actionTags,
+      sessionBinding,
+      contextOverrides,
+      preferCached,
+      forceRefresh,
+    }),
   });
   state.panel = "integrations";
   render();
@@ -1725,6 +1910,58 @@ async function removeAuthProfile(profileId) {
     state.editingAuthProfile = null;
   }
   state.authResolvePreview = null;
+  await fetchDashboard(state.selectedWorkspace, { historyMode: "replace", panel: "integrations" });
+}
+
+async function submitAuthSession() {
+  if (!state.selectedWorkspace || state.cockpitModel?.state_kind !== "initialized") return;
+  const session = parseJsonTextarea("auth-session-json", {});
+  const secretPayload = parseJsonTextarea("auth-session-secret-json", null);
+  await apiJson("/api/auth/sessions", {
+    method: state.editingAuthSession ? "PATCH" : "POST",
+    body: JSON.stringify({
+      workspacePath: state.selectedWorkspace,
+      session,
+      secretPayload,
+    }),
+  });
+  state.editingAuthSession = null;
+  await fetchDashboard(state.selectedWorkspace, { historyMode: "replace", panel: "integrations" });
+}
+
+function clearAuthSessionForm() {
+  state.editingAuthSession = null;
+  render();
+}
+
+function editAuthSession(sessionId) {
+  const authSessions = state.cockpitModel?.integrations?.auth?.sessions?.items || [];
+  state.editingAuthSession = authSessions.find((item) => item.session_id === sessionId) || null;
+  state.panel = "integrations";
+  render();
+}
+
+async function invalidateAuthSession(sessionId) {
+  if (!state.selectedWorkspace || state.cockpitModel?.state_kind !== "initialized") return;
+  await apiJson(`/api/auth/sessions/${encodeURIComponent(sessionId)}/invalidate`, {
+    method: "POST",
+    body: JSON.stringify({ workspacePath: state.selectedWorkspace }),
+  });
+  if (state.editingAuthSession?.session_id === sessionId) {
+    state.editingAuthSession = null;
+  }
+  await fetchDashboard(state.selectedWorkspace, { historyMode: "replace", panel: "integrations" });
+}
+
+async function removeAuthSession(sessionId) {
+  if (!state.selectedWorkspace || state.cockpitModel?.state_kind !== "initialized") return;
+  await apiJson(`/api/auth/sessions/${encodeURIComponent(sessionId)}`, {
+    method: "DELETE",
+    body: JSON.stringify({ workspacePath: state.selectedWorkspace }),
+  });
+  if (state.editingAuthSession?.session_id === sessionId) {
+    state.editingAuthSession = null;
+  }
   await fetchDashboard(state.selectedWorkspace, { historyMode: "replace", panel: "integrations" });
 }
 
@@ -1858,6 +2095,11 @@ window.__agentiux = {
   editAuthProfile,
   resolveAuthProfilePreview,
   removeAuthProfile,
+  submitAuthSession,
+  clearAuthSessionForm,
+  editAuthSession,
+  invalidateAuthSession,
+  removeAuthSession,
   submitProjectNote,
   clearProjectNoteForm,
   editProjectNote,

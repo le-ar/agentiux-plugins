@@ -70,7 +70,7 @@ The source repo remains the place where you edit and verify the plugin. The inst
 - workspace-scoped YouTrack integration with permanent-token connections, persisted search sessions, richer issue context plus linked-issue analysis for planning, idempotent plan apply, and issue-ledger aggregation
 - repo-tracked low-token catalogs for skills, MCP tools, scripts, references, and intent routes
 - global project context indexing and semantic cache under `~/.agentiux/agentiux-dev/cache/context/`
-- a cockpit-first local-only dashboard launched from chat, with dashboard writes for YouTrack integration management, E2E auth profiles, project memory notes, and learning entries
+- a cockpit-first local-only dashboard launched from chat, with dashboard writes for YouTrack integration management, universal E2E auth profiles and sessions, project memory notes, and learning entries
 
 ## Low-Token Retrieval
 
@@ -116,6 +116,11 @@ The plugin keeps canonical versioned catalogs in `catalogs/` and stores project-
 - `write auth profile`
 - `remove auth profile`
 - `resolve auth profile`
+- `list auth sessions`
+- `get auth session`
+- `write auth session`
+- `invalidate auth session`
+- `remove auth session`
 - `list project notes`
 - `get project note`
 - `write project note`
@@ -396,7 +401,11 @@ python3 scripts/agentiux_dev_state.py update-verification-baseline --workspace /
 
 Verification runs write structured events, stdout, stderr, Android logcat when configured, and linked artifacts under the external workspace verification root, so Codex and the GUI can show progress without assuming a hang. Canonical baselines remain project-owned for reproducible CI checks. Coverage audits report warning-level gaps without failing the workspace automatically.
 
-Verification cases may also declare `auth_profile_ref`. Before the first attempt AgentiUX Dev resolves a matching auth profile, writes a transient auth artifact plus a redacted summary inside the run root, exports `VERIFICATION_AUTH_ARTIFACT_PATH`, `VERIFICATION_AUTH_PROFILE_ID`, and `VERIFICATION_AUTH_SUMMARY_PATH`, and removes those transient auth files after the case finishes. The core runtime only supports `resolver.kind = command_v1` in v1 and never assumes a project-specific admin flow.
+Verification cases may also declare `auth_profile_ref`, `auth_request_mode`, `auth_action_tags`, opaque `auth_session_binding`, and opaque `auth_context`. Auth defaults to `read_only`. Before the first attempt AgentiUX Dev resolves a matching auth profile plus any compatible persisted auth session, writes a transient auth artifact plus a redacted summary inside the run root, exports `VERIFICATION_AUTH_ARTIFACT_PATH`, `VERIFICATION_AUTH_PROFILE_ID`, `VERIFICATION_AUTH_SUMMARY_PATH`, `VERIFICATION_AUTH_REQUEST_MODE`, `VERIFICATION_AUTH_ACTION_TAGS`, `VERIFICATION_AUTH_SESSION_ID`, and `VERIFICATION_AUTH_RESOLUTION_REASON`, and removes those transient auth files after the case finishes.
+
+The auth core remains universal. It only manages auth profiles, persisted auth sessions, request modes, opaque action tags, opaque session binding refs, opaque context overrides, refresh or reuse lifecycle, and redaction. It does not know any project-specific roles, tenants, backend environment names, URL semantics, bootstrap flows, impersonation, or admin semantics. Those stay inside project-defined resolvers.
+
+`resolver.kind = command_v1` remains supported for backward-compatible artifact resolution. `resolver.kind = command_v2` is the preferred session-aware contract for refresh, reuse, and session persistence instructions. `resolve auth profile` also accepts an opaque `session_binding` payload so projects can partition cached sessions across arbitrary backend targets without teaching the core what those targets mean. Auth profiles, auth sessions, and their raw secret material all live outside the repository under home-local external state.
 
 Visual cases may also declare optional `semantic_assertions`. The plugin now owns a versioned helper bundle under `bundles/verification-helpers/<plugin-version>/`, and projects materialize the current neutral runtime snapshot into `.verification/helpers/` with `sync verification helpers`.
 

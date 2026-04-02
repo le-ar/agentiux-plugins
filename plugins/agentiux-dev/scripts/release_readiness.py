@@ -279,8 +279,13 @@ def mcp_check(plugin_root: Path) -> dict[str, Any]:
         "search_context_index",
         "refresh_context_index",
         "show_auth_profiles",
+        "list_auth_sessions",
+        "get_auth_session",
         "write_auth_profile",
+        "write_auth_session",
         "remove_auth_profile",
+        "invalidate_auth_session",
+        "remove_auth_session",
         "resolve_auth_profile",
         "list_project_notes",
         "get_project_note",
@@ -390,6 +395,8 @@ def dashboard_check(repo_root: Path, plugin_root: Path) -> dict[str, Any]:
                 cockpit_snapshot = json.loads(response_handle.read().decode("utf-8"))
             with urllib.request.urlopen(f"{url}/api/auth/profiles?workspace={encoded_workspace}", timeout=5) as response_handle:
                 auth_payload = json.loads(response_handle.read().decode("utf-8"))
+            with urllib.request.urlopen(f"{url}/api/auth/sessions?workspace={encoded_workspace}", timeout=5) as response_handle:
+                auth_sessions_payload = json.loads(response_handle.read().decode("utf-8"))
             with urllib.request.urlopen(f"{url}/api/project-notes?workspace={encoded_workspace}", timeout=5) as response_handle:
                 notes_payload = json.loads(response_handle.read().decode("utf-8"))
             with urllib.request.urlopen(f"{url}/api/analytics?workspace={encoded_workspace}", timeout=5) as response_handle:
@@ -439,8 +446,14 @@ def dashboard_check(repo_root: Path, plugin_root: Path) -> dict[str, Any]:
         raise AssertionError("Dashboard cockpit is missing auth integration payload")
     if "memory" not in cockpit_snapshot:
         raise AssertionError("Dashboard cockpit is missing memory payload")
-    if auth_payload.get("counts") is None or notes_payload.get("counts") is None:
+    if auth_payload.get("counts") is None or auth_sessions_payload.get("counts") is None or notes_payload.get("counts") is None:
         raise AssertionError("Dashboard auth or note APIs returned incomplete payloads")
+    if auth_sessions_payload.get("counts", {}).get("total") is None:
+        raise AssertionError("Dashboard auth sessions API returned incomplete payloads")
+    auth_dump = json.dumps({"profiles": auth_payload, "sessions": auth_sessions_payload}).lower()
+    for disallowed in ("access_token", "refresh_token", "password", "cookies", "storage_state"):
+        if disallowed in auth_dump:
+            raise AssertionError(f"Dashboard auth payload leaked raw secret material: {disallowed}")
     if analytics_payload.get("learning_counts") is None or learnings_payload.get("counts") is None:
         raise AssertionError("Dashboard analytics or learnings APIs returned incomplete payloads")
     failing_audits = [

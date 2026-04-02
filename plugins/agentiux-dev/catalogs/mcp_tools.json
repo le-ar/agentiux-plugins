@@ -757,6 +757,44 @@
     },
     {
       "cost_hint": "low",
+      "follow_up_paths": [
+        "README.md",
+        "references/visual-verification.md",
+        "references/workflow-kernel.md"
+      ],
+      "id": "get_auth_session",
+      "kind": "mcp_tool",
+      "path": "scripts/agentiux_dev_mcp.py",
+      "primary_surface": "mcp",
+      "read_only": true,
+      "related_routes": [
+        "plugin-dev",
+        "verification"
+      ],
+      "required_inputs": [
+        "workspacePath",
+        "sessionId"
+      ],
+      "returns": "Structured JSON payload for inspection and routing.",
+      "summary": "Read one persisted auth session with a redacted summary.",
+      "tags": [
+        "auth",
+        "get",
+        "get_auth_session",
+        "plugin-dev",
+        "session",
+        "verification"
+      ],
+      "title": "Get Auth Session",
+      "tool_name": "get_auth_session",
+      "triggers": [
+        "get auth session",
+        "plugin-dev",
+        "verification"
+      ]
+    },
+    {
+      "cost_hint": "low",
       "follow_up_paths": [],
       "id": "get_command_aliases",
       "kind": "mcp_tool",
@@ -1547,6 +1585,84 @@
       "cost_hint": "low",
       "follow_up_paths": [
         "README.md",
+        "references/visual-verification.md",
+        "references/workflow-kernel.md"
+      ],
+      "id": "invalidate_auth_session",
+      "kind": "mcp_tool",
+      "path": "scripts/agentiux_dev_mcp.py",
+      "primary_surface": "mcp",
+      "read_only": false,
+      "related_routes": [
+        "plugin-dev",
+        "verification"
+      ],
+      "required_inputs": [
+        "workspacePath",
+        "sessionId"
+      ],
+      "returns": "Structured mutation result payload.",
+      "summary": "Invalidate one persisted auth session without deleting its revision history.",
+      "tags": [
+        "auth",
+        "invalidate",
+        "invalidate_auth_session",
+        "plugin-dev",
+        "session",
+        "verification"
+      ],
+      "title": "Invalidate Auth Session",
+      "tool_name": "invalidate_auth_session",
+      "triggers": [
+        "invalidate auth session",
+        "plugin-dev",
+        "verification"
+      ]
+    },
+    {
+      "cost_hint": "low",
+      "follow_up_paths": [
+        "README.md",
+        "references/command-surface.md",
+        "references/visual-verification.md"
+      ],
+      "id": "list_auth_sessions",
+      "kind": "mcp_tool",
+      "path": "scripts/agentiux_dev_mcp.py",
+      "primary_surface": "mcp",
+      "read_only": true,
+      "related_routes": [
+        "plugin-dev",
+        "verification",
+        "workstream"
+      ],
+      "required_inputs": [
+        "workspacePath"
+      ],
+      "returns": "Structured JSON payload for inspection and routing.",
+      "summary": "List persisted auth sessions for the workspace.",
+      "tags": [
+        "auth",
+        "list",
+        "list_auth_sessions",
+        "plugin-dev",
+        "sessions",
+        "verification",
+        "workstream"
+      ],
+      "title": "List Auth Sessions",
+      "tool_name": "list_auth_sessions",
+      "triggers": [
+        "list auth sessions",
+        "plugin-dev",
+        "verification",
+        "workstream"
+      ]
+    },
+    {
+      "cost_hint": "low",
+      "follow_up_paths": [
+        "README.md",
         "references/command-surface.md",
         "references/design-workflow.md"
       ],
@@ -2182,6 +2298,44 @@
       "triggers": [
         "plugin-dev",
         "remove auth profile",
+        "verification"
+      ]
+    },
+    {
+      "cost_hint": "low",
+      "follow_up_paths": [
+        "README.md",
+        "references/visual-verification.md",
+        "references/workflow-kernel.md"
+      ],
+      "id": "remove_auth_session",
+      "kind": "mcp_tool",
+      "path": "scripts/agentiux_dev_mcp.py",
+      "primary_surface": "mcp",
+      "read_only": false,
+      "related_routes": [
+        "plugin-dev",
+        "verification"
+      ],
+      "required_inputs": [
+        "workspacePath",
+        "sessionId"
+      ],
+      "returns": "Structured mutation result payload.",
+      "summary": "Remove a persisted auth session, its secret payload, and revisions.",
+      "tags": [
+        "auth",
+        "plugin-dev",
+        "remove",
+        "remove_auth_session",
+        "session",
+        "verification"
+      ],
+      "title": "Remove Auth Session",
+      "tool_name": "remove_auth_session",
+      "triggers": [
+        "plugin-dev",
+        "remove auth session",
         "verification"
       ]
     },
@@ -3449,6 +3603,44 @@
       "cost_hint": "low",
       "follow_up_paths": [
         "README.md",
+        "references/visual-verification.md",
+        "references/workflow-kernel.md"
+      ],
+      "id": "write_auth_session",
+      "kind": "mcp_tool",
+      "path": "scripts/agentiux_dev_mcp.py",
+      "primary_surface": "mcp",
+      "read_only": false,
+      "related_routes": [
+        "plugin-dev",
+        "verification"
+      ],
+      "required_inputs": [
+        "workspacePath",
+        "session"
+      ],
+      "returns": "Structured mutation result payload.",
+      "summary": "Create or update a persisted auth session and its secret payload.",
+      "tags": [
+        "auth",
+        "plugin-dev",
+        "session",
+        "verification",
+        "write",
+        "write_auth_session"
+      ],
+      "title": "Write Auth Session",
+      "tool_name": "write_auth_session",
+      "triggers": [
+        "plugin-dev",
+        "verification",
+        "write auth session"
+      ]
+    },
+    {
+      "cost_hint": "low",
+      "follow_up_paths": [
+        "README.md",
         "references/command-surface.md",
         "references/design-workflow.md"
       ],
@@ -3693,7 +3885,7 @@
       ]
     }
   ],
-  "entry_count": 107,
+  "entry_count": 112,
   "plugin": {
     "name": "agentiux-dev",
     "version": "0.8.0"
