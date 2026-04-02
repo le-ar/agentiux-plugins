@@ -19,7 +19,7 @@ from typing import Any
 
 PLUGIN_NAME = "agentiux-dev"
 PLUGIN_VERSION = "0.8.0"
-STATE_SCHEMA_VERSION = 7
+STATE_SCHEMA_VERSION = 8
 SUPPORTED_HOSTS = ("windows", "linux", "macos")
 
 STAGE_REGISTER_STORAGE = {
@@ -144,6 +144,19 @@ CANONICAL_COMMAND_SURFACE = [
     "list tasks",
     "show current task",
     "close current task",
+    "show auth profiles",
+    "write auth profile",
+    "remove auth profile",
+    "resolve auth profile",
+    "list project notes",
+    "get project note",
+    "write project note",
+    "archive project note",
+    "search project notes",
+    "get analytics snapshot",
+    "list learning entries",
+    "write learning entry",
+    "update learning entry",
     "show youtrack connections",
     "connect youtrack",
     "update youtrack connection",
@@ -496,6 +509,58 @@ COMMAND_ALIAS_TABLE = {
     "close current task": [
         "close current task",
         "\u0437\u0430\u043a\u0440\u043e\u0439 current task",
+    ],
+    "show auth profiles": [
+        "show auth profiles",
+        "\u043f\u043e\u043a\u0430\u0436\u0438 auth profiles",
+    ],
+    "write auth profile": [
+        "write auth profile",
+        "\u0437\u0430\u043f\u0438\u0448\u0438 auth profile",
+    ],
+    "remove auth profile": [
+        "remove auth profile",
+        "\u0443\u0434\u0430\u043b\u0438 auth profile",
+    ],
+    "resolve auth profile": [
+        "resolve auth profile",
+        "\u0440\u0435\u0437\u043e\u043b\u0432\u0438 auth profile",
+    ],
+    "list project notes": [
+        "list project notes",
+        "\u043f\u043e\u043a\u0430\u0436\u0438 project notes",
+    ],
+    "get project note": [
+        "get project note",
+        "\u043f\u043e\u043a\u0430\u0436\u0438 project note",
+    ],
+    "write project note": [
+        "write project note",
+        "\u0437\u0430\u043f\u0438\u0448\u0438 project note",
+    ],
+    "archive project note": [
+        "archive project note",
+        "\u0430\u0440\u0445\u0438\u0432\u0438\u0440\u0443\u0439 project note",
+    ],
+    "search project notes": [
+        "search project notes",
+        "\u043f\u043e\u0438\u0449\u0438 project notes",
+    ],
+    "get analytics snapshot": [
+        "get analytics snapshot",
+        "\u043f\u043e\u043a\u0430\u0436\u0438 analytics snapshot",
+    ],
+    "list learning entries": [
+        "list learning entries",
+        "\u043f\u043e\u043a\u0430\u0436\u0438 learning entries",
+    ],
+    "write learning entry": [
+        "write learning entry",
+        "\u0437\u0430\u043f\u0438\u0448\u0438 learning entry",
+    ],
+    "update learning entry": [
+        "update learning entry",
+        "\u043e\u0431\u043d\u043e\u0432\u0438 learning entry",
     ],
     "show youtrack connections": [
         "show youtrack connections",
@@ -2081,7 +2146,14 @@ def workspace_paths(workspace: str | Path, workstream_id: str | None = None, tas
     upgrade_root = workspace_dir / "upgrade-plans"
     migrations_root = workspace_dir / "migrations"
     integrations_root = workspace_dir / "integrations"
+    auth_root = integrations_root / "auth"
     youtrack_root = integrations_root / "youtrack"
+    memory_root = workspace_dir / "memory"
+    memory_notes_root = memory_root / "notes"
+    memory_revisions_root = memory_root / "revisions"
+    analytics_root = state_root() / "analytics"
+    analytics_events_root = analytics_root / "events"
+    analytics_learnings_dir = analytics_root / "learnings"
     starter_runs_root = state_root() / "starter-runs"
     return {
         "workspace_path": str(workspace_path),
@@ -2127,6 +2199,10 @@ def workspace_paths(workspace: str | Path, workstream_id: str | None = None, tas
         "current_upgrade_plan": str(upgrade_root / "current.json"),
         "migrations_root": str(migrations_root),
         "integrations_root": str(integrations_root),
+        "auth_root": str(auth_root),
+        "auth_profiles_dir": str(auth_root / "profiles"),
+        "auth_secrets_dir": str(auth_root / "secrets"),
+        "auth_index": str(auth_root / "index.json"),
         "youtrack_root": str(youtrack_root),
         "youtrack_connections_dir": str(youtrack_root / "connections"),
         "youtrack_secrets_dir": str(youtrack_root / "secrets"),
@@ -2134,6 +2210,14 @@ def workspace_paths(workspace: str | Path, workstream_id: str | None = None, tas
         "youtrack_searches_dir": str(youtrack_root / "searches"),
         "youtrack_plans_dir": str(youtrack_root / "plans"),
         "youtrack_issues_dir": str(youtrack_root / "issues"),
+        "memory_root": str(memory_root),
+        "memory_notes_root": str(memory_notes_root),
+        "memory_notes_index": str(memory_notes_root / "index.json"),
+        "memory_revisions_root": str(memory_revisions_root),
+        "analytics_root": str(analytics_root),
+        "analytics_events_root": str(analytics_events_root),
+        "analytics_learnings_dir": str(analytics_learnings_dir),
+        "analytics_index": str(analytics_root / "index.json"),
         "starter_runs_root": str(starter_runs_root),
     }
 
@@ -3972,6 +4056,9 @@ def _starter_logs(run_id: str) -> tuple[Path, Path]:
 def _ensure_state_dirs(paths: dict[str, str]) -> None:
     for key in (
         "state_root",
+        "analytics_root",
+        "analytics_events_root",
+        "analytics_learnings_dir",
         "workspace_root",
         "workstreams_root",
         "tasks_root",
@@ -3979,6 +4066,9 @@ def _ensure_state_dirs(paths: dict[str, str]) -> None:
         "upgrade_plans_root",
         "migrations_root",
         "integrations_root",
+        "auth_root",
+        "auth_profiles_dir",
+        "auth_secrets_dir",
         "youtrack_root",
         "youtrack_connections_dir",
         "youtrack_secrets_dir",
@@ -3986,6 +4076,9 @@ def _ensure_state_dirs(paths: dict[str, str]) -> None:
         "youtrack_searches_dir",
         "youtrack_plans_dir",
         "youtrack_issues_dir",
+        "memory_root",
+        "memory_notes_root",
+        "memory_revisions_root",
         "starter_runs_root",
     ):
         Path(paths[key]).mkdir(parents=True, exist_ok=True)
@@ -4593,6 +4686,18 @@ def _ensure_workspace_initialized(workspace: str | Path) -> dict[str, str]:
         _write_json(Path(paths["workstreams_index"]), _default_workstream_index())
     if not Path(paths["tasks_index"]).exists():
         _write_json(Path(paths["tasks_index"]), _default_task_index())
+    if not Path(paths["auth_index"]).exists():
+        from agentiux_dev_auth import _default_auth_index
+
+        _write_json(Path(paths["auth_index"]), _default_auth_index())
+    if not Path(paths["memory_notes_index"]).exists():
+        from agentiux_dev_memory import _default_notes_index
+
+        _write_json(Path(paths["memory_notes_index"]), _default_notes_index())
+    if not Path(paths["analytics_index"]).exists():
+        from agentiux_dev_analytics import _default_analytics_index
+
+        _write_json(Path(paths["analytics_index"]), _default_analytics_index())
     return paths
 
 
@@ -4609,6 +4714,9 @@ def _workspace_counts(paths: dict[str, str]) -> dict[str, Any]:
     workstreams_index = _load_workstreams_index(paths)
     tasks_index = _load_tasks_index(paths)
     runs = _collect_verification_runs(paths)
+    auth_items = (_load_json(Path(paths["auth_index"]), default={"items": []}, strict=False) or {}).get("items") or []
+    note_items = (_load_json(Path(paths["memory_notes_index"]), default={"items": []}, strict=False) or {}).get("items") or []
+    learning_items = (_load_json(Path(paths["analytics_index"]), default={"learning_entries": []}, strict=False) or {}).get("learning_entries") or []
     total_stages = 0
     completed_stages = 0
     blocked_stages = 0
@@ -4662,6 +4770,15 @@ def _workspace_counts(paths: dict[str, str]) -> dict[str, Any]:
         "passed_verification_runs": len(passed_runs),
         "starter_runs": len(list(_starter_runs_root().glob("*/run.json"))),
         "audit_reports": len(_recent_audit_files(paths)),
+        "auth_profiles": len(auth_items),
+        "project_notes": len(note_items),
+        "pinned_project_notes": sum(
+            1
+            for item in note_items
+            if item.get("status") == "active" and item.get("pin_state") == "pinned"
+        ),
+        "learning_entries": len(learning_items),
+        "open_learning_entries": sum(1 for item in learning_items if item.get("status") == "open"),
     }
 
 
@@ -4727,6 +4844,10 @@ def _persist_workspace_state(workspace: str | Path, workspace_state: dict[str, A
 
 
 def init_workspace(workspace: str | Path, force: bool = False) -> dict[str, Any]:
+    from agentiux_dev_analytics import _default_analytics_index
+    from agentiux_dev_auth import _default_auth_index
+    from agentiux_dev_memory import _default_notes_index
+
     detection = detect_workspace(workspace)
     preview = preview_workspace_init(workspace)
     paths = detection["paths"]
@@ -4741,6 +4862,11 @@ def init_workspace(workspace: str | Path, force: bool = False) -> dict[str, Any]
         Path(paths[key]).mkdir(parents=True, exist_ok=True)
     _save_workstreams_index(paths, _default_workstream_index())
     _save_tasks_index(paths, _default_task_index())
+    _write_json(Path(paths["auth_index"]), _default_auth_index())
+    _write_json(Path(paths["memory_notes_index"]), _default_notes_index())
+    analytics_index_path = Path(paths["analytics_index"])
+    if not analytics_index_path.exists():
+        _write_json(analytics_index_path, _default_analytics_index())
 
     workspace_state = {
         "schema_version": STATE_SCHEMA_VERSION,
@@ -5054,10 +5180,21 @@ def preview_repair_workspace_state(workspace: str | Path) -> dict[str, Any]:
 
 
 def repair_workspace_state(workspace: str | Path) -> dict[str, Any]:
+    from agentiux_dev_analytics import _default_analytics_index
+    from agentiux_dev_auth import _default_auth_index
+    from agentiux_dev_memory import _default_notes_index
+
     plan = _repair_plan(workspace)
     paths = plan["paths"]
     detection = plan["detection"]
     current_state = plan["current_state"]
+    _ensure_state_dirs(paths)
+    if not Path(paths["auth_index"]).exists():
+        _write_json(Path(paths["auth_index"]), _default_auth_index())
+    if not Path(paths["memory_notes_index"]).exists():
+        _write_json(Path(paths["memory_notes_index"]), _default_notes_index())
+    if not Path(paths["analytics_index"]).exists():
+        _write_json(Path(paths["analytics_index"]), _default_analytics_index())
     index = _load_workstreams_index(paths)
     for workstream_plan in plan["workstream_plans"]:
         workstream_paths = _workstream_paths(workspace, workstream_plan["workstream_id"])
@@ -6553,6 +6690,9 @@ def _empty_recent_verification_events_payload(workspace: str | Path) -> dict[str
 
 
 def workspace_summary(workspace: str | Path) -> dict[str, Any]:
+    from agentiux_dev_analytics import workspace_analytics_summary
+    from agentiux_dev_auth import workspace_auth_summary
+    from agentiux_dev_memory import workspace_memory_summary
     from agentiux_dev_verification import list_verification_runs, recent_verification_events, resolve_verification_selection
     from agentiux_dev_youtrack import workspace_youtrack_summary
 
@@ -6620,6 +6760,9 @@ def workspace_summary(workspace: str | Path) -> dict[str, Any]:
             "external_issue": copy.deepcopy(task.get("external_issue")) if task else None,
             "latest_commit": copy.deepcopy(task.get("latest_commit")) if task else None,
         },
+        "auth": workspace_auth_summary(workspace),
+        "memory": workspace_memory_summary(workspace),
+        "analytics": workspace_analytics_summary(workspace),
         "youtrack": workspace_youtrack_summary(workspace),
         "verification": {
             "active_run_id": active_run.get("run_id") if active_run else None,
@@ -6662,10 +6805,13 @@ def plugin_stats() -> dict[str, Any]:
 
 
 def _plugin_stats_from_workspaces(workspaces: list[dict[str, Any]]) -> dict[str, Any]:
+    from agentiux_dev_analytics import get_analytics_snapshot
+
     blocked = sum(1 for workspace in workspaces if workspace["stage_status"] == "blocked")
     ready = sum(1 for workspace in workspaces if workspace["stage_status"] == "ready_for_closeout")
     plugin_platform_workspaces = sum(1 for workspace in workspaces if workspace.get("plugin_platform", {}).get("enabled"))
     gui_runtime = read_gui_runtime()
+    analytics_snapshot = get_analytics_snapshot()
     return {
         "plugin": plugin_info(),
         "workspace_count": len(workspaces),
@@ -6676,6 +6822,13 @@ def _plugin_stats_from_workspaces(workspaces: list[dict[str, Any]]) -> dict[str,
         "design_handoffs": sum(workspace["summary_counts"]["design_handoffs"] for workspace in workspaces),
         "active_verification_runs": sum(workspace["summary_counts"]["active_verification_runs"] for workspace in workspaces),
         "failed_verification_runs": sum(workspace["summary_counts"]["failed_verification_runs"] for workspace in workspaces),
+        "auth_profiles": sum(workspace["summary_counts"].get("auth_profiles", 0) for workspace in workspaces),
+        "project_notes": sum(workspace["summary_counts"].get("project_notes", 0) for workspace in workspaces),
+        "pinned_project_notes": sum(workspace["summary_counts"].get("pinned_project_notes", 0) for workspace in workspaces),
+        "learning_entries": int((analytics_snapshot.get("learning_counts") or {}).get("total") or 0),
+        "open_learning_entries": int((analytics_snapshot.get("learning_counts") or {}).get("open") or 0),
+        "resolved_learning_entries": int((analytics_snapshot.get("learning_counts") or {}).get("resolved") or 0),
+        "analytics_events": int((analytics_snapshot.get("event_counts") or {}).get("total") or 0),
         "plugin_platform_workspaces": plugin_platform_workspaces,
         "starter_runs": list_starter_runs(limit=None)["run_count"],
         "gui_status": gui_runtime.get("status", "stopped"),
@@ -6684,6 +6837,10 @@ def _plugin_stats_from_workspaces(workspaces: list[dict[str, Any]]) -> dict[str,
 
 
 def _dashboard_workspace_summary(workspace: str | Path) -> dict[str, Any]:
+    from agentiux_dev_analytics import workspace_analytics_summary
+    from agentiux_dev_auth import workspace_auth_summary
+    from agentiux_dev_memory import workspace_memory_summary
+
     paths = _ensure_workspace_initialized(workspace)
     workspace_state = read_workspace_state(workspace)
     counts = _workspace_counts(paths)
@@ -6707,6 +6864,9 @@ def _dashboard_workspace_summary(workspace: str | Path) -> dict[str, Any]:
         "stage_status": register.get("stage_status") if register else None,
         "summary_counts": counts,
         "plugin_platform": workspace_state.get("plugin_platform", {"enabled": False}),
+        "auth": workspace_auth_summary(workspace),
+        "memory": workspace_memory_summary(workspace),
+        "analytics": workspace_analytics_summary(workspace),
     }
 
 
@@ -7039,6 +7199,16 @@ def _dashboard_attention_from_summary(summary: dict[str, Any]) -> list[dict[str,
                 section="integrations",
             )
         )
+    if int((summary.get("analytics") or {}).get("open_learning_entry_count") or 0) > 0:
+        attention.append(
+            _dashboard_attention_item(
+                "open-learnings",
+                "warn",
+                "Workspace has open learnings",
+                f"{int((summary.get('analytics') or {}).get('open_learning_entry_count') or 0)} learnings still need follow-up or closure.",
+                section="memory",
+            )
+        )
     return attention
 
 
@@ -7113,6 +7283,17 @@ def _dashboard_workspace_card(summary: dict[str, Any]) -> dict[str, Any]:
             _dashboard_metric("Workstreams", counts.get("workstreams", 0)),
             _dashboard_metric("Tasks", counts.get("tasks", 0)),
             _dashboard_metric(
+                "Auth",
+                counts.get("auth_profiles", 0),
+                tone="ok" if counts.get("auth_profiles", 0) else "warn",
+                hint="Configured auth profiles",
+            ),
+            _dashboard_metric(
+                "Pinned notes",
+                counts.get("pinned_project_notes", 0),
+                tone="ok" if counts.get("pinned_project_notes", 0) else "neutral",
+            ),
+            _dashboard_metric(
                 "Verification",
                 counts.get("active_verification_runs", 0),
                 tone="warn" if counts.get("active_verification_runs", 0) else "neutral",
@@ -7129,12 +7310,79 @@ def _dashboard_workspace_card(summary: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def _verification_auth_resolution_summary(
+    workspace: str | Path,
+    selection: dict[str, Any] | None,
+    current_task_payload: dict[str, Any] | None,
+    workstream_id: str | None,
+) -> dict[str, Any]:
+    from agentiux_dev_auth import resolve_auth_profile
+
+    selected_cases = list((selection or {}).get("selected_cases") or [])
+    if not selected_cases:
+        return {
+            "status": "not_applicable",
+            "resolved_cases": [],
+            "issues": [],
+        }
+    resolved_cases: list[dict[str, Any]] = []
+    issues: list[dict[str, Any]] = []
+    task_id = current_task_payload.get("task_id") if current_task_payload else None
+    external_issue = copy.deepcopy(current_task_payload.get("external_issue")) if current_task_payload else None
+    for case in selected_cases:
+        try:
+            resolved = resolve_auth_profile(
+                workspace,
+                profile_id=case.get("auth_profile_ref"),
+                task_id=task_id,
+                external_issue=external_issue,
+                case={
+                    "id": case.get("case_id"),
+                    "title": case.get("title"),
+                    "runner": case.get("runner"),
+                    "surface_type": case.get("surface_type"),
+                    "auth_profile_ref": case.get("auth_profile_ref"),
+                },
+                workstream_id=workstream_id,
+            )
+            resolved_cases.append(
+                {
+                    "case_id": case.get("case_id"),
+                    "profile_id": ((resolved.get("profile") or {}).get("profile_id")),
+                    "artifact_type": ((resolved.get("artifact") or {}).get("artifact_type")),
+                }
+            )
+        except FileNotFoundError:
+            if case.get("auth_profile_ref"):
+                issues.append(
+                    {
+                        "case_id": case.get("case_id"),
+                        "reason": f"Explicit auth profile `{case.get('auth_profile_ref')}` was not found.",
+                    }
+                )
+        except Exception as exc:  # noqa: BLE001
+            issues.append(
+                {
+                    "case_id": case.get("case_id"),
+                    "reason": str(exc),
+                }
+            )
+    return {
+        "status": "warning" if issues else ("ok" if resolved_cases else "not_configured"),
+        "resolved_cases": resolved_cases,
+        "issues": issues,
+    }
+
+
 def _dashboard_overview_model(workspaces: list[dict[str, Any]], starter_runs: dict[str, Any], gui_payload: dict[str, Any]) -> dict[str, Any]:
+    from agentiux_dev_analytics import get_analytics_snapshot
+
     blocked_count = sum(1 for workspace in workspaces if workspace.get("stage_status") == "blocked")
     warning_count = sum(1 for workspace in workspaces if workspace.get("stage_status") in {"planned", "ready_for_closeout"})
     preferred_workspace = gui_payload.get("default_workspace")
     if not preferred_workspace and workspaces:
         preferred_workspace = workspaces[0].get("workspace_path")
+    analytics_snapshot = get_analytics_snapshot()
     return {
         "workspace_count": len(workspaces),
         "preferred_workspace_path": preferred_workspace,
@@ -7151,6 +7399,13 @@ def _dashboard_overview_model(workspaces: list[dict[str, Any]], starter_runs: di
                 sum((workspace.get("summary_counts") or {}).get("failed_verification_runs", 0) for workspace in workspaces),
                 tone="bad",
             ),
+            _dashboard_metric("Auth profiles", sum((workspace.get("summary_counts") or {}).get("auth_profiles", 0) for workspace in workspaces)),
+            _dashboard_metric("Pinned notes", sum((workspace.get("summary_counts") or {}).get("pinned_project_notes", 0) for workspace in workspaces)),
+            _dashboard_metric(
+                "Open learnings",
+                int((analytics_snapshot.get("learning_counts") or {}).get("open") or 0),
+                tone="warn" if int((analytics_snapshot.get("learning_counts") or {}).get("open") or 0) else "ok",
+            ),
             _dashboard_metric("Reference boards", sum((workspace.get("summary_counts") or {}).get("reference_boards", 0) for workspace in workspaces)),
             _dashboard_metric("Design handoffs", sum((workspace.get("summary_counts") or {}).get("design_handoffs", 0) for workspace in workspaces)),
             _dashboard_metric("Starter runs", starter_runs.get("run_count", 0)),
@@ -7163,6 +7418,7 @@ def _dashboard_overview_model(workspaces: list[dict[str, Any]], starter_runs: di
             "warning_count": warning_count,
             "active_verification_runs": sum((workspace.get("summary_counts") or {}).get("active_verification_runs", 0) for workspace in workspaces),
             "failed_verification_runs": sum((workspace.get("summary_counts") or {}).get("failed_verification_runs", 0) for workspace in workspaces),
+            "open_learning_entries": int((analytics_snapshot.get("learning_counts") or {}).get("open") or 0),
         },
         "workspaces": [_dashboard_workspace_card(workspace) for workspace in workspaces],
         "recent_starter_runs": [
@@ -7258,8 +7514,19 @@ def _dashboard_cockpit_from_uninitialized(workspace: str | Path) -> dict[str, An
         },
         "integrations": {
             "summary_cards": [
+                _dashboard_metric("Auth", "Unavailable", tone="warn"),
                 _dashboard_metric("YouTrack", "Unavailable", tone="warn"),
             ],
+            "auth": {
+                "summary": {
+                    "profile_count": 0,
+                    "workspace_profile_count": 0,
+                    "task_profile_count": 0,
+                    "external_issue_profile_count": 0,
+                    "default_profile_id": None,
+                },
+                "items": [],
+            },
             "youtrack": {
                 "summary": {
                     "connection_count": 0,
@@ -7272,6 +7539,22 @@ def _dashboard_cockpit_from_uninitialized(workspace: str | Path) -> dict[str, An
                 "current_search_session": None,
                 "current_plan": None,
                 "current_workstream_issues": {"items": []},
+            },
+        },
+        "memory": {
+            "summary_cards": [
+                _dashboard_metric("Pinned notes", 0),
+                _dashboard_metric("Active notes", 0),
+                _dashboard_metric("Open learnings", 0),
+                _dashboard_metric("Resolved learnings", 0),
+            ],
+            "project_notes": {"items": [], "counts": {"total": 0, "active": 0, "archived": 0, "pinned": 0}},
+            "pinned_notes": [],
+            "learnings": {"items": [], "counts": {"total": 0, "open": 0, "resolved": 0, "archived": 0}},
+            "analytics": {
+                "event_counts": {"total": 0, "workspace_total": 0, "by_type": {}, "by_workspace": {}},
+                "learning_counts": {"total": 0, "open": 0, "resolved": 0, "archived": 0},
+                "recent_learning_entries": [],
             },
         },
         "diagnostics": {
@@ -7317,6 +7600,7 @@ def _dashboard_cockpit_from_detail(detail: dict[str, Any]) -> dict[str, Any]:
     ]
     verification_runs = detail.get("verification_runs") or {}
     verification_selection = detail.get("verification_selection")
+    verification_auth_resolution = detail.get("verification_auth_resolution") or {}
     coverage_audit = detail.get("verification_coverage_audit")
     verification_status = _dashboard_verification_status(verification_runs, verification_selection, coverage_audit)
     youtrack_summary = _dashboard_youtrack_status(summary.get("youtrack"))
@@ -7330,6 +7614,10 @@ def _dashboard_cockpit_from_detail(detail: dict[str, Any]) -> dict[str, Any]:
     current_board = detail.get("current_reference_board") or {}
     current_handoff = detail.get("current_design_handoff") or {}
     design_brief = detail.get("design_brief") or {}
+    auth_detail = detail.get("auth") or {}
+    memory_detail = detail.get("memory") or {}
+    analytics_detail = detail.get("analytics") or {}
+    learning_entries = (analytics_detail.get("learning_entries") or {})
     youtrack = detail.get("youtrack") or {}
     attention = _dashboard_attention_from_summary(summary)
     if (coverage_audit or {}).get("status") == "warning":
@@ -7353,6 +7641,16 @@ def _dashboard_cockpit_from_detail(detail: dict[str, Any]) -> dict[str, Any]:
                 section="quality",
             )
         )
+    if verification_auth_resolution.get("status") == "warning" and (verification_auth_resolution.get("issues") or []):
+        attention.append(
+            _dashboard_attention_item(
+                "verification-auth-warning",
+                "warn",
+                "Verification auth coverage is incomplete",
+                str((verification_auth_resolution.get("issues") or [])[0].get("reason") or "Auth resolution needs attention before running verification."),
+                section="quality",
+            )
+        )
     if not int((summary.get("youtrack") or {}).get("connection_count") or 0):
         attention.append(
             _dashboard_attention_item(
@@ -7361,6 +7659,16 @@ def _dashboard_cockpit_from_detail(detail: dict[str, Any]) -> dict[str, Any]:
                 "No YouTrack connections",
                 "Connection management remains available from the Integrations panel.",
                 section="integrations",
+            )
+        )
+    if int((summary.get("analytics") or {}).get("open_learning_entry_count") or 0):
+        attention.append(
+            _dashboard_attention_item(
+                "workspace-open-learnings-detail",
+                "warn",
+                "Open learnings need review",
+                f"{int((summary.get('analytics') or {}).get('open_learning_entry_count') or 0)} learning entries are still open for this workspace.",
+                section="memory",
             )
         )
     return {
@@ -7383,6 +7691,8 @@ def _dashboard_cockpit_from_detail(detail: dict[str, Any]) -> dict[str, Any]:
                 _dashboard_metric("Current workstream", summary.get("current_workstream_id") or "none"),
                 _dashboard_metric("Current task", summary.get("current_task_id") or "none"),
                 _dashboard_metric("Verification", verification_status["label"], tone=verification_status["tone"], hint=verification_status.get("detail")),
+                _dashboard_metric("Auth profiles", int((summary.get("auth") or {}).get("profile_count") or 0), tone="ok" if int((summary.get("auth") or {}).get("profile_count") or 0) else "warn"),
+                _dashboard_metric("Pinned notes", int((summary.get("memory") or {}).get("pinned_note_count") or 0)),
                 _dashboard_metric("YouTrack", youtrack_summary["label"], tone=youtrack_summary["tone"], hint=youtrack_summary.get("detail")),
                 _dashboard_metric("Updated", summary.get("updated_at") or "unknown"),
             ],
@@ -7478,6 +7788,7 @@ def _dashboard_cockpit_from_detail(detail: dict[str, Any]) -> dict[str, Any]:
             }
             if coverage_audit
             else None,
+            "auth_resolution": copy.deepcopy(verification_auth_resolution),
             "helper_sync": {
                 "status": helper_materialization.get("status"),
                 "synced": helper_materialization.get("synced"),
@@ -7505,17 +7816,43 @@ def _dashboard_cockpit_from_detail(detail: dict[str, Any]) -> dict[str, Any]:
         "integrations": {
             "summary_cards": [
                 _dashboard_metric(
+                    "Auth profiles",
+                    int((summary.get("auth") or {}).get("profile_count") or 0),
+                    tone="ok" if int((summary.get("auth") or {}).get("profile_count") or 0) else "warn",
+                ),
+                _dashboard_metric("Default auth", (summary.get("auth") or {}).get("default_profile_id") or "none"),
+                _dashboard_metric(
                     "Connections",
                     int((summary.get("youtrack") or {}).get("connection_count") or 0),
                     tone="ok" if int((summary.get("youtrack") or {}).get("connection_count") or 0) else "warn",
                 ),
-                _dashboard_metric("Default connection", (summary.get("youtrack") or {}).get("default_connection_id") or "none"),
                 _dashboard_metric("Search session", (summary.get("youtrack") or {}).get("last_search_session_id") or "none"),
                 _dashboard_metric("Active plan", (summary.get("youtrack") or {}).get("active_plan_id") or "none"),
             ],
+            "auth": copy.deepcopy(auth_detail),
             "youtrack": {
                 "summary": copy.deepcopy(summary.get("youtrack") or {}),
                 **youtrack,
+            },
+        },
+        "memory": {
+            "summary_cards": [
+                _dashboard_metric("Pinned notes", int((summary.get("memory") or {}).get("pinned_note_count") or 0)),
+                _dashboard_metric("Active notes", int((summary.get("memory") or {}).get("active_note_count") or 0)),
+                _dashboard_metric(
+                    "Open learnings",
+                    int((summary.get("analytics") or {}).get("open_learning_entry_count") or 0),
+                    tone="warn" if int((summary.get("analytics") or {}).get("open_learning_entry_count") or 0) else "ok",
+                ),
+                _dashboard_metric("Resolved learnings", int((summary.get("analytics") or {}).get("resolved_learning_entry_count") or 0)),
+            ],
+            "project_notes": copy.deepcopy(memory_detail),
+            "pinned_notes": copy.deepcopy(memory_detail.get("pinned_notes") or []),
+            "learnings": copy.deepcopy(learning_entries),
+            "analytics": {
+                "event_counts": copy.deepcopy(analytics_detail.get("event_counts") or {}),
+                "learning_counts": copy.deepcopy(analytics_detail.get("learning_counts") or {}),
+                "recent_learning_entries": copy.deepcopy(analytics_detail.get("recent_learning_entries") or []),
             },
         },
         "diagnostics": {
@@ -7611,6 +7948,9 @@ def dashboard_snapshot(workspace: str | Path | None = None) -> dict[str, Any]:
 
 
 def read_workspace_detail(workspace: str | Path | None) -> dict[str, Any] | None:
+    from agentiux_dev_analytics import workspace_analytics_detail
+    from agentiux_dev_auth import workspace_auth_detail
+    from agentiux_dev_memory import workspace_memory_detail
     from agentiux_dev_verification import (
         audit_verification_coverage,
         list_verification_runs,
@@ -7629,6 +7969,7 @@ def read_workspace_detail(workspace: str | Path | None) -> dict[str, Any] | None
     current_task_payload = current_task(workspace)
     verification_runs = list_verification_runs(workspace, limit=10) if has_workstream else _empty_verification_runs_payload(workspace)
     current_log_run = verification_runs["active_run"] or verification_runs["latest_run"]
+    verification_selection = resolve_verification_selection(workspace) if (has_workstream or current_task_payload) else None
     return {
         "summary": workspace_summary(workspace),
         "paths": get_state_paths(workspace)["paths"],
@@ -7645,7 +7986,13 @@ def read_workspace_detail(workspace: str | Path | None) -> dict[str, Any] | None
         "design_handoffs": list_design_handoffs(workspace) if has_workstream else {"workspace_path": paths["workspace_path"], "items": []},
         "current_design_handoff": read_design_handoff(workspace) if has_workstream else None,
         "verification_recipes": read_verification_recipes(workspace) if has_workstream else None,
-        "verification_selection": resolve_verification_selection(workspace) if (has_workstream or current_task_payload) else None,
+        "verification_selection": verification_selection,
+        "verification_auth_resolution": _verification_auth_resolution_summary(
+            workspace,
+            verification_selection,
+            current_task_payload,
+            workspace_state.get("current_workstream_id"),
+        ),
         "verification_runs": verification_runs,
         "active_verification_run": verification_runs["active_run"],
         "latest_verification_run": verification_runs["latest_run"],
@@ -7655,6 +8002,9 @@ def read_workspace_detail(workspace: str | Path | None) -> dict[str, Any] | None
         "active_verification_stderr": read_verification_log_tail(workspace, current_log_run["run_id"], "stderr", 20) if current_log_run else None,
         "active_verification_logcat": read_verification_log_tail(workspace, current_log_run["run_id"], "logcat", 20) if current_log_run else None,
         "verification_coverage_audit": audit_verification_coverage(workspace),
+        "auth": workspace_auth_detail(workspace),
+        "memory": workspace_memory_detail(workspace),
+        "analytics": workspace_analytics_detail(workspace),
         "current_audit": read_current_audit(workspace),
         "current_upgrade_plan": read_upgrade_plan(workspace),
         "youtrack": workspace_youtrack_detail(workspace),

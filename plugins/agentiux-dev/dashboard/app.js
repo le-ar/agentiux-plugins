@@ -1,6 +1,6 @@
 const appRoot = document.getElementById("app");
 
-const WORKSPACE_PANELS = ["now", "plan", "quality", "integrations", "diagnostics"];
+const WORKSPACE_PANELS = ["now", "plan", "quality", "integrations", "memory", "diagnostics"];
 
 const state = {
   overviewPayload: null,
@@ -11,6 +11,10 @@ const state = {
   loading: true,
   error: null,
   editingConnection: null,
+  editingAuthProfile: null,
+  authResolvePreview: null,
+  editingNote: null,
+  editingLearning: null,
   bootstrapped: false,
 };
 
@@ -210,12 +214,30 @@ async function fetchDashboard(workspacePath, options = {}) {
     state.panel = resolvedWorkspace ? requestedPanel : "now";
     state.forceOverview = !resolvedWorkspace && forceOverview;
     const connections = cockpitModel?.integrations?.youtrack?.connections?.items || [];
+    const authProfiles = cockpitModel?.integrations?.auth?.items || [];
+    const notes = cockpitModel?.memory?.project_notes?.items || [];
+    const learningEntries = cockpitModel?.memory?.learnings?.items || [];
     if (state.editingConnection) {
       state.editingConnection =
         connections.find((item) => item.connection_id === state.editingConnection.connection_id) || null;
     }
+    if (state.editingAuthProfile) {
+      state.editingAuthProfile =
+        authProfiles.find((item) => item.profile_id === state.editingAuthProfile.profile_id) || null;
+    }
+    if (state.editingNote) {
+      state.editingNote = notes.find((item) => item.note_id === state.editingNote.note_id) || null;
+    }
+    if (state.editingLearning) {
+      state.editingLearning =
+        learningEntries.find((item) => item.entry_id === state.editingLearning.entry_id) || null;
+    }
     if (!resolvedWorkspace) {
       state.editingConnection = null;
+      state.editingAuthProfile = null;
+      state.authResolvePreview = null;
+      state.editingNote = null;
+      state.editingLearning = null;
     }
     if (historyMode !== "skip") {
       updateRoute(resolvedWorkspace, {
@@ -504,7 +526,8 @@ function renderTabs(cockpit) {
     now: (cockpit.attention?.items || []).filter((item) => item.section === "now").length + (cockpit.now?.blockers || []).length,
     plan: cockpit.plan?.stages?.length || 0,
     quality: cockpit.quality?.coverage?.warning_count || cockpit.quality?.recent_runs?.length || 0,
-    integrations: cockpit.integrations?.youtrack?.connections?.items?.length || 0,
+    integrations: (cockpit.integrations?.youtrack?.connections?.items?.length || 0) + (cockpit.integrations?.auth?.items?.length || 0),
+    memory: (cockpit.memory?.project_notes?.counts?.pinned || 0) + (cockpit.memory?.learnings?.counts?.open || 0),
     diagnostics: cockpit.diagnostics?.paths?.length || 0,
   };
   const labels = {
@@ -512,6 +535,7 @@ function renderTabs(cockpit) {
     plan: "Plan",
     quality: "Quality",
     integrations: "Integrations",
+    memory: "Memory",
     diagnostics: "Diagnostics",
   };
   return `
@@ -837,6 +861,17 @@ function renderQualityPanel(cockpit) {
               <span class="pill-chip">${escapeHtml(`suite: ${quality.selection?.selected_suite || "none"}`)}</span>
             </div>
             ${quality.selection?.reason ? `<p>${escapeHtml(quality.selection.reason)}</p>` : ""}
+            ${
+              quality.auth_resolution?.issues?.length
+                ? `<pre class="code-block">${escapeHtml(
+                    quality.auth_resolution.issues.map((item) => `${item.case_id || "case"}: ${item.reason || "Auth resolution issue"}`).join("\n"),
+                  )}</pre>`
+                : quality.auth_resolution?.resolved_cases?.length
+                  ? `<div class="chip-row">${quality.auth_resolution.resolved_cases
+                      .map((item) => `<span class="pill-chip">${escapeHtml(`${item.case_id}: ${item.profile_id || "profile"}`)}</span>`)
+                      .join("")}</div>`
+                  : ""
+            }
           </article>
           <article class="stack-item">
             <div class="stack-item-head">
@@ -1004,8 +1039,114 @@ function renderYouTrackForm(connections, isEnabled) {
   `;
 }
 
+function prettyJson(value, fallback = {}) {
+  return JSON.stringify(value ?? fallback, null, 2);
+}
+
+function renderAuthProfileList(items) {
+  if (!items?.length) {
+    return `<div class="empty-note">No auth profiles configured for this workspace.</div>`;
+  }
+  return `
+    <div class="stack-list">
+      ${items
+        .map(
+          (item) => `
+            <article class="stack-item">
+              <div class="stack-item-head">
+                <strong>${escapeHtml(item.label || item.profile_id || "profile")}</strong>
+                <span class="pill-chip ${toneClass(item.is_default ? "ok" : "neutral")}">${escapeHtml(item.scope_type || "workspace")}</span>
+              </div>
+              <p>${escapeHtml(item.profile_id || "profile")} · ${escapeHtml(item.scope_ref || "default workspace")}</p>
+              <div class="chip-row">
+                <span class="pill-chip">${escapeHtml(item.has_secret ? "secret stored" : "no secret")}</span>
+                <span class="pill-chip">${escapeHtml(item.is_default ? "default" : "non-default")}</span>
+                <span class="pill-chip">${escapeHtml(item.resolver?.kind || "resolver")}</span>
+              </div>
+              <div class="action-row">
+                <button onclick='window.__agentiux.editAuthProfile(${JSON.stringify(item.profile_id)})'>Edit</button>
+                <button class="secondary" onclick='window.__agentiux.resolveAuthProfilePreview(${JSON.stringify(item.profile_id)})'>Resolve</button>
+                <button class="secondary" onclick='window.__agentiux.removeAuthProfile(${JSON.stringify(item.profile_id)})'>Remove</button>
+              </div>
+            </article>
+          `,
+        )
+        .join("")}
+    </div>
+  `;
+}
+
+function renderAuthProfileForm(auth, isEnabled) {
+  if (!isEnabled) {
+    return `
+      <section class="surface-card">
+        <div class="section-heading">
+          <h3>Auth profile management</h3>
+          <span class="muted-copy">unavailable</span>
+        </div>
+        <div class="empty-note">Auth profile management becomes available after workspace initialization.</div>
+      </section>
+    `;
+  }
+  const editing = state.editingAuthProfile;
+  const profileJson = editing
+    ? prettyJson(
+        {
+          profile_id: editing.profile_id,
+          label: editing.label,
+          scope_type: editing.scope_type,
+          scope_ref: editing.scope_ref,
+          is_default: editing.is_default,
+          resolver: editing.resolver,
+          artifact_policy: editing.artifact_policy,
+        },
+        {},
+      )
+    : prettyJson(
+        {
+          label: "",
+          scope_type: "workspace",
+          scope_ref: null,
+          is_default: false,
+        },
+        {},
+      );
+  const preview = state.authResolvePreview;
+  return `
+    <section class="surface-card">
+      <div class="section-heading">
+        <h3>${editing ? "Edit auth profile" : "Add auth profile"}</h3>
+        <span class="muted-copy">${escapeHtml(auth?.items?.length || 0)} total</span>
+      </div>
+      <div class="form-grid">
+        <label>
+          <span>Profile JSON</span>
+          <textarea id="auth-profile-json" rows="12" placeholder='{"label":"Checkout user","scope_type":"workspace","is_default":true}'>${escapeHtml(profileJson)}</textarea>
+        </label>
+        <label>
+          <span>Secret JSON</span>
+          <textarea id="auth-secret-json" rows="10" placeholder='{"login":"qa@example.com","password":"secret"}'></textarea>
+        </label>
+        <div class="action-row">
+          <button onclick="window.__agentiux.submitAuthProfile()">${editing ? "Update profile" : "Add profile"}</button>
+          ${editing ? `<button class="secondary" onclick="window.__agentiux.clearAuthProfileForm()">Cancel</button>` : ""}
+        </div>
+      </div>
+      ${
+        preview
+          ? `<details class="disclosure" open>
+              <summary>Resolve preview</summary>
+              <pre class="code-block">${escapeHtml(prettyJson(preview, {}))}</pre>
+            </details>`
+          : ""
+      }
+    </section>
+  `;
+}
+
 function renderIntegrationsPanel(cockpit) {
   const integrations = cockpit.integrations || {};
+  const auth = integrations.auth || {};
   const youtrack = integrations.youtrack || {};
   const summary = youtrack.summary || {};
   const currentSearch = youtrack.current_search_session || null;
@@ -1020,10 +1161,19 @@ function renderIntegrationsPanel(cockpit) {
         </div>
         ${renderMetricGrid(integrations.summary_cards || [])}
         <div class="chip-row">
+          <span class="pill-chip">${escapeHtml(`auth profiles: ${auth.summary?.profile_count || 0}`)}</span>
           <span class="pill-chip">${escapeHtml(`workstream issues: ${summary.current_workstream_issue_count || 0}`)}</span>
           <span class="pill-chip">${escapeHtml(`default: ${summary.default_connection_id || "none"}`)}</span>
         </div>
       </section>
+      <section class="surface-card">
+        <div class="section-heading">
+          <h3>Auth profiles</h3>
+          <span class="muted-copy">${escapeHtml(auth.items?.length || 0)}</span>
+        </div>
+        ${renderAuthProfileList(auth.items || [])}
+      </section>
+      ${renderAuthProfileForm(auth, cockpit.state_kind === "initialized")}
       <section class="surface-card">
         <div class="section-heading">
           <h3>Connections</h3>
@@ -1071,6 +1221,244 @@ function renderIntegrationsPanel(cockpit) {
         </div>
         ${renderYouTrackIssues(youtrack.current_workstream_issues?.items || [])}
       </section>
+    </div>
+  `;
+}
+
+function parseCommaList(value) {
+  return String(value || "")
+    .split(",")
+    .map((item) => item.trim())
+    .filter(Boolean);
+}
+
+function renderProjectNoteList(items) {
+  if (!items?.length) {
+    return `<div class="empty-note">No project memory notes recorded yet.</div>`;
+  }
+  return `
+    <div class="stack-list">
+      ${items
+        .map(
+          (item) => `
+            <article class="stack-item">
+              <div class="stack-item-head">
+                <strong>${escapeHtml(item.title || item.note_id || "note")}</strong>
+                <span class="pill-chip ${toneClass(item.pin_state === "pinned" ? "ok" : item.status === "archived" ? "warn" : "neutral")}">${escapeHtml(
+                  item.pin_state === "pinned" ? "pinned" : item.status || "active",
+                )}</span>
+              </div>
+              <p>${escapeHtml(item.preview || "No preview available.")}</p>
+              <div class="chip-row">
+                <span class="pill-chip">${escapeHtml(item.note_id || "note")}</span>
+                <span class="pill-chip">${escapeHtml((item.tags || []).join(", ") || "no-tags")}</span>
+              </div>
+              <div class="action-row">
+                <button onclick='window.__agentiux.editProjectNote(${JSON.stringify(item.note_id)})'>Edit</button>
+                <button class="secondary" onclick='window.__agentiux.archiveProjectNote(${JSON.stringify(item.note_id)})'>Archive</button>
+              </div>
+            </article>
+          `,
+        )
+        .join("")}
+    </div>
+  `;
+}
+
+function renderProjectNoteForm(cockpit) {
+  if (cockpit.state_kind !== "initialized") {
+    return `
+      <section class="surface-card">
+        <div class="section-heading">
+          <h3>Project note editor</h3>
+          <span class="muted-copy">unavailable</span>
+        </div>
+        <div class="empty-note">Project memory editing becomes available after workspace initialization.</div>
+      </section>
+    `;
+  }
+  const note = state.editingNote || {};
+  return `
+    <section class="surface-card">
+      <div class="section-heading">
+        <h3>${state.editingNote ? "Edit project note" : "Add project note"}</h3>
+        <span class="muted-copy">${escapeHtml(cockpit.memory?.project_notes?.items?.length || 0)} total</span>
+      </div>
+      <div class="form-grid">
+        <input id="note-id" type="hidden" value="${escapeHtml(note.note_id || "")}" />
+        <label>
+          <span>Title</span>
+          <input id="note-title" value="${escapeHtml(note.title || "")}" placeholder="Checkout test notes" />
+        </label>
+        <label>
+          <span>Tags</span>
+          <input id="note-tags" value="${escapeHtml((note.tags || []).join(", "))}" placeholder="checkout, e2e" />
+        </label>
+        <label>
+          <span>Status</span>
+          <select id="note-status">
+            <option value="active" ${note.status === "archived" ? "" : "selected"}>active</option>
+            <option value="archived" ${note.status === "archived" ? "selected" : ""}>archived</option>
+          </select>
+        </label>
+        <label>
+          <span>Pin state</span>
+          <select id="note-pin-state">
+            <option value="normal" ${note.pin_state === "pinned" ? "" : "selected"}>normal</option>
+            <option value="pinned" ${note.pin_state === "pinned" ? "selected" : ""}>pinned</option>
+          </select>
+        </label>
+        <label>
+          <span>Source</span>
+          <select id="note-source">
+            <option value="chat" ${note.source === "web" || note.source === "system" ? "" : "selected"}>chat</option>
+            <option value="web" ${note.source === "web" ? "selected" : ""}>web</option>
+            <option value="system" ${note.source === "system" ? "selected" : ""}>system</option>
+          </select>
+        </label>
+        <label>
+          <span>Body</span>
+          <textarea id="note-body" rows="10" placeholder="Markdown note body">${escapeHtml(note.body_markdown || "")}</textarea>
+        </label>
+        <div class="action-row">
+          <button onclick="window.__agentiux.submitProjectNote()">${state.editingNote ? "Update note" : "Add note"}</button>
+          ${state.editingNote ? `<button class="secondary" onclick="window.__agentiux.clearProjectNoteForm()">Cancel</button>` : ""}
+        </div>
+      </div>
+    </section>
+  `;
+}
+
+function renderLearningList(items) {
+  if (!items?.length) {
+    return `<div class="empty-note">No learning entries recorded yet.</div>`;
+  }
+  return `
+    <div class="stack-list">
+      ${items
+        .map(
+          (item) => `
+            <article class="stack-item">
+              <div class="stack-item-head">
+                <strong>${escapeHtml(item.entry_id || "learning")}</strong>
+                <span class="pill-chip ${toneClass(item.status === "open" ? "warn" : item.status === "resolved" ? "ok" : "neutral")}">${escapeHtml(
+                  item.status || "open",
+                )}</span>
+              </div>
+              <p>${escapeHtml(item.symptom || "No symptom recorded.")}</p>
+              <div class="chip-row">
+                <span class="pill-chip">${escapeHtml(item.kind || "general")}</span>
+                <span class="pill-chip">${escapeHtml(item.run_id || "no-run")}</span>
+                <span class="pill-chip">${escapeHtml(item.task_id || "no-task")}</span>
+              </div>
+              <div class="action-row">
+                <button onclick='window.__agentiux.editLearningEntry(${JSON.stringify(item.entry_id)})'>Edit</button>
+              </div>
+            </article>
+          `,
+        )
+        .join("")}
+    </div>
+  `;
+}
+
+function renderLearningForm(cockpit) {
+  if (cockpit.state_kind !== "initialized") {
+    return `
+      <section class="surface-card">
+        <div class="section-heading">
+          <h3>Learning entry editor</h3>
+          <span class="muted-copy">unavailable</span>
+        </div>
+        <div class="empty-note">Learning entry editing becomes available after workspace initialization.</div>
+      </section>
+    `;
+  }
+  const entry = state.editingLearning || {};
+  return `
+    <section class="surface-card">
+      <div class="section-heading">
+        <h3>${state.editingLearning ? "Edit learning entry" : "Add learning entry"}</h3>
+        <span class="muted-copy">${escapeHtml(cockpit.memory?.learnings?.items?.length || 0)} total</span>
+      </div>
+      <div class="form-grid">
+        <input id="learning-entry-id" type="hidden" value="${escapeHtml(entry.entry_id || "")}" />
+        <label>
+          <span>Kind</span>
+          <input id="learning-kind" value="${escapeHtml(entry.kind || "")}" placeholder="visual-review" />
+        </label>
+        <label>
+          <span>Status</span>
+          <select id="learning-status">
+            <option value="open" ${entry.status === "resolved" || entry.status === "archived" ? "" : "selected"}>open</option>
+            <option value="resolved" ${entry.status === "resolved" ? "selected" : ""}>resolved</option>
+            <option value="archived" ${entry.status === "archived" ? "selected" : ""}>archived</option>
+          </select>
+        </label>
+        <label>
+          <span>Symptom</span>
+          <textarea id="learning-symptom" rows="3" placeholder="What went wrong?">${escapeHtml(entry.symptom || "")}</textarea>
+        </label>
+        <label>
+          <span>Root cause</span>
+          <textarea id="learning-root-cause" rows="3" placeholder="Root cause">${escapeHtml(entry.root_cause || "")}</textarea>
+        </label>
+        <label>
+          <span>Missing signal</span>
+          <textarea id="learning-missing-signal" rows="3" placeholder="What signal was missing?">${escapeHtml(entry.missing_signal || "")}</textarea>
+        </label>
+        <label>
+          <span>Fix applied</span>
+          <textarea id="learning-fix-applied" rows="3" placeholder="What fixed it?">${escapeHtml(entry.fix_applied || "")}</textarea>
+        </label>
+        <label>
+          <span>Prevention</span>
+          <textarea id="learning-prevention" rows="3" placeholder="How to prevent it next time">${escapeHtml(entry.prevention || "")}</textarea>
+        </label>
+        <div class="action-row">
+          <button onclick="window.__agentiux.submitLearningEntry()">${state.editingLearning ? "Update learning" : "Add learning"}</button>
+          ${state.editingLearning ? `<button class="secondary" onclick="window.__agentiux.clearLearningEntryForm()">Cancel</button>` : ""}
+        </div>
+      </div>
+    </section>
+  `;
+}
+
+function renderMemoryPanel(cockpit) {
+  const memory = cockpit.memory || {};
+  const projectNotes = memory.project_notes || {};
+  const analytics = memory.analytics || {};
+  return `
+    <div class="content-grid" data-screen-id="cockpit-memory-panel" data-panel="memory" data-testid="cockpit-memory-panel">
+      <section class="surface-card emphasis-card">
+        <div class="section-heading">
+          <h3>Memory and learnings</h3>
+          <span class="pill-chip ${toneClass((memory.learnings?.counts?.open || 0) > 0 ? "warn" : "ok")}">${escapeHtml(
+            (memory.learnings?.counts?.open || 0) > 0 ? "needs review" : "stable",
+          )}</span>
+        </div>
+        ${renderMetricGrid(memory.summary_cards || [])}
+        <div class="chip-row">
+          <span class="pill-chip">${escapeHtml(`workspace events: ${analytics.event_counts?.workspace_total || 0}`)}</span>
+          <span class="pill-chip">${escapeHtml(`recent learnings: ${analytics.recent_learning_entries?.length || 0}`)}</span>
+        </div>
+      </section>
+      <section class="surface-card">
+        <div class="section-heading">
+          <h3>Project memory</h3>
+          <span class="muted-copy">${escapeHtml(projectNotes.items?.length || 0)}</span>
+        </div>
+        ${renderProjectNoteList(projectNotes.items || [])}
+      </section>
+      ${renderProjectNoteForm(cockpit)}
+      <section class="surface-card">
+        <div class="section-heading">
+          <h3>Learnings</h3>
+          <span class="muted-copy">${escapeHtml(memory.learnings?.items?.length || 0)}</span>
+        </div>
+        ${renderLearningList(memory.learnings?.items || [])}
+      </section>
+      ${renderLearningForm(cockpit)}
     </div>
   `;
 }
@@ -1186,6 +1574,8 @@ function renderActivePanel(cockpit) {
       return renderQualityPanel(cockpit);
     case "integrations":
       return renderIntegrationsPanel(cockpit);
+    case "memory":
+      return renderMemoryPanel(cockpit);
     case "diagnostics":
       return renderDiagnosticsPanel(cockpit);
     case "now":
@@ -1276,6 +1666,160 @@ function editYouTrackConnection(connectionId) {
   render();
 }
 
+function parseJsonTextarea(elementId, fallback = null) {
+  const raw = document.getElementById(elementId)?.value || "";
+  if (!raw.trim()) {
+    return fallback;
+  }
+  return JSON.parse(raw);
+}
+
+async function submitAuthProfile() {
+  if (!state.selectedWorkspace || state.cockpitModel?.state_kind !== "initialized") return;
+  const profile = parseJsonTextarea("auth-profile-json", {});
+  const secretPayload = parseJsonTextarea("auth-secret-json", null);
+  await apiJson("/api/auth/profiles", {
+    method: state.editingAuthProfile ? "PATCH" : "POST",
+    body: JSON.stringify({
+      workspacePath: state.selectedWorkspace,
+      profile,
+      secretPayload,
+    }),
+  });
+  state.editingAuthProfile = null;
+  state.authResolvePreview = null;
+  await fetchDashboard(state.selectedWorkspace, { historyMode: "replace", panel: "integrations" });
+}
+
+function clearAuthProfileForm() {
+  state.editingAuthProfile = null;
+  state.authResolvePreview = null;
+  render();
+}
+
+function editAuthProfile(profileId) {
+  const authProfiles = state.cockpitModel?.integrations?.auth?.items || [];
+  state.editingAuthProfile = authProfiles.find((item) => item.profile_id === profileId) || null;
+  state.authResolvePreview = null;
+  state.panel = "integrations";
+  render();
+}
+
+async function resolveAuthProfilePreview(profileId) {
+  if (!state.selectedWorkspace || state.cockpitModel?.state_kind !== "initialized") return;
+  state.authResolvePreview = await apiJson("/api/auth/profiles/resolve", {
+    method: "POST",
+    body: JSON.stringify({ workspacePath: state.selectedWorkspace, profileId }),
+  });
+  state.panel = "integrations";
+  render();
+}
+
+async function removeAuthProfile(profileId) {
+  if (!state.selectedWorkspace || state.cockpitModel?.state_kind !== "initialized") return;
+  await apiJson("/api/auth/profiles", {
+    method: "DELETE",
+    body: JSON.stringify({ workspacePath: state.selectedWorkspace, profileId }),
+  });
+  if (state.editingAuthProfile?.profile_id === profileId) {
+    state.editingAuthProfile = null;
+  }
+  state.authResolvePreview = null;
+  await fetchDashboard(state.selectedWorkspace, { historyMode: "replace", panel: "integrations" });
+}
+
+async function submitProjectNote() {
+  if (!state.selectedWorkspace || state.cockpitModel?.state_kind !== "initialized") return;
+  const noteId = document.getElementById("note-id")?.value || "";
+  const note = {
+    note_id: noteId || undefined,
+    title: document.getElementById("note-title")?.value || "",
+    tags: parseCommaList(document.getElementById("note-tags")?.value || ""),
+    status: document.getElementById("note-status")?.value || "active",
+    pin_state: document.getElementById("note-pin-state")?.value || "normal",
+    source: document.getElementById("note-source")?.value || "web",
+    body_markdown: document.getElementById("note-body")?.value || "",
+  };
+  if (state.editingNote?.note_id) {
+    await apiJson(`/api/project-notes/${encodeURIComponent(state.editingNote.note_id)}`, {
+      method: "PATCH",
+      body: JSON.stringify({ workspacePath: state.selectedWorkspace, note }),
+    });
+  } else {
+    await apiJson("/api/project-notes", {
+      method: "POST",
+      body: JSON.stringify({ workspacePath: state.selectedWorkspace, note }),
+    });
+  }
+  state.editingNote = null;
+  await fetchDashboard(state.selectedWorkspace, { historyMode: "replace", panel: "memory" });
+}
+
+function clearProjectNoteForm() {
+  state.editingNote = null;
+  render();
+}
+
+async function editProjectNote(noteId) {
+  if (!state.selectedWorkspace || state.cockpitModel?.state_kind !== "initialized") return;
+  state.editingNote = await apiJson(`/api/project-notes/${encodeURIComponent(noteId)}?workspace=${encodeURIComponent(state.selectedWorkspace)}`);
+  state.panel = "memory";
+  render();
+}
+
+async function archiveProjectNote(noteId) {
+  if (!state.selectedWorkspace || state.cockpitModel?.state_kind !== "initialized") return;
+  await apiJson(`/api/project-notes/${encodeURIComponent(noteId)}/archive`, {
+    method: "POST",
+    body: JSON.stringify({ workspacePath: state.selectedWorkspace }),
+  });
+  if (state.editingNote?.note_id === noteId) {
+    state.editingNote = null;
+  }
+  await fetchDashboard(state.selectedWorkspace, { historyMode: "replace", panel: "memory" });
+}
+
+async function submitLearningEntry() {
+  if (!state.selectedWorkspace || state.cockpitModel?.state_kind !== "initialized") return;
+  const entryId = document.getElementById("learning-entry-id")?.value || "";
+  const entry = {
+    entry_id: entryId || undefined,
+    kind: document.getElementById("learning-kind")?.value || "general",
+    status: document.getElementById("learning-status")?.value || "open",
+    symptom: document.getElementById("learning-symptom")?.value || "",
+    root_cause: document.getElementById("learning-root-cause")?.value || "",
+    missing_signal: document.getElementById("learning-missing-signal")?.value || "",
+    fix_applied: document.getElementById("learning-fix-applied")?.value || "",
+    prevention: document.getElementById("learning-prevention")?.value || "",
+    source: "web",
+  };
+  if (state.editingLearning?.entry_id) {
+    await apiJson(`/api/learnings/${encodeURIComponent(state.editingLearning.entry_id)}`, {
+      method: "PATCH",
+      body: JSON.stringify({ workspacePath: state.selectedWorkspace, updates: entry }),
+    });
+  } else {
+    await apiJson("/api/learnings", {
+      method: "POST",
+      body: JSON.stringify({ workspacePath: state.selectedWorkspace, entry }),
+    });
+  }
+  state.editingLearning = null;
+  await fetchDashboard(state.selectedWorkspace, { historyMode: "replace", panel: "memory" });
+}
+
+function clearLearningEntryForm() {
+  state.editingLearning = null;
+  render();
+}
+
+async function editLearningEntry(entryId) {
+  if (!state.selectedWorkspace || state.cockpitModel?.state_kind !== "initialized") return;
+  state.editingLearning = await apiJson(`/api/learnings/${encodeURIComponent(entryId)}?workspace=${encodeURIComponent(state.selectedWorkspace)}`);
+  state.panel = "memory";
+  render();
+}
+
 function render() {
   if (state.loading) {
     appRoot.innerHTML = `<div class="loading-shell">Loading AgentiUX Dev dashboard...</div>`;
@@ -1309,6 +1853,18 @@ window.__agentiux = {
   removeYouTrackConnection,
   setDefaultYouTrackConnection,
   editYouTrackConnection,
+  submitAuthProfile,
+  clearAuthProfileForm,
+  editAuthProfile,
+  resolveAuthProfilePreview,
+  removeAuthProfile,
+  submitProjectNote,
+  clearProjectNoteForm,
+  editProjectNote,
+  archiveProjectNote,
+  submitLearningEntry,
+  clearLearningEntryForm,
+  editLearningEntry,
 };
 
 window.addEventListener("popstate", () => {

@@ -278,6 +278,19 @@ def mcp_check(plugin_root: Path) -> dict[str, Any]:
         "show_workspace_context_pack",
         "search_context_index",
         "refresh_context_index",
+        "show_auth_profiles",
+        "write_auth_profile",
+        "remove_auth_profile",
+        "resolve_auth_profile",
+        "list_project_notes",
+        "get_project_note",
+        "write_project_note",
+        "archive_project_note",
+        "search_project_notes",
+        "get_analytics_snapshot",
+        "list_learning_entries",
+        "write_learning_entry",
+        "update_learning_entry",
         "audit_verification_coverage",
         "show_verification_helper_catalog",
         "sync_verification_helpers",
@@ -372,6 +385,17 @@ def dashboard_check(repo_root: Path, plugin_root: Path) -> dict[str, Any]:
                 health = json.loads(response_handle.read().decode("utf-8"))
             with urllib.request.urlopen(f"{url}/api/dashboard", timeout=5) as response_handle:
                 snapshot = json.loads(response_handle.read().decode("utf-8"))
+            encoded_workspace = urllib.parse.quote(str(repo_root), safe="")
+            with urllib.request.urlopen(f"{url}/api/workspace-cockpit?workspace={encoded_workspace}", timeout=5) as response_handle:
+                cockpit_snapshot = json.loads(response_handle.read().decode("utf-8"))
+            with urllib.request.urlopen(f"{url}/api/auth/profiles?workspace={encoded_workspace}", timeout=5) as response_handle:
+                auth_payload = json.loads(response_handle.read().decode("utf-8"))
+            with urllib.request.urlopen(f"{url}/api/project-notes?workspace={encoded_workspace}", timeout=5) as response_handle:
+                notes_payload = json.loads(response_handle.read().decode("utf-8"))
+            with urllib.request.urlopen(f"{url}/api/analytics?workspace={encoded_workspace}", timeout=5) as response_handle:
+                analytics_payload = json.loads(response_handle.read().decode("utf-8"))
+            with urllib.request.urlopen(f"{url}/api/learnings?workspace={encoded_workspace}", timeout=5) as response_handle:
+                learnings_payload = json.loads(response_handle.read().decode("utf-8"))
             cockpit_url = f"{url}/workspaces/{urllib.parse.quote(str(repo_root), safe='')}?panel=now"
             for label, width, height in (
                 ("cockpit-now-desktop", 1440, 1800),
@@ -411,7 +435,19 @@ def dashboard_check(repo_root: Path, plugin_root: Path) -> dict[str, Any]:
         raise AssertionError("Unexpected dashboard plugin payload")
     if fixture_snapshot.get("workspace_cockpit", {}).get("workspace_path") != str(repo_root):
         raise AssertionError("Dashboard fixture did not initialize the expected workspace cockpit")
-    failing_audits = [item for item in audit_results if not item.get("ok")]
+    if "auth" not in (cockpit_snapshot.get("integrations") or {}):
+        raise AssertionError("Dashboard cockpit is missing auth integration payload")
+    if "memory" not in cockpit_snapshot:
+        raise AssertionError("Dashboard cockpit is missing memory payload")
+    if auth_payload.get("counts") is None or notes_payload.get("counts") is None:
+        raise AssertionError("Dashboard auth or note APIs returned incomplete payloads")
+    if analytics_payload.get("learning_counts") is None or learnings_payload.get("counts") is None:
+        raise AssertionError("Dashboard analytics or learnings APIs returned incomplete payloads")
+    failing_audits = [
+        item
+        for item in audit_results
+        if int(item.get("issue_count") or 0) > 0 or str(item.get("status") or "").lower() == "failed"
+    ]
     if failing_audits:
         raise AssertionError(
             "Dashboard layout audit failed: "
@@ -426,6 +462,15 @@ def dashboard_check(repo_root: Path, plugin_root: Path) -> dict[str, Any]:
         "schema_version": snapshot["schema_version"],
         "workspace_count": snapshot["overview"]["workspace_count"],
         "audits": audit_results,
+        "warning_audits": [
+            {
+                "label": item.get("label"),
+                "warning_count": int(item.get("warning_count") or 0),
+                "status": item.get("status"),
+            }
+            for item in audit_results
+            if str(item.get("status") or "").lower() == "warning"
+        ],
     }
 
 
@@ -458,7 +503,7 @@ def smoke(plugin_root: Path, repo_root: Path) -> dict[str, Any]:
             "starter-creation",
             "git-safe-exec",
             "gui",
-            "dashboard-youtrack-management",
+            "dashboard-management-flows",
             "mcp",
         ],
     }

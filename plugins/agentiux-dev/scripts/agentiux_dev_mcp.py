@@ -6,6 +6,25 @@ import sys
 import traceback
 from typing import Any
 
+from agentiux_dev_analytics import (
+    get_analytics_snapshot,
+    list_learning_entries,
+    update_learning_entry,
+    write_learning_entry,
+)
+from agentiux_dev_auth import (
+    remove_auth_profile,
+    resolve_auth_profile,
+    show_auth_profiles,
+    write_auth_profile,
+)
+from agentiux_dev_memory import (
+    archive_project_note,
+    get_project_note,
+    list_project_notes,
+    search_project_notes,
+    write_project_note,
+)
 from agentiux_dev_verification import (
     audit_verification_coverage,
     approve_verification_baseline,
@@ -261,6 +280,55 @@ TOOLS = {
         lambda args: show_host_setup_plan(args["workspacePath"], requirement_ids=args.get("requirementIds")),
         {"requirementIds": {"type": "array", "items": {"type": "string"}}},
     ),
+    "show_auth_profiles": _read_tool(
+        "show_auth_profiles",
+        "List configured E2E auth profiles for the workspace.",
+        lambda args: show_auth_profiles(args["workspacePath"]),
+    ),
+    "write_auth_profile": _write_tool(
+        "write_auth_profile",
+        "Create or update an E2E auth profile and its secret payload.",
+        lambda args: write_auth_profile(
+            args["workspacePath"],
+            args["profile"],
+            secret_payload=args.get("secretPayload"),
+        ),
+        {
+            "workspacePath": {"type": "string"},
+            "profile": {"type": "object"},
+            "secretPayload": {"type": "object"},
+        },
+        ["workspacePath", "profile"],
+    ),
+    "remove_auth_profile": _write_tool(
+        "remove_auth_profile",
+        "Remove an E2E auth profile and its persisted secret payload.",
+        lambda args: remove_auth_profile(args["workspacePath"], args["profileId"]),
+        {
+            "workspacePath": {"type": "string"},
+            "profileId": {"type": "string"},
+        },
+        ["workspacePath", "profileId"],
+    ),
+    "resolve_auth_profile": _read_tool(
+        "resolve_auth_profile",
+        "Resolve the matching auth profile for a workspace/task/issue/case context and return a redacted artifact summary.",
+        lambda args: resolve_auth_profile(
+            args["workspacePath"],
+            profile_id=args.get("profileId"),
+            task_id=args.get("taskId"),
+            external_issue=args.get("externalIssue"),
+            case=args.get("case"),
+            workstream_id=args.get("workstreamId"),
+        ),
+        {
+            "profileId": {"type": "string"},
+            "taskId": {"type": "string"},
+            "externalIssue": {"type": "object"},
+            "case": {"type": "object"},
+            "workstreamId": {"type": "string"},
+        },
+    ),
     "install_host_requirements": _write_tool(
         "install_host_requirements",
         "Install missing host requirements for a workspace after explicit confirmation, then refresh host support state.",
@@ -432,6 +500,49 @@ TOOLS = {
         "Read the current task if task mode is active.",
         lambda args: current_task(args["workspacePath"]),
     ),
+    "list_project_notes": _read_tool(
+        "list_project_notes",
+        "List project memory notes for a workspace.",
+        lambda args: list_project_notes(args["workspacePath"], status=args.get("status")),
+        {"status": {"type": "string", "enum": ["active", "archived"]}},
+    ),
+    "get_project_note": _read_tool(
+        "get_project_note",
+        "Read one project memory note and its revision metadata.",
+        lambda args: get_project_note(args["workspacePath"], args["noteId"]),
+        {"noteId": {"type": "string"}},
+        ["workspacePath", "noteId"],
+    ),
+    "write_project_note": _write_tool(
+        "write_project_note",
+        "Create or update a project memory note.",
+        lambda args: write_project_note(args["workspacePath"], args["note"]),
+        {
+            "workspacePath": {"type": "string"},
+            "note": {"type": "object"},
+        },
+        ["workspacePath", "note"],
+    ),
+    "archive_project_note": _write_tool(
+        "archive_project_note",
+        "Archive a project memory note.",
+        lambda args: archive_project_note(args["workspacePath"], args["noteId"]),
+        {
+            "workspacePath": {"type": "string"},
+            "noteId": {"type": "string"},
+        },
+        ["workspacePath", "noteId"],
+    ),
+    "search_project_notes": _read_tool(
+        "search_project_notes",
+        "Search project memory notes by free-text query.",
+        lambda args: search_project_notes(args["workspacePath"], args["queryText"], limit=args.get("limit", 8)),
+        {
+            "queryText": {"type": "string"},
+            "limit": {"type": "integer"},
+        },
+        ["workspacePath", "queryText"],
+    ),
     "get_task": _read_tool(
         "get_task",
         "Read a task by id.",
@@ -493,6 +604,49 @@ TOOLS = {
         },
         "handler": lambda args: plugin_stats(),
     },
+    "get_analytics_snapshot": _read_tool_no_workspace(
+        "get_analytics_snapshot",
+        "Return global or workspace-scoped analytics and learning-entry summary data.",
+        lambda args: get_analytics_snapshot(args.get("workspacePath")),
+        {
+            "workspacePath": {"type": "string"},
+        },
+    ),
+    "list_learning_entries": _read_tool_no_workspace(
+        "list_learning_entries",
+        "List global or workspace-scoped learning entries.",
+        lambda args: list_learning_entries(
+            workspace=args.get("workspacePath"),
+            status=args.get("status"),
+            limit=args.get("limit"),
+        ),
+        {
+            "workspacePath": {"type": "string"},
+            "status": {"type": "string", "enum": ["open", "resolved", "archived"]},
+            "limit": {"type": "integer"},
+        },
+    ),
+    "write_learning_entry": _write_tool(
+        "write_learning_entry",
+        "Create a learning entry for plugin or Codex retrospective tracking.",
+        lambda args: write_learning_entry(args.get("workspacePath"), args["entry"]),
+        {
+            "workspacePath": {"type": "string"},
+            "entry": {"type": "object"},
+        },
+        ["entry"],
+    ),
+    "update_learning_entry": _write_tool(
+        "update_learning_entry",
+        "Update or resolve an existing learning entry.",
+        lambda args: update_learning_entry(args.get("workspacePath"), args["entryId"], args["updates"]),
+        {
+            "workspacePath": {"type": "string"},
+            "entryId": {"type": "string"},
+            "updates": {"type": "object"},
+        },
+        ["entryId", "updates"],
+    ),
     "get_dashboard_snapshot": {
         "title": "Get Dashboard Snapshot",
         "description": "Return the overview and optional workspace detail payload used by the local GUI.",

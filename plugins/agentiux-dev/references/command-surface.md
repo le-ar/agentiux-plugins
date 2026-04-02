@@ -29,6 +29,19 @@ AgentiUX Dev exposes a small chat-first command surface.
 - `sync verification helpers`
 - `approve verification baseline`
 - `update verification baseline`
+- `show auth profiles`
+- `write auth profile`
+- `remove auth profile`
+- `resolve auth profile`
+- `list project notes`
+- `get project note`
+- `write project note`
+- `archive project note`
+- `search project notes`
+- `get analytics snapshot`
+- `list learning entries`
+- `write learning entry`
+- `update learning entry`
 - `show host support`
 - `show host setup plan`
 - `install host requirements`
@@ -72,7 +85,7 @@ AgentiUX Dev exposes a small chat-first command surface.
 - `continue work` is an execution-intent trigger only after the workspace is initialized and either a current task exists or the current workstream has a confirmed stage plan.
 - `propose stage plan changes` is a planning action. It must not mutate state.
 - `apply stage plan changes` can mutate unfinished stage definitions only after explicit user confirmation.
-- `launch gui` launches the local-only dashboard through `scripts/agentiux_dev_gui.py`; the installed shell launcher may expose the same runtime as `agentiux web`. The only allowed dashboard mutations are integration-management flows such as adding, testing, updating, removing, or marking a default YouTrack connection.
+- `launch gui` launches the local-only dashboard through `scripts/agentiux_dev_gui.py`; the installed shell launcher may expose the same runtime as `agentiux web`. The allowed dashboard mutations are integration-management flows such as adding, testing, updating, removing, or marking a default YouTrack connection, plus workspace-scoped auth profile, project note, and learning-entry CRUD.
 - `show gui url` returns the current dashboard URL without opening the browser automatically. The installed shell launcher may expose the same lookup as `agentiux web url`.
 - Repeated dashboard launch commands must keep the runtime singleton and only update the default workspace selection when a new workspace selector is provided.
 - `run verification case` starts one deterministic verification case.
@@ -88,6 +101,11 @@ AgentiUX Dev exposes a small chat-first command surface.
 - `sync verification helpers` materializes the generated helper bundle into `.verification/helpers/` for local imports.
 - `approve verification baseline` records approval for a project-owned baseline source path.
 - `update verification baseline` copies a selected verification artifact into a project-owned baseline path.
+- `write auth profile` stores auth metadata and secrets outside the repository; in v1 only `resolver.kind = command_v1` is supported.
+- `resolve auth profile` returns only a redacted auth artifact summary and must not expose raw secrets.
+- `write project note` creates or updates a versioned markdown-capable project memory note with metadata.
+- `archive project note` keeps the note searchable but removes it from automatic context inclusion.
+- `get analytics snapshot` and `list learning entries` expose global or workspace-scoped plugin learnings without auto-including them in prompt context.
 - `show host support` returns current host/toolchain availability plus persisted host setup status.
 - `show host setup plan` is a read-only dry run for host-specific install and manual repair steps.
 - `install host requirements` may mutate the machine only after explicit confirmation and must refresh workspace host support after execution.

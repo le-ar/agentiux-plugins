@@ -6,6 +6,25 @@ import json
 import sys
 from pathlib import Path
 
+from agentiux_dev_analytics import (
+    get_analytics_snapshot,
+    list_learning_entries,
+    update_learning_entry,
+    write_learning_entry,
+)
+from agentiux_dev_auth import (
+    remove_auth_profile,
+    resolve_auth_profile,
+    show_auth_profiles,
+    write_auth_profile,
+)
+from agentiux_dev_memory import (
+    archive_project_note,
+    get_project_note,
+    list_project_notes,
+    search_project_notes,
+    write_project_note,
+)
 from agentiux_dev_verification import (
     audit_verification_coverage,
     approve_verification_baseline,
@@ -116,6 +135,17 @@ from agentiux_dev_youtrack import (
 def _read_json(path: str) -> dict:
     with Path(path).open() as handle:
         return json.load(handle)
+
+
+def _read_json_input(*, path: str | None = None, stdin: bool = False, label: str = "JSON payload") -> dict[str, object]:
+    if stdin:
+        raw = sys.stdin.read()
+        if not raw.strip():
+            raise ValueError(f"{label} stdin is empty")
+        return json.loads(raw)
+    if path:
+        return _read_json(path)
+    raise ValueError(f"{label} requires --stdin or a file path")
 
 
 def parse_args() -> argparse.Namespace:
@@ -366,6 +396,68 @@ def parse_args() -> argparse.Namespace:
 
     cmd = subparsers.add_parser("show-youtrack-connections")
     add_workspace_arg(cmd)
+
+    cmd = subparsers.add_parser("show-auth-profiles")
+    add_workspace_arg(cmd)
+
+    cmd = subparsers.add_parser("write-auth-profile")
+    add_workspace_arg(cmd)
+    cmd.add_argument("--profile-file", help="Path to JSON auth profile payload")
+    cmd.add_argument("--secret-file", help="Optional path to JSON secret payload")
+    cmd.add_argument("--stdin", action="store_true", help="Read JSON payload from stdin")
+
+    cmd = subparsers.add_parser("remove-auth-profile")
+    add_workspace_arg(cmd)
+    cmd.add_argument("--profile-id", required=True)
+
+    cmd = subparsers.add_parser("resolve-auth-profile")
+    add_workspace_arg(cmd)
+    cmd.add_argument("--profile-id")
+    cmd.add_argument("--task-id")
+    cmd.add_argument("--external-issue-file")
+    cmd.add_argument("--case-file")
+    cmd.add_argument("--workstream-id")
+
+    cmd = subparsers.add_parser("list-project-notes")
+    add_workspace_arg(cmd)
+    cmd.add_argument("--status", choices=["active", "archived"])
+
+    cmd = subparsers.add_parser("get-project-note")
+    add_workspace_arg(cmd)
+    cmd.add_argument("--note-id", required=True)
+
+    cmd = subparsers.add_parser("write-project-note")
+    add_workspace_arg(cmd)
+    cmd.add_argument("--note-file", help="Path to JSON note payload")
+    cmd.add_argument("--stdin", action="store_true", help="Read JSON payload from stdin")
+
+    cmd = subparsers.add_parser("archive-project-note")
+    add_workspace_arg(cmd)
+    cmd.add_argument("--note-id", required=True)
+
+    cmd = subparsers.add_parser("search-project-notes")
+    add_workspace_arg(cmd)
+    cmd.add_argument("--query-text", required=True)
+    cmd.add_argument("--limit", type=int, default=8)
+
+    cmd = subparsers.add_parser("analytics-snapshot")
+    add_workspace_arg(cmd, required=False)
+
+    cmd = subparsers.add_parser("list-learning-entries")
+    add_workspace_arg(cmd, required=False)
+    cmd.add_argument("--status", choices=["open", "resolved", "archived"])
+    cmd.add_argument("--limit", type=int, default=50)
+
+    cmd = subparsers.add_parser("write-learning-entry")
+    add_workspace_arg(cmd, required=False)
+    cmd.add_argument("--entry-file", help="Path to JSON learning entry payload")
+    cmd.add_argument("--stdin", action="store_true", help="Read JSON payload from stdin")
+
+    cmd = subparsers.add_parser("update-learning-entry")
+    add_workspace_arg(cmd, required=False)
+    cmd.add_argument("--entry-id", required=True)
+    cmd.add_argument("--updates-file", help="Path to JSON update payload")
+    cmd.add_argument("--stdin", action="store_true", help="Read JSON payload from stdin")
 
     cmd = subparsers.add_parser("connect-youtrack")
     add_workspace_arg(cmd)
@@ -739,6 +831,51 @@ def main() -> int:
             payload = refresh_context_index(args.workspace, force=args.force)
         elif args.command == "show-youtrack-connections":
             payload = list_youtrack_connections(args.workspace)
+        elif args.command == "show-auth-profiles":
+            payload = show_auth_profiles(args.workspace)
+        elif args.command == "write-auth-profile":
+            incoming = _read_json_input(path=args.profile_file, stdin=args.stdin, label="auth profile payload")
+            profile = incoming.get("profile") if isinstance(incoming.get("profile"), dict) else incoming
+            secret_payload = incoming.get("secret_payload") if isinstance(incoming.get("secret_payload"), dict) else None
+            if secret_payload is None and args.secret_file:
+                secret_payload = _read_json(args.secret_file)
+            payload = write_auth_profile(args.workspace, profile, secret_payload=secret_payload)
+        elif args.command == "remove-auth-profile":
+            payload = remove_auth_profile(args.workspace, args.profile_id)
+        elif args.command == "resolve-auth-profile":
+            payload = resolve_auth_profile(
+                args.workspace,
+                profile_id=args.profile_id,
+                task_id=args.task_id,
+                external_issue=_read_json(args.external_issue_file) if args.external_issue_file else None,
+                case=_read_json(args.case_file) if args.case_file else None,
+                workstream_id=args.workstream_id,
+            )
+        elif args.command == "list-project-notes":
+            payload = list_project_notes(args.workspace, status=args.status)
+        elif args.command == "get-project-note":
+            payload = get_project_note(args.workspace, args.note_id)
+        elif args.command == "write-project-note":
+            incoming = _read_json_input(path=args.note_file, stdin=args.stdin, label="project note payload")
+            note = incoming.get("note") if isinstance(incoming.get("note"), dict) else incoming
+            payload = write_project_note(args.workspace, note)
+        elif args.command == "archive-project-note":
+            payload = archive_project_note(args.workspace, args.note_id)
+        elif args.command == "search-project-notes":
+            payload = search_project_notes(args.workspace, args.query_text, limit=args.limit)
+        elif args.command == "analytics-snapshot":
+            payload = get_analytics_snapshot(args.workspace)
+        elif args.command == "list-learning-entries":
+            payload = list_learning_entries(workspace=args.workspace, status=args.status, limit=args.limit)
+        elif args.command == "write-learning-entry":
+            incoming = _read_json_input(path=args.entry_file, stdin=args.stdin, label="learning entry payload")
+            entry = incoming.get("entry") if isinstance(incoming.get("entry"), dict) else incoming
+            payload = write_learning_entry(args.workspace, entry)
+        elif args.command == "update-learning-entry":
+            updates = _read_json_input(path=args.updates_file, stdin=args.stdin, label="learning entry update payload")
+            if isinstance(updates.get("updates"), dict):
+                updates = updates["updates"]
+            payload = update_learning_entry(args.workspace, args.entry_id, updates)
         elif args.command == "connect-youtrack":
             payload = connect_youtrack(
                 args.workspace,

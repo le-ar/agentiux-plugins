@@ -138,7 +138,7 @@
         "release",
         "youtrack"
       ],
-      "safe_usage": "Local-only UI runtime; dashboard mutations are limited to YouTrack integration-management flows.",
+      "safe_usage": "Local-only UI runtime; dashboard mutations are limited to external-state management flows such as YouTrack connections plus workspace auth, notes, and learning entries.",
       "summary": "Launches and stops the local-only dashboard backed by dashboard snapshot and workspace detail payloads.",
       "tags": [
         "dashboard",

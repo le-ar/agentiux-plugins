@@ -18,8 +18,11 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from unittest import mock
 
+from agentiux_dev_analytics import get_analytics_snapshot, list_learning_entries
+from agentiux_dev_auth import show_auth_profiles
 from agentiux_dev_gui import stop as stop_gui
 from agentiux_dev_lib import (
+    STATE_SCHEMA_VERSION,
     _host_setup_recipe_for_tool,
     _safe_rglob,
     apply_upgrade_plan,
@@ -83,6 +86,7 @@ from agentiux_dev_lib import (
     write_reference_board,
     write_stage_register,
 )
+from agentiux_dev_memory import archive_project_note, get_project_note, list_project_notes, search_project_notes
 from agentiux_dev_verification import (
     active_verification_run,
     audit_verification_coverage,
@@ -1238,8 +1242,8 @@ def main() -> int:
         assert repaired_preview_workstream["removed_stage_ids"] == []
         repaired_plugin_state = repair_workspace_state(repo_root)
         assert repaired_plugin_state["workspace_state"]["local_dev_policy"]["infra_mode"] == "not_applicable"
-        assert repaired_plugin_state["workspace_state"]["state_repair_status"]["source_schema_version"] == 7
-        assert repaired_plugin_state["workspace_state"]["state_repair_status"]["target_schema_version"] == 7
+        assert repaired_plugin_state["workspace_state"]["state_repair_status"]["source_schema_version"] == STATE_SCHEMA_VERSION
+        assert repaired_plugin_state["workspace_state"]["state_repair_status"]["target_schema_version"] == STATE_SCHEMA_VERSION
         assert repaired_plugin_state["workspace_state"]["state_repair_status"]["source_workstream_schema_versions"][stale_plugin_fixture["workstream_id"]] == 4
         assert "docker_policy" not in repaired_plugin_state["workspace_state"]
         repaired_workstream = next(
@@ -1273,11 +1277,12 @@ def main() -> int:
         try:
             sync_verification_helpers(repo_root)
             plugin_coverage = audit_verification_coverage(repo_root)
-            assert plugin_coverage["status"] == "warning"
+            assert plugin_coverage["status"] == "clean"
             assert plugin_coverage["coverage"]["plugin"] is True
             assert plugin_coverage["coverage"]["dashboard"] is True
-            assert plugin_coverage["coverage"]["dashboard_visual"] is False
-            assert "missing-dashboard-visual-verification" in {gap["gap_id"] for gap in plugin_coverage["gaps"]}
+            assert plugin_coverage["coverage"]["dashboard_visual"] is True
+            assert plugin_coverage["coverage"]["dashboard_browser_layout_audit"] is True
+            assert plugin_coverage["warning_count"] == 0
         finally:
             shutil.rmtree(plugin_helper_root, ignore_errors=True)
         _assert_no_default_origin(repaired_plugin_state["stage_register"])
@@ -1541,7 +1546,7 @@ def main() -> int:
             raise AssertionError("Completed custom stage mutation should have failed")
 
         initialized = init_workspace(workspace)
-        assert initialized["workspace_state"]["schema_version"] == 7
+        assert initialized["workspace_state"]["schema_version"] == STATE_SCHEMA_VERSION
         assert initialized["workspace_state"]["current_workstream_id"] is None
         assert initialized["workspace_state"]["workspace_mode"] == "workspace"
         assert initialized["workspace_state"]["local_dev_policy"]["infra_mode"] == "docker_required"
@@ -4321,6 +4326,7 @@ def main() -> int:
                 gui_launch = json.loads(gui_launch_process.stdout)
                 try:
                     encoded_workspace = urllib.parse.quote(str(youtrack_workspace.resolve()), safe="")
+                    encoded_memory_workspace = urllib.parse.quote(str(workspace.resolve()), safe="")
                     connections_payload = _http_json(f"{gui_launch['url']}/api/youtrack/connections?workspace={encoded_workspace}")
                     assert connections_payload["default_connection_id"] == "primary-tracker"
                     serialized_gui_connections = json.dumps(connections_payload)
@@ -4365,6 +4371,111 @@ def main() -> int:
                     )
                     final_connections = _http_json(f"{gui_launch['url']}/api/youtrack/connections?workspace={encoded_workspace}")
                     assert len(final_connections["items"]) == 1
+                    auth_profiles = _http_json(
+                        f"{gui_launch['url']}/api/auth/profiles",
+                        method="POST",
+                        payload={
+                            "workspacePath": str(workspace.resolve()),
+                            "profile": {
+                                "profile_id": "smoke-auth",
+                                "label": "Smoke auth",
+                                "scope_type": "workspace",
+                                "is_default": True,
+                            },
+                            "secretPayload": {
+                                "login": "qa@example.com",
+                                "password": "qa-password",
+                            },
+                        },
+                    )
+                    assert auth_profiles["profile"]["profile_id"] == "smoke-auth"
+                    auth_listing = _http_json(f"{gui_launch['url']}/api/auth/profiles?workspace={encoded_memory_workspace}")
+                    assert auth_listing["counts"]["total"] == 1
+                    assert "qa-password" not in json.dumps(auth_listing)
+                    auth_preview = _http_json(
+                        f"{gui_launch['url']}/api/auth/profiles/resolve",
+                        method="POST",
+                        payload={
+                            "workspacePath": str(workspace.resolve()),
+                            "profileId": "smoke-auth",
+                        },
+                    )
+                    assert auth_preview["artifact"]["artifact_type"] == "credentials"
+                    _http_json(
+                        f"{gui_launch['url']}/api/project-notes",
+                        method="POST",
+                        payload={
+                            "workspacePath": str(workspace.resolve()),
+                            "note": {
+                                "note_id": "checkout-auth-note",
+                                "title": "Checkout auth note",
+                                "tags": ["checkout", "auth"],
+                                "pin_state": "pinned",
+                                "source": "web",
+                                "body_markdown": "Temporary admin deep link is required for checkout auth smoke.",
+                            },
+                        },
+                    )
+                    _http_json(
+                        f"{gui_launch['url']}/api/project-notes",
+                        method="POST",
+                        payload={
+                            "workspacePath": str(workspace.resolve()),
+                            "note": {
+                                "note_id": "archived-visual-note",
+                                "title": "Archived visual note",
+                                "tags": ["visual", "history"],
+                                "source": "web",
+                                "body_markdown": "Visual review used to require repeated manual rechecks.",
+                            },
+                        },
+                    )
+                    _http_json(
+                        f"{gui_launch['url']}/api/project-notes/archived-visual-note/archive",
+                        method="POST",
+                        payload={"workspacePath": str(workspace.resolve())},
+                    )
+                    note_listing = _http_json(f"{gui_launch['url']}/api/project-notes?workspace={encoded_memory_workspace}")
+                    assert note_listing["counts"]["pinned"] >= 1
+                    searched_notes = _http_json(
+                        f"{gui_launch['url']}/api/project-notes/search?workspace={encoded_memory_workspace}&query={urllib.parse.quote('temporary admin deep link')}"
+                    )
+                    assert any(item["note_id"] == "checkout-auth-note" for item in searched_notes["matches"])
+                    created_learning = _http_json(
+                        f"{gui_launch['url']}/api/learnings",
+                        method="POST",
+                        payload={
+                            "workspacePath": str(workspace.resolve()),
+                            "entry": {
+                                "entry_id": "visual-review-learning",
+                                "kind": "visual-review",
+                                "status": "open",
+                                "symptom": "Visual review needed repeated manual rechecks.",
+                                "root_cause": "The first semantic pass lacked enough signals.",
+                                "missing_signal": "No stored reason for why the first pass was weak.",
+                                "fix_applied": "Added stronger visual checks and context.",
+                                "prevention": "Persist the failure mode as a learning entry.",
+                                "source": "web",
+                            },
+                        },
+                    )
+                    assert created_learning["entry"]["entry_id"] == "visual-review-learning"
+                    updated_learning = _http_json(
+                        f"{gui_launch['url']}/api/learnings/visual-review-learning",
+                        method="PATCH",
+                        payload={
+                            "workspacePath": str(workspace.resolve()),
+                            "updates": {
+                                "status": "resolved",
+                                "fix_applied": "Added stronger visual checks and context, then reran verification.",
+                            },
+                        },
+                    )
+                    assert updated_learning["entry"]["status"] == "resolved"
+                    analytics_snapshot = _http_json(f"{gui_launch['url']}/api/analytics?workspace={encoded_memory_workspace}")
+                    assert analytics_snapshot["learning_counts"]["resolved"] >= 1
+                    learning_listing = _http_json(f"{gui_launch['url']}/api/learnings?workspace={encoded_memory_workspace}")
+                    assert any(item["entry_id"] == "visual-review-learning" for item in learning_listing["items"])
                 finally:
                     stop_gui()
             else:
@@ -4389,6 +4500,92 @@ def main() -> int:
         assert snapshot["workspace_cockpit"]["quality"]["events"]
         assert snapshot["workspace_cockpit"]["plan"]["workstreams"]
         assert snapshot["workspace_cockpit"]["plan"]["task_buckets"]
+
+        workspace_auth_profiles = show_auth_profiles(workspace)
+        assert workspace_auth_profiles["counts"]["total"] >= 1
+        assert "qa-password" not in json.dumps(workspace_auth_profiles)
+        workspace_notes = list_project_notes(workspace)
+        assert workspace_notes["counts"]["active"] >= 1
+        assert workspace_notes["counts"]["archived"] >= 1
+        assert workspace_notes["counts"]["pinned"] >= 1
+        assert get_project_note(workspace, "archived-visual-note")["status"] == "archived"
+        direct_note_search = search_project_notes(workspace, "temporary admin deep link", limit=8)
+        assert any(item["note_id"] == "checkout-auth-note" for item in direct_note_search["matches"])
+        analytics_snapshot = get_analytics_snapshot(workspace)
+        assert analytics_snapshot["learning_counts"]["resolved"] >= 1
+        workspace_learning_entries = list_learning_entries(workspace=workspace)
+        assert any(item["entry_id"] == "visual-review-learning" for item in workspace_learning_entries["items"])
+        packed_context = show_workspace_context_pack(
+            workspace,
+            request_text="temporary admin deep link checkout auth memory",
+            route_id="plugin-dev",
+            force_refresh=True,
+        )
+        assert any(
+            item["path"] == "external/project-memory/checkout-auth-note.md"
+            for item in packed_context["context_pack"]["selected_chunks"]
+        )
+        searched_context = search_context_index(workspace, "temporary admin deep link checkout auth", route_id="plugin-dev")
+        assert any(match["path"] == "external/project-memory/checkout-auth-note.md" for match in searched_context["matches"])
+        archived_context = search_context_index(workspace, "repeated manual rechecks visual history", route_id="plugin-dev")
+        assert any(match["path"] == "external/project-memory/archived-visual-note.md" for match in archived_context["matches"])
+
+        recipes_with_auth_case = read_verification_recipes(workspace, workstream_id=verification_workstream_id)
+        if not any(case["id"] == "auth-smoke" for case in recipes_with_auth_case["cases"]):
+            write_verification_recipes(
+                workspace,
+                {
+                    **recipes_with_auth_case,
+                    "cases": [
+                        *recipes_with_auth_case["cases"],
+                        {
+                            "id": "auth-smoke",
+                            "title": "Auth artifact smoke check",
+                            "surface_type": "service",
+                            "runner": "shell-contract",
+                            "tags": ["auth", "smoke"],
+                            "host_requirements": ["python"],
+                            "auth_profile_ref": "smoke-auth",
+                            "argv": [
+                                sys.executable,
+                                "-c",
+                                (
+                                    "import json, os, pathlib; "
+                                    "artifact_path = pathlib.Path(os.environ['VERIFICATION_AUTH_ARTIFACT_PATH']); "
+                                    "summary_path = pathlib.Path(os.environ['VERIFICATION_AUTH_SUMMARY_PATH']); "
+                                    "assert artifact_path.exists(), artifact_path; "
+                                    "assert summary_path.exists(), summary_path; "
+                                    "artifact = json.loads(artifact_path.read_text()); "
+                                    "summary = json.loads(summary_path.read_text()); "
+                                    "assert os.environ['VERIFICATION_AUTH_PROFILE_ID'] == 'smoke-auth'; "
+                                    "assert artifact['artifact_type'] == 'credentials'; "
+                                    "assert artifact['payload']['login'] == 'qa@example.com'; "
+                                    "assert summary['profile_id'] == 'smoke-auth'; "
+                                    "artifact_dir = pathlib.Path(os.environ['VERIFICATION_ARTIFACT_DIR']); "
+                                    "artifact_dir.mkdir(parents=True, exist_ok=True); "
+                                    "(artifact_dir / 'auth-smoke.txt').write_text('auth ok\\n'); "
+                                    "print('auth smoke ok')"
+                                ),
+                            ],
+                            "retry_policy": {"attempts": 1, "slow_after_seconds": 1},
+                        },
+                    ],
+                },
+                workstream_id=verification_workstream_id,
+            )
+        auth_run = start_verification_case(workspace, "auth-smoke", wait=True, workstream_id=verification_workstream_id)
+        assert auth_run["status"] == "passed"
+        assert any(event["event_type"] == "auth_resolved" for event in read_verification_events(workspace, auth_run["run_id"], workstream_id=verification_workstream_id)["events"])
+        auth_case_state = next(case for case in auth_run["cases"] if case["case_id"] == "auth-smoke")
+        assert auth_case_state["auth"]["profile_id"] == "smoke-auth"
+        transient_auth_dir = Path(auth_run["transient_auth_dir"])
+        if transient_auth_dir.exists():
+            assert not any(transient_auth_dir.iterdir())
+        auth_snapshot = dashboard_snapshot(workspace)
+        assert auth_snapshot["workspace_cockpit"]["integrations"]["auth"]["summary"]["profile_count"] >= 1
+        assert auth_snapshot["workspace_cockpit"]["memory"]["project_notes"]["counts"]["pinned"] >= 1
+        assert auth_snapshot["workspace_cockpit"]["memory"]["learnings"]["counts"]["resolved"] >= 1
+        assert auth_snapshot["workspace_cockpit"]["quality"]["auth_resolution"]["status"] in {"ok", "not_configured", "warning"}
 
         legacy_workspace = temp_root / "legacy-dashboard-workspace"
         legacy_workspace.mkdir()
@@ -4525,7 +4722,7 @@ def main() -> int:
         )
         assert response["result"]["isError"] is False
         assert response["result"]["structuredContent"]["workspace_cockpit"]["workspace_path"] == str(workspace.resolve())
-        assert response["result"]["structuredContent"]["workspace_cockpit"]["quality"]["latest_run"]["run_id"] == suite_run["run_id"]
+        assert response["result"]["structuredContent"]["workspace_cockpit"]["quality"]["latest_run"]["run_id"] == auth_run["run_id"]
 
         response = _call_mcp(
             plugin_root / "scripts" / "agentiux_dev_mcp.py",
@@ -4702,6 +4899,70 @@ def main() -> int:
             plugin_root / "scripts" / "agentiux_dev_mcp.py",
             {
                 "jsonrpc": "2.0",
+                "id": 111,
+                "method": "tools/call",
+                "params": {
+                    "name": "show_auth_profiles",
+                    "arguments": {
+                        "workspacePath": str(workspace),
+                    },
+                },
+            },
+        )
+        assert response["result"]["structuredContent"]["counts"]["total"] >= 1
+
+        response = _call_mcp(
+            plugin_root / "scripts" / "agentiux_dev_mcp.py",
+            {
+                "jsonrpc": "2.0",
+                "id": 112,
+                "method": "tools/call",
+                "params": {
+                    "name": "list_project_notes",
+                    "arguments": {
+                        "workspacePath": str(workspace),
+                    },
+                },
+            },
+        )
+        assert response["result"]["structuredContent"]["counts"]["pinned"] >= 1
+
+        response = _call_mcp(
+            plugin_root / "scripts" / "agentiux_dev_mcp.py",
+            {
+                "jsonrpc": "2.0",
+                "id": 113,
+                "method": "tools/call",
+                "params": {
+                    "name": "get_analytics_snapshot",
+                    "arguments": {
+                        "workspacePath": str(workspace),
+                    },
+                },
+            },
+        )
+        assert response["result"]["structuredContent"]["learning_counts"]["resolved"] >= 1
+
+        response = _call_mcp(
+            plugin_root / "scripts" / "agentiux_dev_mcp.py",
+            {
+                "jsonrpc": "2.0",
+                "id": 114,
+                "method": "tools/call",
+                "params": {
+                    "name": "list_learning_entries",
+                    "arguments": {
+                        "workspacePath": str(workspace),
+                    },
+                },
+            },
+        )
+        assert any(item["entry_id"] == "visual-review-learning" for item in response["result"]["structuredContent"]["items"])
+
+        response = _call_mcp(
+            plugin_root / "scripts" / "agentiux_dev_mcp.py",
+            {
+                "jsonrpc": "2.0",
                 "id": 12,
                 "method": "tools/call",
                 "params": {
@@ -4754,7 +5015,7 @@ def main() -> int:
                 with urllib.request.urlopen(f"{gui_launch['url']}/api/workspace-detail?workspace={encoded_workspace}", timeout=20) as response_handle:
                     detail_payload = json.loads(response_handle.read().decode("utf-8"))
                 assert detail_payload["workspace_label"] == "demo-workspace"
-                assert detail_payload["quality"]["latest_run"]["run_id"] == suite_run["run_id"]
+                assert detail_payload["quality"]["latest_run"]["run_id"] == auth_run["run_id"]
                 assert detail_payload["plan"]["workstreams"]
                 uninitialized_workspace = temp_root / "uninitialized-cockpit"
                 uninitialized_workspace.mkdir()

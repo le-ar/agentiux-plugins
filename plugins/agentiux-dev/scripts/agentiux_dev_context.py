@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import copy
 import hashlib
 import json
 import os
@@ -25,10 +26,10 @@ from agentiux_dev_verification import read_verification_recipes
 
 
 CATALOG_FILENAMES = ("skills", "mcp_tools", "scripts", "references", "intent_routes")
-CONTEXT_CACHE_SCHEMA_VERSION = 2
-CONTEXT_INDEX_MANIFEST_SCHEMA_VERSION = 2
+CONTEXT_CACHE_SCHEMA_VERSION = 3
+CONTEXT_INDEX_MANIFEST_SCHEMA_VERSION = 3
 CONTEXT_ROUTE_PROFILE_VERSION = 1
-SEMANTIC_CACHE_ENTRY_SCHEMA_VERSION = 2
+SEMANTIC_CACHE_ENTRY_SCHEMA_VERSION = 3
 CONTEXT_INDEX_EXCLUDED_DIRS = {
     ".agentiux",
     ".git",
@@ -370,18 +371,108 @@ def _git_dirty_digest(git_state: dict[str, Any]) -> str:
     return _short_hash("|".join(changed_paths), length=10)
 
 
-def _indexed_file_snapshot(workspace: Path, files: list[Path]) -> list[dict[str, Any]]:
+def _indexed_file_snapshot(workspace: Path, files: list[Any]) -> list[dict[str, Any]]:
     snapshot: list[dict[str, Any]] = []
     for file_path in files:
-        stat = file_path.stat()
-        snapshot.append(
+        if isinstance(file_path, Path):
+            stat = file_path.stat()
+            snapshot.append(
+                {
+                    "path": str(file_path.relative_to(workspace)),
+                    "size": stat.st_size,
+                    "mtime_ns": stat.st_mtime_ns,
+                }
+            )
+            continue
+        if isinstance(file_path, dict):
+            snapshot.append(
+                {
+                    "path": str(file_path["path"]),
+                    "size": int(file_path["size"]),
+                    "mtime_ns": int(file_path["mtime_ns"]),
+                }
+            )
+    return snapshot
+
+
+def _synthetic_mtime_ns(*values: Any) -> int:
+    return int(hashlib.sha1("|".join(str(value or "") for value in values).encode("utf-8")).hexdigest()[:12], 16)
+
+
+def _project_note_context_text(note: dict[str, Any]) -> str:
+    tags = ", ".join(note.get("tags") or []) or "none"
+    return "\n".join(
+        [
+            f"# {note.get('title') or note.get('note_id')}",
+            "",
+            f"Note ID: {note.get('note_id')}",
+            f"Status: {note.get('status')}",
+            f"Pin: {note.get('pin_state')}",
+            f"Source: {note.get('source')}",
+            f"Tags: {tags}",
+            "",
+            str(note.get("body_markdown") or "").strip(),
+        ]
+    ).strip()
+
+
+def _project_note_candidates(workspace: Path) -> list[dict[str, Any]]:
+    from agentiux_dev_memory import list_project_notes, get_project_note
+
+    try:
+        note_items = list_project_notes(workspace).get("items", [])
+    except FileNotFoundError:
+        return []
+    candidates: list[dict[str, Any]] = []
+    for item in note_items:
+        note = get_project_note(workspace, item["note_id"])
+        text = _project_note_context_text(note)
+        candidates.append(
             {
-                "path": str(file_path.relative_to(workspace)),
-                "size": stat.st_size,
-                "mtime_ns": stat.st_mtime_ns,
+                "path": f"external/project-memory/{note['note_id']}.md",
+                "size": len(text.encode("utf-8")),
+                "mtime_ns": _synthetic_mtime_ns(note.get("updated_at"), note.get("latest_revision_id"), note.get("status"), note.get("pin_state")),
+                "text": text,
+                "note": note,
             }
         )
-    return snapshot
+    candidates.sort(key=lambda item: item["path"])
+    return candidates
+
+
+def _build_project_note_chunk_record(candidate: dict[str, Any]) -> dict[str, Any]:
+    note = copy.deepcopy(candidate.get("note") or {})
+    text = str(candidate.get("text") or "")
+    file_hash = hashlib.sha1(text.encode("utf-8")).hexdigest()
+    tags = [
+        "project-memory",
+        f"note-status:{note.get('status') or 'active'}",
+        f"pin-state:{note.get('pin_state') or 'normal'}",
+        *[str(tag) for tag in (note.get("tags") or [])],
+    ]
+    if note.get("pin_state") == "pinned":
+        tags.append("pinned")
+    if note.get("status") == "archived":
+        tags.append("archived")
+    summary = _normalize_text(
+        f"Project memory note {note.get('title') or note.get('note_id')}. "
+        f"Status: {note.get('status') or 'active'}. Pin: {note.get('pin_state') or 'normal'}. "
+        f"Tags: {', '.join(note.get('tags') or []) or 'none'}."
+    )
+    return {
+        "chunk_id": _short_hash(f"{candidate['path']}:{file_hash}", length=16),
+        "path": str(candidate["path"]),
+        "symbols": [note.get("title") or note.get("note_id")],
+        "tags": tags,
+        "summary": summary,
+        "hash": file_hash,
+        "dependencies": [],
+        "route_hints": _infer_route_hints(str(candidate["path"]), tags, summary),
+        "source_kind": "project_memory",
+        "note_id": note.get("note_id"),
+        "note_status": note.get("status"),
+        "pin_state": note.get("pin_state"),
+    }
 
 
 def _candidate_paths_digest(snapshot: list[dict[str, Any]]) -> str:
@@ -1055,6 +1146,12 @@ def _workspace_context_payload(
     state, workstream, task = _safe_workspace_state(workspace)
     verification = _safe_verification_context(workspace)
     changed_paths = [entry["path"] for entry in git_state.get("changed_files", [])][:24]
+    project_memory_chunks = [chunk for chunk in chunks if chunk.get("source_kind") == "project_memory"]
+    pinned_project_memory_chunks = [
+        chunk
+        for chunk in project_memory_chunks
+        if chunk.get("pin_state") == "pinned" and chunk.get("note_status") == "active"
+    ]
     return {
         "schema_version": CONTEXT_CACHE_SCHEMA_VERSION,
         "plugin_version": PLUGIN_VERSION,
@@ -1091,6 +1188,18 @@ def _workspace_context_payload(
         },
         "known_test_surfaces": _known_test_surfaces(workspace),
         "known_verification_surfaces": verification,
+        "project_memory": {
+            "note_count": len(project_memory_chunks),
+            "pinned_note_count": len(pinned_project_memory_chunks),
+            "pinned_notes": [
+                {
+                    "note_id": chunk.get("note_id"),
+                    "path": chunk.get("path"),
+                    "summary": chunk.get("summary"),
+                }
+                for chunk in pinned_project_memory_chunks[:8]
+            ],
+        },
         "last_used_routes": usage.get("recent_route_ids", [])[:6],
         "last_used_tools": usage.get("recent_tool_ids", [])[:12],
         "usage_stats": {
@@ -1216,7 +1325,9 @@ def refresh_context_index(workspace: str | Path, force: bool = False) -> dict[st
         [entry["path"] for entry in git_state.get("changed_files", [])],
         recent_route_ids=usage.get("recent_route_ids", []),
     )
-    candidate_snapshot = _indexed_file_snapshot(resolved_workspace, candidate_files)
+    project_note_candidates = _project_note_candidates(resolved_workspace)
+    candidate_snapshot = _indexed_file_snapshot(resolved_workspace, [*candidate_files, *project_note_candidates])
+    candidate_count = len(candidate_snapshot)
     catalog_digest = _catalog_digest()
     manifest = _load_manifest(cache_paths)
     stale_reasons = _manifest_stale_reasons(
@@ -1239,7 +1350,7 @@ def refresh_context_index(workspace: str | Path, force: bool = False) -> dict[st
             duration_ms=duration_ms,
             reason="manifest-match",
             stale_reasons=[],
-            candidate_file_count=len(candidate_files),
+            candidate_file_count=candidate_count,
             rebuilt_chunk_count=0,
             reused_chunk_count=len(chunks),
         )
@@ -1253,7 +1364,7 @@ def refresh_context_index(workspace: str | Path, force: bool = False) -> dict[st
             "semantic_cache_path": str(cache_paths["semantic_cache"]),
             "workspace_fingerprint": workspace_context.get("workspace_fingerprint"),
             "catalog_digest": catalog_digest,
-            "candidate_file_count": len(candidate_files),
+            "candidate_file_count": candidate_count,
             "module_count": len(module_map.get("modules", [])),
             "chunk_count": len(chunks),
             "rebuilt_chunk_count": 0,
@@ -1301,7 +1412,7 @@ def refresh_context_index(workspace: str | Path, force: bool = False) -> dict[st
                 "candidate_paths_digest": _candidate_paths_digest(candidate_snapshot),
                 "indexed_file_snapshot": candidate_snapshot,
                 "workspace_fingerprint": workspace_context["workspace_fingerprint"],
-                "candidate_file_count": len(candidate_files),
+                "candidate_file_count": candidate_count,
                 "module_count": len(modules),
                 "chunk_count": len(chunks),
                 "generated_at": now_iso(),
@@ -1316,7 +1427,7 @@ def refresh_context_index(workspace: str | Path, force: bool = False) -> dict[st
             duration_ms=duration_ms,
             reason=refresh_reason,
             stale_reasons=stale_reasons,
-            candidate_file_count=len(candidate_files),
+            candidate_file_count=candidate_count,
             rebuilt_chunk_count=0,
             reused_chunk_count=len(chunks),
         )
@@ -1330,7 +1441,7 @@ def refresh_context_index(workspace: str | Path, force: bool = False) -> dict[st
             "semantic_cache_path": str(cache_paths["semantic_cache"]),
             "workspace_fingerprint": workspace_context["workspace_fingerprint"],
             "catalog_digest": catalog_digest,
-            "candidate_file_count": len(candidate_files),
+            "candidate_file_count": candidate_count,
             "module_count": len(modules),
             "chunk_count": len(chunks),
             "rebuilt_chunk_count": 0,
@@ -1363,6 +1474,19 @@ def refresh_context_index(workspace: str | Path, force: bool = False) -> dict[st
             reused_paths.append(relative)
             continue
         chunk_records.append(_build_chunk_record(resolved_workspace, candidate))
+        rebuilt_paths.append(relative)
+    for candidate in project_note_candidates:
+        relative = str(candidate["path"])
+        existing = existing_chunks.get(relative)
+        if (
+            not force
+            and existing
+            and manifest_snapshot_map.get(relative) == candidate_snapshot_map.get(relative)
+        ):
+            chunk_records.append(existing)
+            reused_paths.append(relative)
+            continue
+        chunk_records.append(_build_project_note_chunk_record(candidate))
         rebuilt_paths.append(relative)
 
     chunk_records.sort(key=lambda item: item["path"])
@@ -1411,7 +1535,7 @@ def refresh_context_index(workspace: str | Path, force: bool = False) -> dict[st
             "candidate_paths_digest": _candidate_paths_digest(candidate_snapshot),
             "indexed_file_snapshot": candidate_snapshot,
             "workspace_fingerprint": workspace_context["workspace_fingerprint"],
-            "candidate_file_count": len(candidate_files),
+            "candidate_file_count": candidate_count,
             "module_count": len(modules),
             "chunk_count": len(chunk_records),
             "generated_at": now_iso(),
@@ -1425,7 +1549,7 @@ def refresh_context_index(workspace: str | Path, force: bool = False) -> dict[st
         duration_ms=duration_ms,
         reason=refresh_reason,
         stale_reasons=stale_reasons,
-        candidate_file_count=len(candidate_files),
+        candidate_file_count=candidate_count,
         rebuilt_chunk_count=len(rebuilt_paths),
         reused_chunk_count=len(reused_paths),
     )
@@ -1440,7 +1564,7 @@ def refresh_context_index(workspace: str | Path, force: bool = False) -> dict[st
         "semantic_cache_path": str(cache_paths["semantic_cache"]),
         "workspace_fingerprint": workspace_context["workspace_fingerprint"],
         "catalog_digest": catalog_digest,
-        "candidate_file_count": len(candidate_files),
+        "candidate_file_count": candidate_count,
         "module_count": len(modules),
         "chunk_count": len(chunk_records),
         "rebuilt_chunk_count": len(rebuilt_paths),
@@ -1514,6 +1638,9 @@ def _chunk_score(
     if chunk.get("path") in set(workspace_context.get("changed_paths", [])):
         score += 4
         why["changed_path"] = True
+    if chunk.get("source_kind") == "project_memory" and chunk.get("pin_state") == "pinned" and chunk.get("note_status") == "active":
+        score += 6
+        why["pinned_project_memory"] = True
     current_tokens = _tokenize(
         " ".join(
             value
@@ -1582,6 +1709,7 @@ def search_context_index(
             "changed_paths": workspace_context.get("changed_paths", []),
             "current_workstream": workspace_context.get("current_workstream"),
             "current_task": workspace_context.get("current_task"),
+            "project_memory": workspace_context.get("project_memory"),
         },
         "modules": modules[:12],
         "matches": scored_chunks[: _limit(limit, 8, 40)],
@@ -1591,6 +1719,23 @@ def search_context_index(
 
 def _semantic_cache_key(query_text: str, catalog_digest: str, route_id: str | None) -> str:
     return _short_hash(f"{catalog_digest}:{route_id or 'none'}:{_normalize_text(query_text).lower()}", length=16)
+
+
+def _pinned_project_memory_selected_chunks(chunks: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    items = [
+        {
+            "chunk_id": chunk["chunk_id"],
+            "path": chunk["path"],
+            "summary": chunk["summary"],
+            "score": 999,
+        }
+        for chunk in chunks
+        if chunk.get("source_kind") == "project_memory"
+        and chunk.get("pin_state") == "pinned"
+        and chunk.get("note_status") == "active"
+    ]
+    items.sort(key=lambda item: item["path"])
+    return items[:12]
 
 
 def show_workspace_context_pack(
@@ -1649,15 +1794,26 @@ def show_workspace_context_pack(
             }
 
         search = search_context_index(resolved_workspace, request_text, route_id=route["route_id"] if route else None, limit=limit)
-        selected_chunks = [
-            {
-                "chunk_id": match["chunk_id"],
-                "path": match["path"],
-                "summary": match["summary"],
-                "score": match["score"],
-            }
-            for match in search["matches"]
-        ]
+        selected_chunks = _pinned_project_memory_selected_chunks(chunks)
+        selected_chunks.extend(
+            [
+                {
+                    "chunk_id": match["chunk_id"],
+                    "path": match["path"],
+                    "summary": match["summary"],
+                    "score": match["score"],
+                }
+                for match in search["matches"]
+            ]
+        )
+        deduped_chunks: list[dict[str, Any]] = []
+        seen_paths: set[str] = set()
+        for item in selected_chunks:
+            if item["path"] in seen_paths:
+                continue
+            seen_paths.add(item["path"])
+            deduped_chunks.append(item)
+        selected_chunks = deduped_chunks[: _limit(limit, 6, 40) + 12]
         selected_tools = []
         if route:
             selected_tools.extend(route.get("recommended_tools", []))
@@ -1728,5 +1884,6 @@ def show_workspace_context_pack(
         "route_candidates": route_candidates[:3],
         "modules": modules[:16],
         "chunk_count": len(chunks),
+        "pinned_project_memory": _pinned_project_memory_selected_chunks(chunks),
         "retrieval_ladder": RETRIEVAL_LADDER,
     }

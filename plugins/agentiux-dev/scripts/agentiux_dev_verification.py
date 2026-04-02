@@ -17,6 +17,8 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Callable
 
+from agentiux_dev_analytics import append_analytics_event
+from agentiux_dev_auth import resolve_auth_profile_artifact
 from agentiux_dev_lib import (
     PLUGIN_VERSION,
     _resolve_verification_fragments,
@@ -29,6 +31,7 @@ from agentiux_dev_lib import (
     python_script_command,
     read_stage_register,
     read_workspace_state,
+    sanitize_identifier,
     start_logged_process,
     start_logged_python_process,
     stop_process,
@@ -908,6 +911,7 @@ def _normalize_case(case: dict[str, Any]) -> dict[str, Any]:
         "cwd": payload.get("cwd", "."),
         "argv": payload.get("argv"),
         "shell_command": payload.get("shell_command"),
+        "env": payload.get("env", {}),
         "device_or_viewport": device_or_viewport,
         "locale": payload.get("locale"),
         "timezone": payload.get("timezone"),
@@ -919,6 +923,7 @@ def _normalize_case(case: dict[str, Any]) -> dict[str, Any]:
         "artifact_expectations": payload.get("artifact_expectations", []),
         "retry_policy": payload.get("retry_policy", {"attempts": 1}),
         "baseline": baseline,
+        "auth_profile_ref": payload.get("auth_profile_ref"),
         "android_logcat": _normalize_android_logcat(payload.get("android_logcat")),
     }
     normalized["semantic_assertions"] = _normalize_semantic_assertions(payload.get("semantic_assertions"), normalized)
@@ -1012,6 +1017,7 @@ def _verification_run_paths(workspace: str | Path, run_id: str, workstream_id: s
         "stdout_log": run_root / "stdout.log",
         "stderr_log": run_root / "stderr.log",
         "logcat_log": run_root / "logcat.log",
+        "transient_auth_dir": run_root / "auth",
         "artifacts_dir": Path(paths["artifacts_dir"]) / "verification" / run_id,
     }
 
@@ -1271,6 +1277,7 @@ def _case_selection_summary(workspace: str | Path, case: dict[str, Any], state: 
         "title": case.get("title"),
         "surface_type": case.get("surface_type"),
         "runner": case.get("runner"),
+        "auth_profile_ref": case.get("auth_profile_ref"),
         "baseline_source": _case_baseline_source(workspace, case),
         "host_requirements": case.get("host_requirements") or [],
         "host_compatibility": requirements,
@@ -1956,12 +1963,130 @@ def _run_browser_layout_audit_case(
             )
 
 
+def _auth_runtime_summary(resolved_auth: dict[str, Any]) -> dict[str, Any]:
+    artifact = copy.deepcopy(resolved_auth.get("artifact") or {})
+    return {
+        "profile_id": ((resolved_auth.get("profile") or {}).get("profile_id")),
+        "label": ((resolved_auth.get("profile") or {}).get("label")),
+        "artifact_type": artifact.get("artifact_type"),
+        "expires_at": artifact.get("expires_at"),
+        "summary": copy.deepcopy(resolved_auth.get("artifact_summary") or {}),
+    }
+
+
+def _write_case_auth_runtime(
+    workspace: str | Path,
+    run: dict[str, Any],
+    case: dict[str, Any],
+    resolved_auth: dict[str, Any],
+) -> dict[str, Any]:
+    run_paths = _verification_run_paths(workspace, run["run_id"], workstream_id=run.get("workstream_id"))
+    auth_dir = run_paths["transient_auth_dir"]
+    auth_dir.mkdir(parents=True, exist_ok=True)
+    case_key = sanitize_identifier(case["id"], "case")
+    artifact_path = auth_dir / f"{case_key}-artifact.json"
+    summary_path = auth_dir / f"{case_key}-summary.json"
+    artifact_payload = copy.deepcopy(resolved_auth.get("artifact") or {})
+    summary_payload = _auth_runtime_summary(resolved_auth)
+    _write_json(artifact_path, artifact_payload)
+    _write_json(summary_path, summary_payload)
+    return {
+        "profile_id": summary_payload.get("profile_id"),
+        "artifact_path": str(artifact_path),
+        "summary_path": str(summary_path),
+        "summary": summary_payload,
+    }
+
+
+def _cleanup_case_auth_runtime(auth_runtime: dict[str, Any] | None) -> None:
+    if not auth_runtime:
+        return
+    for key in ("artifact_path", "summary_path"):
+        target = auth_runtime.get(key)
+        if target:
+            Path(target).unlink(missing_ok=True)
+    auth_dir = Path(auth_runtime.get("summary_path") or "").parent if auth_runtime.get("summary_path") else None
+    if auth_dir:
+        try:
+            auth_dir.rmdir()
+        except OSError:
+            pass
+
+
+def _resolve_case_auth_runtime(
+    workspace: str | Path,
+    run: dict[str, Any],
+    case: dict[str, Any],
+) -> dict[str, Any] | None:
+    try:
+        resolved_auth = resolve_auth_profile_artifact(
+            workspace,
+            profile_id=case.get("auth_profile_ref"),
+            task_id=run.get("task_id"),
+            external_issue=copy.deepcopy(run.get("external_issue")),
+            case=case,
+            workstream_id=run.get("workstream_id"),
+        )
+    except FileNotFoundError:
+        if case.get("auth_profile_ref"):
+            append_analytics_event(
+                "auth_resolver_failed",
+                workspace,
+                source="verification",
+                status="failed",
+                workstream_id=run.get("workstream_id"),
+                task_id=run.get("task_id"),
+                run_id=run.get("run_id"),
+                external_issue=copy.deepcopy(run.get("external_issue")),
+                payload={"case_id": case.get("id"), "reason": "explicit_profile_not_found", "profile_id": case.get("auth_profile_ref")},
+            )
+            raise
+        return None
+    except Exception as exc:  # noqa: BLE001
+        append_analytics_event(
+            "auth_resolver_failed",
+            workspace,
+            source="verification",
+            status="failed",
+            workstream_id=run.get("workstream_id"),
+            task_id=run.get("task_id"),
+            run_id=run.get("run_id"),
+            external_issue=copy.deepcopy(run.get("external_issue")),
+            payload={"case_id": case.get("id"), "error": str(exc)},
+        )
+        raise
+    runtime_auth = _write_case_auth_runtime(workspace, run, case, resolved_auth)
+    _append_event(
+        workspace,
+        run["run_id"],
+        "auth_resolved",
+        f"Resolved auth profile for case {case['id']}.",
+        workstream_id=run.get("workstream_id"),
+        case_id=case["id"],
+        profile_id=runtime_auth.get("profile_id"),
+        auth_summary=copy.deepcopy(runtime_auth.get("summary") or {}),
+    )
+    append_analytics_event(
+        "auth_resolver_succeeded",
+        workspace,
+        source="verification",
+        status="passed",
+        workstream_id=run.get("workstream_id"),
+        task_id=run.get("task_id"),
+        run_id=run.get("run_id"),
+        external_issue=copy.deepcopy(run.get("external_issue")),
+        payload={"case_id": case.get("id"), "auth": copy.deepcopy(runtime_auth.get("summary") or {})},
+    )
+    return runtime_auth
+
+
 def _run_case_attempt(
     workspace: str | Path,
     run: dict[str, Any],
     case: dict[str, Any],
     attempt: int,
     semantic_runtime: dict[str, Any] | None = None,
+    auth_runtime: dict[str, Any] | None = None,
 ) -> int:
     run_paths = _verification_run_paths(workspace, run["run_id"], workstream_id=run.get("workstream_id"))
     env = os.environ.copy()
@@ -1978,6 +2103,10 @@ def _run_case_attempt(
     env["VERIFICATION_SEMANTIC_REPORT_PATH"] = str(semantic_report_path)
     if semantic_spec_path is not None:
         env["VERIFICATION_SEMANTIC_SPEC_PATH"] = str(semantic_spec_path)
+    if auth_runtime:
+        env["VERIFICATION_AUTH_ARTIFACT_PATH"] = str(auth_runtime["artifact_path"])
+        env["VERIFICATION_AUTH_PROFILE_ID"] = str(auth_runtime["profile_id"])
+        env["VERIFICATION_AUTH_SUMMARY_PATH"] = str(auth_runtime["summary_path"])
     cwd = _resolve_case_cwd(workspace, case)
     if case.get("runner") == "browser-layout-audit":
         return _run_browser_layout_audit_case(workspace, run, case, cwd, env)
@@ -3631,18 +3760,22 @@ def _validate_native_layout_audit(run_paths: dict[str, Path], case: dict[str, An
 def _start_run(workspace: str | Path, mode: str, target_id: str, workstream_id: str | None = None) -> dict[str, Any]:
     paths = _ensure_workspace_paths(workspace, workstream_id=workstream_id)
     recipes = read_verification_recipes(workspace, workstream_id=workstream_id)
+    task_payload = current_task(workspace)
     case_ids = _resolve_case_ids(recipes, mode, target_id)
     slow_after = max((_slow_after_seconds(_case_by_id(recipes, case_id)) for case_id in case_ids), default=10)
     created_at_ns = time.time_ns()
     run_id = f"{int(time.time())}-{uuid.uuid4().hex[:8]}"
     run_paths = _verification_run_paths(workspace, run_id, workstream_id=workstream_id)
     run_paths["run_root"].mkdir(parents=True, exist_ok=True)
+    run_paths["transient_auth_dir"].mkdir(parents=True, exist_ok=True)
     run_paths["artifacts_dir"].mkdir(parents=True, exist_ok=True)
     payload = {
         "schema_version": 2,
         "run_id": run_id,
         "workspace_path": str(Path(workspace).expanduser().resolve()),
         "workstream_id": paths["current_workstream_id"],
+        "task_id": task_payload.get("task_id") if task_payload else None,
+        "external_issue": copy.deepcopy(task_payload.get("external_issue")) if task_payload else None,
         "mode": mode,
         "target_id": target_id,
         "case_ids": case_ids,
@@ -3664,6 +3797,7 @@ def _start_run(workspace: str | Path, mode: str, target_id: str, workstream_id: 
         "stdout_log_path": str(run_paths["stdout_log"]),
         "stderr_log_path": str(run_paths["stderr_log"]),
         "logcat_log_path": str(run_paths["logcat_log"]),
+        "transient_auth_dir": str(run_paths["transient_auth_dir"]),
         "artifacts_dir": str(run_paths["artifacts_dir"]),
         "logcat_pid": None,
         "logcat_case_id": None,
@@ -3692,6 +3826,17 @@ def _start_run(workspace: str | Path, mode: str, target_id: str, workstream_id: 
     }
     _write_run(workspace, payload, workstream_id=workstream_id)
     _append_event(workspace, run_id, "run_queued", f"Queued {mode} run for {target_id}.", workstream_id=workstream_id, target_id=target_id, case_ids=case_ids)
+    append_analytics_event(
+        "verification_run_queued",
+        workspace,
+        source="verification",
+        status="queued",
+        workstream_id=paths["current_workstream_id"],
+        task_id=payload.get("task_id"),
+        run_id=run_id,
+        external_issue=copy.deepcopy(payload.get("external_issue")),
+        payload={"mode": mode, "target_id": target_id, "case_ids": case_ids},
+    )
 
     env = os.environ.copy()
     env.setdefault("AGENTIUX_DEV_PLUGIN_ROOT", str(plugin_root()))
@@ -3713,6 +3858,17 @@ def _start_run(workspace: str | Path, mode: str, target_id: str, workstream_id: 
     payload["summary"]["message"] = "Run started."
     _write_run(workspace, payload, workstream_id=workstream_id)
     _append_event(workspace, run_id, "run_started", f"Started {mode} run for {target_id}.", workstream_id=workstream_id, pid=process.pid)
+    append_analytics_event(
+        "verification_run_started",
+        workspace,
+        source="verification",
+        status="running",
+        workstream_id=paths["current_workstream_id"],
+        task_id=payload.get("task_id"),
+        run_id=run_id,
+        external_issue=copy.deepcopy(payload.get("external_issue")),
+        payload={"mode": mode, "target_id": target_id, "pid": process.pid},
+    )
     return payload
 
 
@@ -3915,6 +4071,23 @@ def _case_requires_web_visual_semantics(case: dict[str, Any]) -> bool:
     return runner == "playwright-visual" or (surface_type == "web" and runner in VISUAL_RUNNERS)
 
 
+def _case_command_tokens(case: dict[str, Any]) -> list[str]:
+    tokens: list[str] = []
+    for part in case.get("argv") or []:
+        tokens.append(str(part).strip().lower())
+    shell_command = str(case.get("shell_command") or "").strip().lower()
+    if shell_command:
+        tokens.extend(shell_command.split())
+    return tokens
+
+
+def _case_runs_release_readiness_dashboard_check(case: dict[str, Any]) -> bool:
+    tokens = _case_command_tokens(case)
+    if not tokens:
+        return False
+    return "dashboard-check" in tokens and any("release_readiness.py" in token for token in tokens)
+
+
 def _case_has_browser_layout_audit(case: dict[str, Any]) -> bool:
     return str(case.get("runner") or "").lower() == "browser-layout-audit"
 
@@ -3926,7 +4099,11 @@ def _case_has_native_layout_audit(case: dict[str, Any]) -> bool:
 
 
 def _case_counts_as_visual_web_coverage(case: dict[str, Any]) -> bool:
-    return case.get("runner") in VISUAL_RUNNERS or _case_has_browser_layout_audit(case)
+    return (
+        case.get("runner") in VISUAL_RUNNERS
+        or _case_has_browser_layout_audit(case)
+        or _case_runs_release_readiness_dashboard_check(case)
+    )
 
 
 def audit_verification_coverage(workspace: str | Path, workstream_id: str | None = None) -> dict[str, Any]:
@@ -4142,7 +4319,7 @@ def audit_verification_coverage(workspace: str | Path, workstream_id: str | None
             coverage["dashboard"] = True
             if _case_counts_as_visual_web_coverage(case):
                 coverage["dashboard_visual"] = True
-            if _case_has_browser_layout_audit(case):
+            if _case_has_browser_layout_audit(case) or _case_runs_release_readiness_dashboard_check(case):
                 coverage["dashboard_browser_layout_audit"] = True
         if surface_type == "web":
             coverage["web"] = True
@@ -4437,6 +4614,7 @@ def execute_verification_run(workspace: str | Path, run_id: str, workstream_id: 
         case = _case_by_id(recipes, case_state["case_id"])
         run_paths = _verification_run_paths(workspace_path, run_id, workstream_id=workstream_id)
         semantic_runtime = _semantic_runtime_preflight(workspace_path, run_paths, case)
+        auth_runtime = None
         case_state["status"] = "running"
         case_state["started_at"] = now_iso()
         if semantic_runtime.get("enabled"):
@@ -4472,20 +4650,39 @@ def execute_verification_run(workspace: str | Path, run_id: str, workstream_id: 
                 helper_root=semantic_runtime.get("helper_root"),
             )
         else:
-            for attempt in range(1, attempts + 1):
-                attempts_performed = attempt
-                try:
-                    exit_code = _run_case_attempt(workspace_path, run, case, attempt, semantic_runtime=semantic_runtime)
-                    last_error = None
-                except Exception as exc:  # noqa: BLE001
-                    last_error = exc
-                    exit_code = 1
-                    with run_paths["stderr_log"].open("a") as handle:
-                        handle.write(f"\n[verification-error] {exc}\n")
-                if exit_code == 0:
-                    break
-                if attempt < attempts and delay_seconds > 0:
-                    time.sleep(delay_seconds)
+            try:
+                auth_runtime = _resolve_case_auth_runtime(workspace_path, run, case)
+                if auth_runtime:
+                    case_state["auth"] = copy.deepcopy(auth_runtime.get("summary") or {})
+                    _write_run(workspace_path, run, workstream_id=workstream_id)
+                for attempt in range(1, attempts + 1):
+                    attempts_performed = attempt
+                    try:
+                        exit_code = _run_case_attempt(
+                            workspace_path,
+                            run,
+                            case,
+                            attempt,
+                            semantic_runtime=semantic_runtime,
+                            auth_runtime=auth_runtime,
+                        )
+                        last_error = None
+                    except Exception as exc:  # noqa: BLE001
+                        last_error = exc
+                        exit_code = 1
+                        with run_paths["stderr_log"].open("a") as handle:
+                            handle.write(f"\n[verification-error] {exc}\n")
+                    if exit_code == 0:
+                        break
+                    if attempt < attempts and delay_seconds > 0:
+                        time.sleep(delay_seconds)
+            except Exception as exc:  # noqa: BLE001
+                last_error = exc
+                exit_code = 1
+                with run_paths["stderr_log"].open("a") as handle:
+                    handle.write(f"\n[auth-resolution-error] {exc}\n")
+            finally:
+                _cleanup_case_auth_runtime(auth_runtime)
         semantic_assertions = (
             semantic_runtime
             if semantic_runtime.get("enabled") and semantic_runtime.get("status") == "failed"
@@ -4603,6 +4800,9 @@ def execute_verification_run(workspace: str | Path, run_id: str, workstream_id: 
                 "case_id": case["id"],
                 "signals": logcat_summary["signals"],
             }
+        if auth_runtime:
+            run.setdefault("summary", {})
+            run["summary"]["auth_summary"] = copy.deepcopy(auth_runtime.get("summary") or {})
         if semantic_assertions.get("enabled"):
             run.setdefault("summary", {})
             run["summary"]["semantic_summary"] = {
@@ -4671,7 +4871,25 @@ def execute_verification_run(workspace: str | Path, run_id: str, workstream_id: 
             native_layout_status=native_layout_audit.get("status"),
             browser_layout_status=browser_layout_audit.get("status"),
             logcat_signals=(logcat_summary or {}).get("signals"),
+            auth_summary=copy.deepcopy((auth_runtime or {}).get("summary") or {}),
         )
+        if native_layout_audit.get("status") == "warning" or browser_layout_audit.get("status") == "warning":
+            append_analytics_event(
+                "verification_case_warning",
+                workspace_path,
+                source="verification",
+                status="warning",
+                workstream_id=workstream_id,
+                task_id=run.get("task_id"),
+                run_id=run_id,
+                external_issue=copy.deepcopy(run.get("external_issue")),
+                payload={
+                    "case_id": case.get("id"),
+                    "native_layout_status": native_layout_audit.get("status"),
+                    "browser_layout_status": browser_layout_audit.get("status"),
+                    "auth": copy.deepcopy((auth_runtime or {}).get("summary") or {}),
+                },
+            )
         if exit_code != 0:
             run["status"] = "failed"
             run["completed_at"] = now_iso()
@@ -4690,6 +4908,20 @@ def execute_verification_run(workspace: str | Path, run_id: str, workstream_id: 
             }
             _write_run(workspace_path, run, workstream_id=workstream_id)
             _append_event(workspace_path, run_id, "run_failed", f"Verification run failed on case {case['id']}.", workstream_id=workstream_id)
+            append_analytics_event(
+                "verification_run_failed",
+                workspace_path,
+                source="verification",
+                status="failed",
+                workstream_id=workstream_id,
+                task_id=run.get("task_id"),
+                run_id=run_id,
+                external_issue=copy.deepcopy(run.get("external_issue")),
+                payload={
+                    "case_id": case.get("id"),
+                    "summary": copy.deepcopy(run.get("summary") or {}),
+                },
+            )
             return run
 
     run["status"] = "passed"
@@ -4709,6 +4941,17 @@ def execute_verification_run(workspace: str | Path, run_id: str, workstream_id: 
     }
     _write_run(workspace_path, run, workstream_id=workstream_id)
     _append_event(workspace_path, run_id, "run_finished", "Verification run passed.", workstream_id=workstream_id)
+    append_analytics_event(
+        "verification_run_finished",
+        workspace_path,
+        source="verification",
+        status="passed",
+        workstream_id=workstream_id,
+        task_id=run.get("task_id"),
+        run_id=run_id,
+        external_issue=copy.deepcopy(run.get("external_issue")),
+        payload={"summary": copy.deepcopy(run.get("summary") or {})},
+    )
     return run
 
 

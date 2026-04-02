@@ -51,12 +51,14 @@ ROUTE_DEFINITIONS: dict[str, dict[str, Any]] = {
     },
     "verification": {
         "title": "Deterministic Verification",
-        "summary": "Resolve semantic checks, helper bundle sync, verification plans, runs, baselines, and artifacts.",
-        "tags": ["baseline", "helper bundle", "semantic", "verification", "visual"],
-        "triggers": ["baseline", "playwright", "semantic", "verification", "visual"],
+        "summary": "Resolve semantic checks, auth artifacts, helper bundle sync, verification plans, runs, baselines, and artifacts.",
+        "tags": ["auth", "baseline", "helper bundle", "semantic", "verification", "visual"],
+        "triggers": ["auth profile", "baseline", "playwright", "semantic", "verification", "visual"],
         "recommended_skills": ["workspace-kernel", "deterministic-verification", "stage-closeout"],
         "recommended_tools": [
             "resolve_verification",
+            "resolve_auth_profile",
+            "show_auth_profiles",
             "show_host_support",
             "show_host_setup_plan",
             "show_verification_helper_catalog",
@@ -185,13 +187,17 @@ ROUTE_DEFINITIONS: dict[str, dict[str, Any]] = {
     },
     "plugin-dev": {
         "title": "Plugin Development",
-        "summary": "Orient on plugin source, MCP interfaces, scripts, catalogs, and self-host development surfaces.",
-        "tags": ["catalog", "dashboard", "mcp", "plugin", "python", "self-host"],
-        "triggers": ["catalog", "mcp", "plugin", "python scripts", "self-host"],
+        "summary": "Orient on plugin source, auth profiles, project memory, learnings, MCP interfaces, scripts, catalogs, and self-host development surfaces.",
+        "tags": ["analytics", "auth", "catalog", "dashboard", "mcp", "memory", "plugin", "python", "self-host"],
+        "triggers": ["auth profile", "catalog", "learning entry", "mcp", "plugin", "project memory", "python scripts", "self-host"],
         "recommended_skills": ["workspace-kernel", "plugin-platform", "docs-sync"],
         "recommended_tools": [
             "get_plugin_stats",
             "get_dashboard_snapshot",
+            "show_auth_profiles",
+            "list_project_notes",
+            "get_analytics_snapshot",
+            "list_learning_entries",
             "show_capability_catalog",
             "show_intent_route",
             "show_workspace_context_pack",
@@ -356,7 +362,7 @@ SCRIPT_DEFINITIONS: list[dict[str, Any]] = [
         "follow_up_paths": ["references/dashboard.md", "README.md"],
         "cost_hint": "low",
         "related_routes": ["plugin-dev", "release", "youtrack"],
-        "safe_usage": "Local-only UI runtime; dashboard mutations are limited to YouTrack integration-management flows.",
+        "safe_usage": "Local-only UI runtime; dashboard mutations are limited to external-state management flows such as YouTrack connections plus workspace auth, notes, and learning entries.",
         "common_flags": ["launch", "stop", "status", "--workspace"],
         "produced_artifacts": ["runtime/dashboard.json"],
     },
@@ -523,9 +529,11 @@ def _route_ids_for_hint(*values: str) -> list[str]:
         route_ids.add("git")
     if tokens.intersection({"baseline", "detox", "playwright", "semantic", "verification", "visual"}):
         route_ids.add("verification")
+    if tokens.intersection({"auth", "credentials", "login"}):
+        route_ids.add("verification")
     if tokens.intersection({"brief", "design", "handoff", "reference", "ux"}):
         route_ids.add("design")
-    if tokens.intersection({"dashboard", "install", "mcp", "plugin", "release", "self", "smoke"}):
+    if tokens.intersection({"analytics", "auth", "dashboard", "install", "learning", "learnings", "mcp", "memory", "note", "notes", "plugin", "release", "self", "smoke"}):
         route_ids.add("plugin-dev")
     if tokens.intersection({"dashboard", "release", "smoke"}):
         route_ids.add("release")

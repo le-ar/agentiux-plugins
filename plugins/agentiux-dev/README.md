@@ -1,6 +1,6 @@
 # AgentiUX Dev
 
-AgentiUX Dev is a home-local Codex plugin for development workflows that should not leak Codex-only state into project repositories. It owns external workspace state, task and workstream routing, deterministic verification, design orchestration, local Git guidance, and a read-only dashboard for Codex-driven work.
+AgentiUX Dev is a home-local Codex plugin for development workflows that should not leak Codex-only state into project repositories. It owns external workspace state, task and workstream routing, deterministic verification, design orchestration, local Git guidance, and a local-only dashboard for Codex-driven work.
 
 ## Quick Start
 
@@ -70,7 +70,7 @@ The source repo remains the place where you edit and verify the plugin. The inst
 - workspace-scoped YouTrack integration with permanent-token connections, persisted search sessions, richer issue context plus linked-issue analysis for planning, idempotent plan apply, and issue-ledger aggregation
 - repo-tracked low-token catalogs for skills, MCP tools, scripts, references, and intent routes
 - global project context indexing and semantic cache under `~/.agentiux/agentiux-dev/cache/context/`
-- a cockpit-first local-only dashboard launched from chat, with dashboard writes limited to YouTrack integration management
+- a cockpit-first local-only dashboard launched from chat, with dashboard writes for YouTrack integration management, E2E auth profiles, project memory notes, and learning entries
 
 ## Low-Token Retrieval
 
@@ -112,6 +112,19 @@ The plugin keeps canonical versioned catalogs in `catalogs/` and stores project-
 - `show workspace context pack`
 - `search context index`
 - `refresh context index`
+- `show auth profiles`
+- `write auth profile`
+- `remove auth profile`
+- `resolve auth profile`
+- `list project notes`
+- `get project note`
+- `write project note`
+- `archive project note`
+- `search project notes`
+- `get analytics snapshot`
+- `list learning entries`
+- `write learning entry`
+- `update learning entry`
 - `audit verification coverage`
 - `resolve verification`
 - `approve verification baseline`
@@ -188,6 +201,12 @@ Localized aliases are matched at runtime. The tracked source remains English-onl
 - `python3 scripts/agentiux_dev_state.py show-intent-route --request-text "Inspect plugin dashboard and MCP tool catalogs"`
 - `python3 scripts/agentiux_dev_state.py show-workspace-context-pack --workspace /path/to/repo --request-text "Inspect checkout verification" --route-id verification`
 - `python3 scripts/agentiux_dev_state.py search-context-index --workspace /path/to/repo --query-text "Detox helper bundle drift"`
+- `python3 scripts/agentiux_dev_state.py show-auth-profiles --workspace /path/to/repo`
+- `python3 scripts/agentiux_dev_state.py write-auth-profile --workspace /path/to/repo --profile-file /tmp/auth-profile.json --secret-file /tmp/auth-secret.json`
+- `python3 scripts/agentiux_dev_state.py list-project-notes --workspace /path/to/repo`
+- `python3 scripts/agentiux_dev_state.py write-project-note --workspace /path/to/repo --note-file /tmp/project-note.json`
+- `python3 scripts/agentiux_dev_state.py analytics-snapshot --workspace /path/to/repo`
+- `python3 scripts/agentiux_dev_state.py list-learning-entries --workspace /path/to/repo`
 - `python3 scripts/agentiux_dev_state.py refresh-context-index --workspace /path/to/repo`
 - `python3 scripts/agentiux_dev_state.py current-workstream --workspace /path/to/repo`
 - `python3 scripts/agentiux_dev_state.py create-workstream --workspace /path/to/repo --title "Checkout Feature"`
@@ -377,6 +396,8 @@ python3 scripts/agentiux_dev_state.py update-verification-baseline --workspace /
 
 Verification runs write structured events, stdout, stderr, Android logcat when configured, and linked artifacts under the external workspace verification root, so Codex and the GUI can show progress without assuming a hang. Canonical baselines remain project-owned for reproducible CI checks. Coverage audits report warning-level gaps without failing the workspace automatically.
 
+Verification cases may also declare `auth_profile_ref`. Before the first attempt AgentiUX Dev resolves a matching auth profile, writes a transient auth artifact plus a redacted summary inside the run root, exports `VERIFICATION_AUTH_ARTIFACT_PATH`, `VERIFICATION_AUTH_PROFILE_ID`, and `VERIFICATION_AUTH_SUMMARY_PATH`, and removes those transient auth files after the case finishes. The core runtime only supports `resolver.kind = command_v1` in v1 and never assumes a project-specific admin flow.
+
 Visual cases may also declare optional `semantic_assertions`. The plugin now owns a versioned helper bundle under `bundles/verification-helpers/<plugin-version>/`, and projects materialize the current neutral runtime snapshot into `.verification/helpers/` with `sync verification helpers`.
 
 The semantic spec supports `enabled`, `report_path`, `required_checks`, `targets`, `auto_scan`, `heuristics`, `artifacts`, and `platform_hooks`. Targets are platform-neutral and use locator kinds such as `selector`, `role`, `test_id`, `semantics_tag`, or `text`, plus expected attributes, styles, layout invariants, and clipping or occlusion allowances. At runtime AgentiUX Dev writes the resolved spec into the run root, passes helper and report env vars to the runner, validates helper sync and capability compatibility, and records `semantic_summary` in case and run state.
@@ -496,12 +517,21 @@ It also validates that repo-tracked low-token catalogs are current and that the 
 - `workspaces/<slug>--<hash>/workstreams/<workstream-id>/verification/runs/<run-id>/stdout.log`
 - `workspaces/<slug>--<hash>/workstreams/<workstream-id>/verification/runs/<run-id>/stderr.log`
 - `workspaces/<slug>--<hash>/workstreams/<workstream-id>/verification/baselines/status.json`
+- `workspaces/<slug>--<hash>/integrations/auth/index.json`
+- `workspaces/<slug>--<hash>/integrations/auth/profiles/*.json`
+- `workspaces/<slug>--<hash>/integrations/auth/secrets/*.json`
+- `workspaces/<slug>--<hash>/memory/notes/index.json`
+- `workspaces/<slug>--<hash>/memory/notes/*.json`
+- `workspaces/<slug>--<hash>/memory/revisions/<note-id>/*.json`
 - `workspaces/<slug>--<hash>/tasks/index.json`
 - `workspaces/<slug>--<hash>/tasks/<task-id>/task.json`
 - `workspaces/<slug>--<hash>/tasks/<task-id>/task-brief.md`
 - `workspaces/<slug>--<hash>/tasks/<task-id>/verification-summary.json`
 - `workspaces/<slug>--<hash>/audits/*.json`
 - `workspaces/<slug>--<hash>/upgrade-plans/*.json`
+- `analytics/index.json`
+- `analytics/learnings/*.json`
+- `analytics/events/<yyyy-mm>/<workspace-hash>.jsonl`
 
 ## Notes
 

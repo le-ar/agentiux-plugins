@@ -137,6 +137,41 @@
       "cost_hint": "low",
       "follow_up_paths": [
         "README.md",
+        "references/workflow-kernel.md",
+        "skills/plugin-platform/SKILL.md"
+      ],
+      "id": "archive_project_note",
+      "kind": "mcp_tool",
+      "path": "scripts/agentiux_dev_mcp.py",
+      "primary_surface": "mcp",
+      "read_only": false,
+      "related_routes": [
+        "plugin-dev"
+      ],
+      "required_inputs": [
+        "workspacePath",
+        "noteId"
+      ],
+      "returns": "Structured mutation result payload.",
+      "summary": "Archive a project memory note.",
+      "tags": [
+        "archive",
+        "archive_project_note",
+        "note",
+        "plugin-dev",
+        "project"
+      ],
+      "title": "Archive Project Note",
+      "tool_name": "archive_project_note",
+      "triggers": [
+        "archive project note",
+        "plugin-dev"
+      ]
+    },
+    {
+      "cost_hint": "low",
+      "follow_up_paths": [
+        "README.md",
         "references/command-surface.md",
         "references/design-workflow.md"
       ],
@@ -687,6 +722,41 @@
     },
     {
       "cost_hint": "low",
+      "follow_up_paths": [
+        "README.md",
+        "references/command-surface.md",
+        "references/workflow-kernel.md"
+      ],
+      "id": "get_analytics_snapshot",
+      "kind": "mcp_tool",
+      "path": "scripts/agentiux_dev_mcp.py",
+      "primary_surface": "mcp",
+      "read_only": true,
+      "related_routes": [
+        "plugin-dev",
+        "workstream"
+      ],
+      "required_inputs": [],
+      "returns": "Structured JSON payload for inspection and routing.",
+      "summary": "Return global or workspace-scoped analytics and learning-entry summary data.",
+      "tags": [
+        "analytics",
+        "get",
+        "get_analytics_snapshot",
+        "plugin-dev",
+        "snapshot",
+        "workstream"
+      ],
+      "title": "Get Analytics Snapshot",
+      "tool_name": "get_analytics_snapshot",
+      "triggers": [
+        "get analytics snapshot",
+        "plugin-dev",
+        "workstream"
+      ]
+    },
+    {
+      "cost_hint": "low",
       "follow_up_paths": [],
       "id": "get_command_aliases",
       "kind": "mcp_tool",
@@ -984,6 +1054,41 @@
       "tool_name": "get_plugin_stats",
       "triggers": [
         "get plugin stats",
+        "plugin-dev"
+      ]
+    },
+    {
+      "cost_hint": "low",
+      "follow_up_paths": [
+        "README.md",
+        "references/workflow-kernel.md",
+        "skills/plugin-platform/SKILL.md"
+      ],
+      "id": "get_project_note",
+      "kind": "mcp_tool",
+      "path": "scripts/agentiux_dev_mcp.py",
+      "primary_surface": "mcp",
+      "read_only": true,
+      "related_routes": [
+        "plugin-dev"
+      ],
+      "required_inputs": [
+        "workspacePath",
+        "noteId"
+      ],
+      "returns": "Structured JSON payload for inspection and routing.",
+      "summary": "Read one project memory note and its revision metadata.",
+      "tags": [
+        "get",
+        "get_project_note",
+        "note",
+        "plugin-dev",
+        "project"
+      ],
+      "title": "Get Project Note",
+      "tool_name": "get_project_note",
+      "triggers": [
+        "get project note",
         "plugin-dev"
       ]
     },
@@ -1512,6 +1617,78 @@
       "follow_up_paths": [
         "README.md",
         "references/command-surface.md",
+        "references/workflow-kernel.md"
+      ],
+      "id": "list_learning_entries",
+      "kind": "mcp_tool",
+      "path": "scripts/agentiux_dev_mcp.py",
+      "primary_surface": "mcp",
+      "read_only": true,
+      "related_routes": [
+        "plugin-dev",
+        "workstream"
+      ],
+      "required_inputs": [],
+      "returns": "Structured JSON payload for inspection and routing.",
+      "summary": "List global or workspace-scoped learning entries.",
+      "tags": [
+        "entries",
+        "learning",
+        "list",
+        "list_learning_entries",
+        "plugin-dev",
+        "workstream"
+      ],
+      "title": "List Learning Entries",
+      "tool_name": "list_learning_entries",
+      "triggers": [
+        "list learning entries",
+        "plugin-dev",
+        "workstream"
+      ]
+    },
+    {
+      "cost_hint": "low",
+      "follow_up_paths": [
+        "README.md",
+        "references/command-surface.md",
+        "references/workflow-kernel.md"
+      ],
+      "id": "list_project_notes",
+      "kind": "mcp_tool",
+      "path": "scripts/agentiux_dev_mcp.py",
+      "primary_surface": "mcp",
+      "read_only": true,
+      "related_routes": [
+        "plugin-dev",
+        "workstream"
+      ],
+      "required_inputs": [
+        "workspacePath"
+      ],
+      "returns": "Structured JSON payload for inspection and routing.",
+      "summary": "List project memory notes for a workspace.",
+      "tags": [
+        "list",
+        "list_project_notes",
+        "notes",
+        "plugin-dev",
+        "project",
+        "workstream"
+      ],
+      "title": "List Project Notes",
+      "tool_name": "list_project_notes",
+      "triggers": [
+        "list project notes",
+        "plugin-dev",
+        "workstream"
+      ]
+    },
+    {
+      "cost_hint": "low",
+      "follow_up_paths": [
+        "README.md",
+        "references/command-surface.md",
         "references/design-workflow.md"
       ],
       "id": "list_reference_boards",
@@ -1974,6 +2151,44 @@
       "cost_hint": "low",
       "follow_up_paths": [
         "README.md",
+        "references/visual-verification.md",
+        "references/workflow-kernel.md"
+      ],
+      "id": "remove_auth_profile",
+      "kind": "mcp_tool",
+      "path": "scripts/agentiux_dev_mcp.py",
+      "primary_surface": "mcp",
+      "read_only": false,
+      "related_routes": [
+        "plugin-dev",
+        "verification"
+      ],
+      "required_inputs": [
+        "workspacePath",
+        "profileId"
+      ],
+      "returns": "Structured mutation result payload.",
+      "summary": "Remove an E2E auth profile and its persisted secret payload.",
+      "tags": [
+        "auth",
+        "plugin-dev",
+        "profile",
+        "remove",
+        "remove_auth_profile",
+        "verification"
+      ],
+      "title": "Remove Auth Profile",
+      "tool_name": "remove_auth_profile",
+      "triggers": [
+        "plugin-dev",
+        "remove auth profile",
+        "verification"
+      ]
+    },
+    {
+      "cost_hint": "low",
+      "follow_up_paths": [
+        "README.md",
         "references/command-surface.md",
         "references/dashboard.md"
       ],
@@ -2072,6 +2287,46 @@
       "tool_name": "repair_workspace_state",
       "triggers": [
         "repair workspace state",
+        "workstream"
+      ]
+    },
+    {
+      "cost_hint": "low",
+      "follow_up_paths": [
+        "README.md",
+        "references/command-surface.md",
+        "references/visual-verification.md"
+      ],
+      "id": "resolve_auth_profile",
+      "kind": "mcp_tool",
+      "path": "scripts/agentiux_dev_mcp.py",
+      "primary_surface": "mcp",
+      "read_only": true,
+      "related_routes": [
+        "plugin-dev",
+        "verification",
+        "workstream"
+      ],
+      "required_inputs": [
+        "workspacePath"
+      ],
+      "returns": "Structured JSON payload for inspection and routing.",
+      "summary": "Resolve the matching auth profile for a workspace/task/issue/case context and return a redacted artifact summary.",
+      "tags": [
+        "auth",
+        "plugin-dev",
+        "profile",
+        "resolve",
+        "resolve_auth_profile",
+        "verification",
+        "workstream"
+      ],
+      "title": "Resolve Auth Profile",
+      "tool_name": "resolve_auth_profile",
+      "triggers": [
+        "plugin-dev",
+        "resolve auth profile",
+        "verification",
         "workstream"
       ]
     },
@@ -2215,6 +2470,41 @@
       "cost_hint": "low",
       "follow_up_paths": [
         "README.md",
+        "references/workflow-kernel.md",
+        "skills/plugin-platform/SKILL.md"
+      ],
+      "id": "search_project_notes",
+      "kind": "mcp_tool",
+      "path": "scripts/agentiux_dev_mcp.py",
+      "primary_surface": "mcp",
+      "read_only": true,
+      "related_routes": [
+        "plugin-dev"
+      ],
+      "required_inputs": [
+        "workspacePath",
+        "queryText"
+      ],
+      "returns": "Structured JSON payload for inspection and routing.",
+      "summary": "Search project memory notes by free-text query.",
+      "tags": [
+        "notes",
+        "plugin-dev",
+        "project",
+        "search",
+        "search_project_notes"
+      ],
+      "title": "Search Project Notes",
+      "tool_name": "search_project_notes",
+      "triggers": [
+        "plugin-dev",
+        "search project notes"
+      ]
+    },
+    {
+      "cost_hint": "low",
+      "follow_up_paths": [
+        "README.md",
         "references/command-surface.md",
         "references/dashboard.md"
       ],
@@ -2280,6 +2570,46 @@
       "triggers": [
         "design",
         "set active brief",
+        "workstream"
+      ]
+    },
+    {
+      "cost_hint": "low",
+      "follow_up_paths": [
+        "README.md",
+        "references/command-surface.md",
+        "references/visual-verification.md"
+      ],
+      "id": "show_auth_profiles",
+      "kind": "mcp_tool",
+      "path": "scripts/agentiux_dev_mcp.py",
+      "primary_surface": "mcp",
+      "read_only": true,
+      "related_routes": [
+        "plugin-dev",
+        "verification",
+        "workstream"
+      ],
+      "required_inputs": [
+        "workspacePath"
+      ],
+      "returns": "Structured JSON payload for inspection and routing.",
+      "summary": "List configured E2E auth profiles for the workspace.",
+      "tags": [
+        "auth",
+        "plugin-dev",
+        "profiles",
+        "show",
+        "show_auth_profiles",
+        "verification",
+        "workstream"
+      ],
+      "title": "Show Auth Profiles",
+      "tool_name": "show_auth_profiles",
+      "triggers": [
+        "plugin-dev",
+        "show auth profiles",
+        "verification",
         "workstream"
       ]
     },
@@ -2943,6 +3273,41 @@
       "cost_hint": "low",
       "follow_up_paths": [
         "README.md",
+        "references/workflow-kernel.md",
+        "skills/plugin-platform/SKILL.md"
+      ],
+      "id": "update_learning_entry",
+      "kind": "mcp_tool",
+      "path": "scripts/agentiux_dev_mcp.py",
+      "primary_surface": "mcp",
+      "read_only": false,
+      "related_routes": [
+        "plugin-dev"
+      ],
+      "required_inputs": [
+        "entryId",
+        "updates"
+      ],
+      "returns": "Structured mutation result payload.",
+      "summary": "Update or resolve an existing learning entry.",
+      "tags": [
+        "entry",
+        "learning",
+        "plugin-dev",
+        "update",
+        "update_learning_entry"
+      ],
+      "title": "Update Learning Entry",
+      "tool_name": "update_learning_entry",
+      "triggers": [
+        "plugin-dev",
+        "update learning entry"
+      ]
+    },
+    {
+      "cost_hint": "low",
+      "follow_up_paths": [
+        "README.md",
         "references/visual-verification.md",
         "skills/deterministic-verification/SKILL.md"
       ],
@@ -3046,6 +3411,44 @@
       "cost_hint": "low",
       "follow_up_paths": [
         "README.md",
+        "references/visual-verification.md",
+        "references/workflow-kernel.md"
+      ],
+      "id": "write_auth_profile",
+      "kind": "mcp_tool",
+      "path": "scripts/agentiux_dev_mcp.py",
+      "primary_surface": "mcp",
+      "read_only": false,
+      "related_routes": [
+        "plugin-dev",
+        "verification"
+      ],
+      "required_inputs": [
+        "workspacePath",
+        "profile"
+      ],
+      "returns": "Structured mutation result payload.",
+      "summary": "Create or update an E2E auth profile and its secret payload.",
+      "tags": [
+        "auth",
+        "plugin-dev",
+        "profile",
+        "verification",
+        "write",
+        "write_auth_profile"
+      ],
+      "title": "Write Auth Profile",
+      "tool_name": "write_auth_profile",
+      "triggers": [
+        "plugin-dev",
+        "verification",
+        "write auth profile"
+      ]
+    },
+    {
+      "cost_hint": "low",
+      "follow_up_paths": [
+        "README.md",
         "references/command-surface.md",
         "references/design-workflow.md"
       ],
@@ -3111,6 +3514,75 @@
       "triggers": [
         "design",
         "write design handoff"
+      ]
+    },
+    {
+      "cost_hint": "low",
+      "follow_up_paths": [
+        "README.md",
+        "references/workflow-kernel.md",
+        "skills/plugin-platform/SKILL.md"
+      ],
+      "id": "write_learning_entry",
+      "kind": "mcp_tool",
+      "path": "scripts/agentiux_dev_mcp.py",
+      "primary_surface": "mcp",
+      "read_only": false,
+      "related_routes": [
+        "plugin-dev"
+      ],
+      "required_inputs": [
+        "entry"
+      ],
+      "returns": "Structured mutation result payload.",
+      "summary": "Create a learning entry for plugin or Codex retrospective tracking.",
+      "tags": [
+        "entry",
+        "learning",
+        "plugin-dev",
+        "write",
+        "write_learning_entry"
+      ],
+      "title": "Write Learning Entry",
+      "tool_name": "write_learning_entry",
+      "triggers": [
+        "plugin-dev",
+        "write learning entry"
+      ]
+    },
+    {
+      "cost_hint": "low",
+      "follow_up_paths": [
+        "README.md",
+        "references/workflow-kernel.md",
+        "skills/plugin-platform/SKILL.md"
+      ],
+      "id": "write_project_note",
+      "kind": "mcp_tool",
+      "path": "scripts/agentiux_dev_mcp.py",
+      "primary_surface": "mcp",
+      "read_only": false,
+      "related_routes": [
+        "plugin-dev"
+      ],
+      "required_inputs": [
+        "workspacePath",
+        "note"
+      ],
+      "returns": "Structured mutation result payload.",
+      "summary": "Create or update a project memory note.",
+      "tags": [
+        "note",
+        "plugin-dev",
+        "project",
+        "write",
+        "write_project_note"
+      ],
+      "title": "Write Project Note",
+      "tool_name": "write_project_note",
+      "triggers": [
+        "plugin-dev",
+        "write project note"
       ]
     },
     {
@@ -3221,7 +3693,7 @@
       ]
     }
   ],
-  "entry_count": 94,
+  "entry_count": 107,
   "plugin": {
     "name": "agentiux-dev",
     "version": "0.8.0"

@@ -21,6 +21,8 @@ if os.name == "nt":
 else:
     import fcntl
 
+from agentiux_dev_analytics import get_analytics_snapshot, get_learning_entry, list_learning_entries, update_learning_entry, write_learning_entry
+from agentiux_dev_auth import remove_auth_profile, resolve_auth_profile, show_auth_profiles, write_auth_profile
 from agentiux_dev_lib import (
     dashboard_overview_snapshot,
     get_state_paths,
@@ -34,6 +36,7 @@ from agentiux_dev_lib import (
     start_logged_python_process,
     stop_process,
 )
+from agentiux_dev_memory import archive_project_note, get_project_note, list_project_notes, search_project_notes, write_project_note
 from agentiux_dev_verification import audit_verification_coverage
 from agentiux_dev_youtrack import (
     connect_youtrack,
@@ -380,6 +383,49 @@ class DashboardHandler(BaseHTTPRequestHandler):
                     return
                 self._send_json(list_youtrack_connections(workspace))
                 return
+            if parsed.path == "/api/auth/profiles":
+                if not workspace:
+                    self._send_json({"error": "workspace query parameter is required"}, status=400)
+                    return
+                self._send_json(show_auth_profiles(workspace))
+                return
+            if parsed.path == "/api/project-notes":
+                if not workspace:
+                    self._send_json({"error": "workspace query parameter is required"}, status=400)
+                    return
+                note_status = query.get("status", [None])[0]
+                self._send_json(list_project_notes(workspace, status=note_status))
+                return
+            if parsed.path == "/api/project-notes/search":
+                if not workspace:
+                    self._send_json({"error": "workspace query parameter is required"}, status=400)
+                    return
+                query_text = query.get("query", [None])[0] or query.get("queryText", [None])[0]
+                if not query_text:
+                    self._send_json({"error": "query parameter is required"}, status=400)
+                    return
+                limit = int(query.get("limit", ["8"])[0])
+                self._send_json(search_project_notes(workspace, query_text, limit=limit))
+                return
+            note_match = re.match(r"^/api/project-notes/([^/]+)$", parsed.path)
+            if note_match:
+                if not workspace:
+                    self._send_json({"error": "workspace query parameter is required"}, status=400)
+                    return
+                self._send_json(get_project_note(workspace, urllib.parse.unquote(note_match.group(1))))
+                return
+            if parsed.path == "/api/analytics":
+                self._send_json(get_analytics_snapshot(workspace))
+                return
+            if parsed.path == "/api/learnings":
+                status = query.get("status", [None])[0]
+                limit = int(query.get("limit", ["50"])[0])
+                self._send_json(list_learning_entries(workspace=workspace, status=status, limit=limit))
+                return
+            learning_match = re.match(r"^/api/learnings/([^/]+)$", parsed.path)
+            if learning_match:
+                self._send_json(get_learning_entry(urllib.parse.unquote(learning_match.group(1)), workspace=workspace))
+                return
 
             dashboard_dir = dashboard_root()
             relative_path = parsed.path.lstrip("/") or "index.html"
@@ -426,6 +472,37 @@ class DashboardHandler(BaseHTTPRequestHandler):
             if match:
                 self._send_json(test_youtrack_connection(workspace, urllib.parse.unquote(match.group(1))))
                 return
+            if parsed.path == "/api/auth/profiles":
+                self._send_json(
+                    write_auth_profile(
+                        workspace,
+                        body["profile"],
+                        secret_payload=body.get("secretPayload"),
+                    )
+                )
+                return
+            if parsed.path == "/api/auth/profiles/resolve":
+                self._send_json(
+                    resolve_auth_profile(
+                        workspace,
+                        profile_id=body.get("profileId"),
+                        task_id=body.get("taskId"),
+                        external_issue=body.get("externalIssue"),
+                        case=body.get("case"),
+                        workstream_id=body.get("workstreamId"),
+                    )
+                )
+                return
+            if parsed.path == "/api/project-notes":
+                self._send_json(write_project_note(workspace, body["note"]))
+                return
+            match = re.match(r"^/api/project-notes/([^/]+)/archive$", parsed.path)
+            if match:
+                self._send_json(archive_project_note(workspace, urllib.parse.unquote(match.group(1))))
+                return
+            if parsed.path == "/api/learnings":
+                self._send_json(write_learning_entry(workspace, body["entry"]))
+                return
             self._send_json({"error": f"Unsupported POST path: {parsed.path}"}, status=404)
         except Exception as exc:  # noqa: BLE001
             traceback.print_exc()
@@ -440,6 +517,27 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 self._send_json({"error": "workspacePath is required"}, status=400)
                 return
             if parsed.path != "/api/youtrack/connections":
+                if parsed.path == "/api/auth/profiles":
+                    self._send_json(
+                        write_auth_profile(
+                            workspace,
+                            body["profile"],
+                            secret_payload=body.get("secretPayload"),
+                        )
+                    )
+                    return
+                match = re.match(r"^/api/project-notes/([^/]+)$", parsed.path)
+                if match:
+                    note_id = urllib.parse.unquote(match.group(1))
+                    note_payload = body.get("note") if isinstance(body.get("note"), dict) else body
+                    self._send_json(write_project_note(workspace, {**note_payload, "note_id": note_id}))
+                    return
+                match = re.match(r"^/api/learnings/([^/]+)$", parsed.path)
+                if match:
+                    entry_id = urllib.parse.unquote(match.group(1))
+                    updates = body.get("updates") if isinstance(body.get("updates"), dict) else body
+                    self._send_json(update_learning_entry(workspace, entry_id, updates))
+                    return
                 self._send_json({"error": f"Unsupported PATCH path: {parsed.path}"}, status=404)
                 return
             self._send_json(
@@ -467,6 +565,9 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 self._send_json({"error": "workspacePath is required"}, status=400)
                 return
             if parsed.path != "/api/youtrack/connections":
+                if parsed.path == "/api/auth/profiles":
+                    self._send_json(remove_auth_profile(workspace, body["profileId"]))
+                    return
                 self._send_json({"error": f"Unsupported DELETE path: {parsed.path}"}, status=404)
                 return
             self._send_json(remove_youtrack_connection(workspace, body["connectionId"]))

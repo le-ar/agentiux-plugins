@@ -109,34 +109,44 @@
         "workspace-kernel"
       ],
       "recommended_tools": [
+        "get_analytics_snapshot",
         "get_dashboard_snapshot",
         "get_plugin_stats",
+        "list_learning_entries",
+        "list_project_notes",
         "refresh_context_index",
         "search_context_index",
+        "show_auth_profiles",
         "show_capability_catalog",
         "show_intent_route",
         "show_workspace_context_pack"
       ],
       "route_id": "plugin-dev",
-      "summary": "Orient on plugin source, MCP interfaces, scripts, catalogs, and self-host development surfaces.",
+      "summary": "Orient on plugin source, auth profiles, project memory, learnings, MCP interfaces, scripts, catalogs, and self-host development surfaces.",
       "summary_surfaces": [
         "get_dashboard_snapshot",
         "get_plugin_stats",
         "show_capability_catalog"
       ],
       "tags": [
+        "analytics",
+        "auth",
         "catalog",
         "dashboard",
         "mcp",
+        "memory",
         "plugin",
         "python",
         "self-host"
       ],
       "title": "Plugin Development",
       "triggers": [
+        "auth profile",
         "catalog",
+        "learning entry",
         "mcp",
         "plugin",
+        "project memory",
         "python scripts",
         "self-host"
       ]
@@ -249,9 +259,11 @@
         "approve_verification_baseline",
         "audit_verification_coverage",
         "list_verification_runs",
+        "resolve_auth_profile",
         "resolve_verification",
         "run_verification_case",
         "run_verification_suite",
+        "show_auth_profiles",
         "show_host_setup_plan",
         "show_host_support",
         "show_verification_helper_catalog",
@@ -259,13 +271,14 @@
         "update_verification_baseline"
       ],
       "route_id": "verification",
-      "summary": "Resolve semantic checks, helper bundle sync, verification plans, runs, baselines, and artifacts.",
+      "summary": "Resolve semantic checks, auth artifacts, helper bundle sync, verification plans, runs, baselines, and artifacts.",
       "summary_surfaces": [
         "audit_verification_coverage",
         "get_workspace_detail",
         "show_verification_helper_catalog"
       ],
       "tags": [
+        "auth",
         "baseline",
         "helper bundle",
         "semantic",
@@ -274,6 +287,7 @@
       ],
       "title": "Deterministic Verification",
       "triggers": [
+        "auth profile",
         "baseline",
         "playwright",
         "semantic",
