@@ -856,6 +856,9 @@ function renderNowPanel(cockpit) {
 
 function renderPlanPanel(cockpit) {
   const plan = cockpit.plan || {};
+  const designState = plan.design_state || {};
+  const designSummary = designState.design_summary || {};
+  const testabilitySummary = designState.testability_summary || {};
   return `
     <div class="content-grid" data-screen-id="cockpit-plan-panel" data-panel="plan" data-testid="cockpit-plan-panel">
       <section class="surface-card">
@@ -938,15 +941,28 @@ function renderPlanPanel(cockpit) {
       </section>
       <section class="surface-card">
         <div class="section-heading">
-          <h3>Design state</h3>
-          <span class="muted-copy">${escapeHtml(plan.design_state?.brief_status || "not started")}</span>
+          <h3>Design and testability</h3>
+          <span class="muted-copy">${escapeHtml(designState.design_readiness || "sparse")}</span>
         </div>
         ${renderMetricGrid([
-          { label: "Brief", value: plan.design_state?.brief_status || "not started", tone: "neutral" },
-          { label: "Board candidates", value: plan.design_state?.current_board_candidates || 0, tone: "neutral" },
-          { label: "Handoff", value: plan.design_state?.current_handoff_status || "not started", tone: "neutral" },
-          { label: "Hooks", value: plan.design_state?.verification_hooks || 0, tone: "neutral" },
+          { label: "Brief", value: designState.brief_status || "not started", tone: "neutral" },
+          { label: "Brief mode", value: designState.brief_generation_status || "unknown", tone: "neutral" },
+          { label: "Handoff", value: designState.current_handoff_status || "not started", tone: "neutral" },
+          { label: "Surfaces", value: designSummary.affected_surface_count || 0, tone: "neutral" },
+          { label: "Flows", value: designSummary.user_flow_count || 0, tone: "neutral" },
+          { label: "States", value: designSummary.state_coverage_count || 0, tone: "neutral" },
+          { label: "Critical actions", value: designSummary.critical_action_count || 0, tone: "neutral" },
+          { label: "Covered actions", value: testabilitySummary.covered_action_count || 0, tone: "ok" },
+          { label: "Limitations", value: testabilitySummary.limitation_count || 0, tone: testabilitySummary.limitation_count ? "warn" : "ok" },
+          { label: "Hooks", value: designState.verification_hooks || 0, tone: "neutral" },
         ])}
+        <div class="chip-row">
+          <span class="pill-chip">${escapeHtml(`board candidates: ${designState.current_board_candidates || 0}`)}</span>
+          <span class="pill-chip">${escapeHtml(`verified states: ${designSummary.verified_state_count || 0}`)}</span>
+          <span class="pill-chip ${toneClass(testabilitySummary.unresolved_action_count ? "warn" : "ok")}">${escapeHtml(
+            `unresolved actions: ${testabilitySummary.unresolved_action_count || 0}`,
+          )}</span>
+        </div>
       </section>
     </div>
   `;
@@ -987,6 +1003,7 @@ function renderQualityPanel(cockpit) {
   const quality = cockpit.quality || {};
   const logs = quality.logs || {};
   const coverage = quality.coverage || {};
+  const testabilitySummary = quality.testability_summary || {};
   return `
     <div class="content-grid" data-screen-id="cockpit-quality-panel" data-panel="quality" data-testid="cockpit-quality-panel">
       <section class="surface-card emphasis-card">
@@ -1024,9 +1041,22 @@ function renderQualityPanel(cockpit) {
                 coverage.status || "unknown",
               )}</span>
             </div>
+            <div class="chip-row">
+              <span class="pill-chip">${escapeHtml(`authored paths: ${testabilitySummary.authored_path_count || 0}`)}</span>
+              <span class="pill-chip ${toneClass(testabilitySummary.limitation_count ? "warn" : "ok")}">${escapeHtml(
+                `limitations: ${testabilitySummary.limitation_count || 0}`,
+              )}</span>
+              <span class="pill-chip ${toneClass(testabilitySummary.unresolved_action_count ? "warn" : "ok")}">${escapeHtml(
+                `unresolved actions: ${testabilitySummary.unresolved_action_count || 0}`,
+              )}</span>
+            </div>
             <div class="sub-list">
               ${(coverage.gaps || [])
-                .map((gap) => `<div class="sub-row"><span>${escapeHtml(gap.gap_id || "gap")}</span><span>${escapeHtml(gap.title || "Untitled gap")}</span></div>`)
+                .map(
+                  (gap) => `<div class="sub-row"><span>${escapeHtml(gap.gap_id || "gap")}</span><span>${escapeHtml(
+                    gap.category || "warning",
+                  )}</span><span>${escapeHtml(gap.title || "Untitled gap")}</span></div>`,
+                )
                 .join("") || `<div class="empty-note">No coverage warnings.</div>`}
             </div>
           </article>
@@ -1055,6 +1085,24 @@ function renderQualityPanel(cockpit) {
           <span class="muted-copy">${escapeHtml(quality.events?.length || 0)} events</span>
         </div>
         <div class="stack-list">
+          <article class="stack-item">
+            <div class="stack-item-head">
+              <strong>Action coverage</strong>
+              <span class="pill-chip ${toneClass(testabilitySummary.unresolved_action_count ? "warn" : "ok")}">${escapeHtml(
+                testabilitySummary.unresolved_action_count ? "needs follow-up" : "covered",
+              )}</span>
+            </div>
+            <div class="chip-row">
+              <span class="pill-chip">${escapeHtml(`covered ${testabilitySummary.covered_action_count || 0}`)}</span>
+              <span class="pill-chip">${escapeHtml(`limited ${testabilitySummary.limited_action_count || 0}`)}</span>
+              <span class="pill-chip">${escapeHtml(`unsupported paths ${testabilitySummary.unsupported_path_count || 0}`)}</span>
+            </div>
+            ${
+              testabilitySummary.unresolved_action_ids?.length
+                ? `<pre class="code-block">${escapeHtml(testabilitySummary.unresolved_action_ids.join("\n"))}</pre>`
+                : `<div class="empty-note">No unresolved critical actions.</div>`
+            }
+          </article>
           <article class="stack-item">
             <div class="stack-item-head">
               <strong>Resolved verification plan</strong>

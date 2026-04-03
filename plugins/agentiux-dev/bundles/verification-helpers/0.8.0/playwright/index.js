@@ -7,6 +7,7 @@ import {
   createReportContext,
   ensureTarget,
   finalizeReport,
+  recordReachabilityPath,
   recordCheck,
   rectIntersects,
   runHook,
@@ -32,6 +33,176 @@ function resolveLocator(page, locator) {
       return page.getByText(String(locator.value), { exact: Boolean(locator.exact) });
     default:
       return null;
+  }
+}
+
+function targetSpecById(spec, targetId) {
+  return (spec.targets ?? []).find((candidate) => candidate.target_id === targetId) ?? null;
+}
+
+function resolveTargetLocator(page, spec, targetId) {
+  if (!targetId) {
+    return null;
+  }
+  const targetSpec = targetSpecById(spec, targetId);
+  return targetSpec ? resolveLocator(page, targetSpec.locator) : null;
+}
+
+function resolveStepLocator(page, spec, pathSpec, step, key = "target_id") {
+  const directLocator = resolveLocator(page, step.locator);
+  if (directLocator) {
+    return directLocator;
+  }
+  const targetId = step[key] ?? pathSpec.target_id ?? null;
+  return resolveTargetLocator(page, spec, targetId);
+}
+
+async function resolveGesturePoint(locator, label) {
+  if (!locator) {
+    throw new Error(`${label} target could not be resolved`);
+  }
+  const target = locator.first();
+  await target.scrollIntoViewIfNeeded().catch(() => {});
+  const rect = toPlainRect(await target.boundingBox().catch(() => null));
+  if (!rect) {
+    throw new Error(`${label} target has no bounding box`);
+  }
+  return {
+    target,
+    rect,
+    point: {
+      x: rect.left + rect.width / 2,
+      y: rect.top + rect.height / 2,
+    },
+  };
+}
+
+function swipeEndPoint(rect, step, point) {
+  const direction = String(step.direction ?? "left").trim().toLowerCase() || "left";
+  const distance = Number(step.distance_px ?? Math.max(80, Math.min(rect.width, rect.height, 180)));
+  switch (direction) {
+    case "right":
+      return { x: point.x + distance, y: point.y };
+    case "up":
+      return { x: point.x, y: point.y - distance };
+    case "down":
+      return { x: point.x, y: point.y + distance };
+    case "left":
+    default:
+      return { x: point.x - distance, y: point.y };
+  }
+}
+
+async function executeReachabilityStep(page, spec, pathSpec, step) {
+  const timeout = Number(step.timeout_ms ?? 3000);
+  if (step.action === "wait_for") {
+    const locator = resolveStepLocator(page, spec, pathSpec, step);
+    if (locator) {
+      await locator.first().waitFor({ state: "visible", timeout });
+    } else {
+      await page.waitForTimeout(timeout);
+    }
+    return { action: step.action, target_id: step.target_id ?? pathSpec.target_id ?? null };
+  }
+  if (step.action === "ensure_visible" || step.action === "scroll_to") {
+    const locator = resolveStepLocator(page, spec, pathSpec, step);
+    if (!locator) {
+      throw new Error(`Step ${step.action} could not resolve a locator`);
+    }
+    const target = locator.first();
+    await target.scrollIntoViewIfNeeded();
+    await target.waitFor({ state: "visible", timeout }).catch(() => {});
+    return { action: step.action, target_id: step.target_id ?? pathSpec.target_id ?? null };
+  }
+  if (step.action === "tap") {
+    const locator = resolveStepLocator(page, spec, pathSpec, step);
+    if (!locator) {
+      throw new Error("Tap step could not resolve a locator");
+    }
+    await locator.first().click({ timeout });
+    return { action: step.action, target_id: step.target_id ?? pathSpec.target_id ?? null };
+  }
+  if (step.action === "long_press") {
+    const locator = resolveStepLocator(page, spec, pathSpec, step);
+    if (!locator) {
+      throw new Error("Long press step could not resolve a locator");
+    }
+    await locator.first().click({ timeout, delay: Number(step.duration_ms ?? 600) });
+    return { action: step.action, target_id: step.target_id ?? pathSpec.target_id ?? null };
+  }
+  if (step.action === "type_text") {
+    const locator = resolveStepLocator(page, spec, pathSpec, step);
+    if (!locator) {
+      throw new Error("Type text step could not resolve a locator");
+    }
+    const target = locator.first();
+    await target.click({ timeout }).catch(() => {});
+    if (typeof target.fill === "function") {
+      await target.fill(String(step.value ?? step.text ?? ""));
+    } else {
+      await target.type(String(step.value ?? step.text ?? ""), { delay: 0 });
+    }
+    return {
+      action: step.action,
+      target_id: step.target_id ?? pathSpec.target_id ?? null,
+      value_length: String(step.value ?? step.text ?? "").length,
+    };
+  }
+  if (step.action === "swipe") {
+    const locator = resolveStepLocator(page, spec, pathSpec, step);
+    const gesture = await resolveGesturePoint(locator, `swipe:${pathSpec.path_id}`);
+    const end = swipeEndPoint(gesture.rect, step, gesture.point);
+    await page.mouse.move(gesture.point.x, gesture.point.y);
+    await page.mouse.down();
+    await page.mouse.move(end.x, end.y, { steps: 10 });
+    await page.mouse.up();
+    return { action: step.action, target_id: step.target_id ?? pathSpec.target_id ?? null, direction: step.direction ?? "left" };
+  }
+  if (step.action === "drag") {
+    const fromLocator = resolveStepLocator(page, spec, pathSpec, step, "from_target_id") || resolveStepLocator(page, spec, pathSpec, step);
+    const fromGesture = await resolveGesturePoint(fromLocator, `drag:${pathSpec.path_id}:from`);
+    const toLocator = resolveStepLocator(page, spec, pathSpec, step, "to_target_id");
+    const toGesture = toLocator ? await resolveGesturePoint(toLocator, `drag:${pathSpec.path_id}:to`) : null;
+    const end = toGesture?.point ?? swipeEndPoint(fromGesture.rect, step, fromGesture.point);
+    await page.mouse.move(fromGesture.point.x, fromGesture.point.y);
+    await page.mouse.down();
+    await page.mouse.move(end.x, end.y, { steps: 10 });
+    await page.mouse.up();
+    return {
+      action: step.action,
+      from_target_id: step.from_target_id ?? step.target_id ?? pathSpec.target_id ?? null,
+      to_target_id: step.to_target_id ?? null,
+    };
+  }
+  throw new Error(`Unsupported reachability step action ${step.action}`);
+}
+
+async function executeReachabilityPaths(page, spec, report) {
+  for (const pathSpec of spec.reachability_paths ?? []) {
+    const executed_steps = [];
+    try {
+      for (const step of pathSpec.steps ?? []) {
+        executed_steps.push(await executeReachabilityStep(page, spec, pathSpec, step));
+      }
+      recordReachabilityPath(report, {
+        path_id: pathSpec.path_id,
+        title: pathSpec.title,
+        status: "passed",
+        target_id: pathSpec.target_id ?? null,
+        executed_steps,
+      });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      recordReachabilityPath(report, {
+        path_id: pathSpec.path_id,
+        title: pathSpec.title,
+        status: "failed",
+        target_id: pathSpec.target_id ?? null,
+        executed_steps,
+        message,
+      });
+      throw new Error(`Reachability path ${pathSpec.path_id} failed: ${message}`);
+    }
   }
 }
 
@@ -274,6 +445,7 @@ export async function runSemanticChecks(page, rawSpec) {
         report.hook_result = hookResult;
       }
     }
+    await executeReachabilityPaths(page, spec, report);
     for (const targetSpec of spec.targets) {
       const snapshot = await snapshotTarget(page, targetSpec);
       ensureTarget(report, targetSpec.target_id, snapshot.diagnostics);
@@ -285,7 +457,7 @@ export async function runSemanticChecks(page, rawSpec) {
       if (snapshot.count !== 1) {
         continue;
       }
-      const visibility = await checkVisibility(page, targetSpec.target, snapshot);
+      const visibility = await checkVisibility(page, snapshot.target, snapshot);
       recordCheck(report, targetSpec.target_id, { check_id: "visibility", ...visibility });
       recordCheck(report, targetSpec.target_id, {
         check_id: "scroll_reachability",

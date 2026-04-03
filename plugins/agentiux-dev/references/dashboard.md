@@ -12,6 +12,7 @@ AgentiUX Dev includes a local-only dashboard launched through `scripts/agentiux_
   - `GET /api/workspace-panel?workspace=<path>&panel=<id>` for shell metadata plus one lazy panel payload
 - first-class empty state for uninitialized workspace paths, including detection signals and external state paths
 - action-oriented summaries for current stage, current task, blockers, verification health, and YouTrack status
+- compact design and testability summaries on cheap surfaces instead of full artifact hydration
 - first-class workspace memory summaries for pinned project notes, learning-entry status, and auth coverage attention items
 - low-priority diagnostics such as host support, plugin-platform detection, audits, upgrade data, and absolute external state paths
 
@@ -20,6 +21,9 @@ AgentiUX Dev includes a local-only dashboard launched through `scripts/agentiux_
 - The dashboard must not mutate stage or design state.
 - The allowed dashboard mutations are limited to external-state management flows: YouTrack integration management plus workspace-scoped auth profile, auth session, project note, and learning-entry CRUD.
 - The dashboard shows external/plugin state only, not hidden repo edits.
+- `Plan` should show design readiness, active surfaces, flow or state coverage, critical-action counts, and brief generation state from compact summaries.
+- `Quality` should show authored path counts, limitation counts, unresolved critical actions, and warning-level coverage gaps from compact summaries.
+- `Diagnostics` remains the place for raw artifact and detail views such as the full design brief, current handoff, and audit payloads.
 - Release-readiness must verify the cockpit with a live browser layout audit, not only health and JSON payload checks.
 - The dashboard browser audit should exercise at least one initialized cockpit state and fail on overlap, clipping, viewport overflow, or occlusion regressions.
 - The operator shell stays visible after the first workspace bootstrap. Refreshes or workspace-local CRUD flows should invalidate only the affected panel or workspace shell data instead of dropping back to a full-page loading state.

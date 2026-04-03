@@ -56,8 +56,12 @@ The source repo remains the place where you edit and verify the plugin. The inst
 - design briefs, reference boards, handoffs, and cached previews outside project repos
 - verification recipes, runs, progress events, baseline status, and logs outside project repos
 - explicit stage planning where template fragments stay advisory and concrete stage definitions are user-approved
+- schema-v2 design briefs and handoffs with normalized surfaces, flows, state coverage, critical actions, and testability guidance
+- generated task and stage briefs that rebuild from live state until the operator makes an explicit manual override
 - deterministic verification guidance for web, mobile, backend, monorepo, and plugin-runtime work
 - coverage audits that flag any Playwright-backed web case missing semantic assertions or core layout checks, any web workspace missing a live browser layout audit case, and any mobile workspace missing native layout audit coverage for Detox or Compose visual cases
+- compact `design_summary` and `testability_summary` projections on cheap dashboard and retrieval surfaces without hydrating full artifacts
+- authored reachability-path and limitation contracts for gesture-aware verification coverage
 - a shared `catalogs/layout_audit_rules.json` rule catalog that keeps browser and native spacing, drift, tap-target, and contrast thresholds aligned
 - native layout audits that can raise non-green warning states for suspicious mobile geometry such as asymmetric gutters, inconsistent gaps, vertical-rhythm drift, unexpected flex distribution, or undersized tap targets, even when there is no hard overlap or style mismatch yet
 - browser layout audits that can raise non-green warning states for suspicious web geometry or computed-style regressions such as container-padding imbalance, ragged grids, low-contrast text, spacing drift, and undersized controls
@@ -110,6 +114,8 @@ Cheap retrieval surfaces now expose explicit retrieval-mode metadata and payload
 - `execution`: active-slice retrieval for implementation once the boundary is already known
 
 `show intent route`, `workflow-advice`, `show workspace context pack`, and `search context index` stay Unicode-safe for mixed-script and non-ASCII requests when canonical tool names, paths, and schema fields remain in English.
+
+Cheap retrieval surfaces also keep Stage 1 payload discipline. They project compact `design_summary` and `testability_summary` counts instead of embedding full design briefs, handoffs, or verification recipe payloads.
 
 The plugin keeps canonical versioned catalogs in `catalogs/` and stores project-derived context indexes globally under `~/.agentiux/agentiux-dev/cache/context/<workspace-fingerprint>/`. No project-derived context cache is written into repositories.
 
@@ -438,9 +444,9 @@ The auth core remains universal. It only manages auth profiles, persisted auth s
 
 Visual cases may also declare optional `semantic_assertions`. The plugin now owns a versioned helper bundle under `bundles/verification-helpers/<plugin-version>/`, and projects materialize the current neutral runtime snapshot into `.verification/helpers/` with `sync verification helpers`.
 
-The semantic spec supports `enabled`, `report_path`, `required_checks`, `targets`, `auto_scan`, `heuristics`, `artifacts`, and `platform_hooks`. Targets are platform-neutral and use locator kinds such as `selector`, `role`, `test_id`, `semantics_tag`, or `text`, plus expected attributes, styles, layout invariants, and clipping or occlusion allowances. At runtime AgentiUX Dev writes the resolved spec into the run root, passes helper and report env vars to the runner, validates helper sync and capability compatibility, and records `semantic_summary` in case and run state.
+Verification recipes are schema v3. The semantic spec supports `enabled`, `report_path`, `required_checks`, `targets`, `reachability_paths`, `limitation_entries`, `auto_scan`, `heuristics`, `artifacts`, and `platform_hooks`. Targets are platform-neutral and use locator kinds such as `selector`, `role`, `test_id`, `semantics_tag`, or `text`, plus expected attributes, styles, layout invariants, and clipping or occlusion allowances. `reachability_paths[]` declare authored navigation or gesture steps for critical actions, while `limitation_entries[]` persist explicit known gaps when a runner cannot execute the intended path yet. At runtime AgentiUX Dev writes the resolved spec into the run root, passes helper and report env vars to the runner, validates helper sync and capability compatibility, and records `semantic_summary` in case and run state.
 
-The shared deterministic check families are `presence_uniqueness`, `visibility`, `scroll_reachability`, `overflow_clipping`, `occlusion`, `interaction_states`, `computed_styles`, `layout_relations`, `text_overflow`, `accessibility_state`, and `screenshot_baseline`. Coverage audits now also warn when semantic cases have no explicit targets, when helper bundles are missing or stale, or when required checks do not match the runner capability matrix.
+The shared deterministic check families are `presence_uniqueness`, `visibility`, `scroll_reachability`, `overflow_clipping`, `occlusion`, `interaction_states`, `computed_styles`, `layout_relations`, `text_overflow`, `accessibility_state`, and `screenshot_baseline`. `scroll_reachability` is enough only for scroll-only critical actions. Gesture-led actions should have an authored path on `playwright-visual` or `detox-visual`, or an explicit limitation entry. Coverage audits now also warn when semantic cases have no explicit targets, when helper bundles are missing or stale, when required checks do not match the runner capability matrix, when critical actions lack authored path coverage, or when a known limitation is still open.
 
 Web recipes may also declare first-class `browser-layout-audit` cases. These cases can launch a local server with `argv` or `shell_command`, wait on `readiness_probe`, then run the bundled headless browser audit script against a real URL and persist both the JSON report and screenshot under the external artifact root. Coverage audits now warn when a web workspace has no such live browser audit case.
 
@@ -529,7 +535,7 @@ Run the full production gate from the source repo root:
 python3 plugins/agentiux-dev/scripts/release_readiness.py run --repo-root . --smoke-runs 3
 ```
 
-This gate checks public-safe source auditing, English-only tracked source, Python compile health, self-host detection, MCP handshake, dashboard health, repeated smoke runs, and the integrated v2 workflow surface including workstreams, tasks, audit, starter creation, GUI, and verification baseline lifecycle.
+This gate checks public-safe source auditing, English-only tracked source, Python compile health, self-host detection, MCP handshake, dashboard health, repeated smoke runs, and the integrated v2 workflow surface including workstreams, tasks, richer design state, generated briefs, gesture-aware verification coverage, GUI, and verification baseline lifecycle.
 
 It also validates that repo-tracked low-token catalogs are current and that the context-index surfaces stay available through the MCP server.
 

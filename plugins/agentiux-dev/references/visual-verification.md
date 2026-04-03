@@ -58,11 +58,19 @@ Deterministic verification is the default closeout path for AgentiUX Dev.
 - The helper catalog is read-only and reports bundle version, runner entrypoints, required host tools, and current materialization status.
 - When enabled, the runner must emit a JSON report into the verification artifact root.
 - The runtime validates helper sync status, runner capability compatibility, the shared report schema, and the declared `required_checks`.
-- The semantic spec shape is `enabled`, `report_path`, `required_checks`, `targets`, `auto_scan`, `heuristics`, `artifacts`, and `platform_hooks`.
+- Verification recipes are schema v3.
+- The semantic spec shape is `enabled`, `report_path`, `required_checks`, `targets`, `reachability_paths`, `limitation_entries`, `auto_scan`, `heuristics`, `artifacts`, and `platform_hooks`.
 - Each target uses `target_id`, `locator`, `container_locator`, `scroll_container_locator`, `interactions`, `expected_attributes`, `expected_styles`, `expected_layout`, `allow_clipping`, `allow_occlusion`, and `allow_text_truncation`.
+- Each `reachability_paths[]` entry uses `{path_id, title, target_id, required_for_action_ids, steps[]}`.
+- Reachability steps are limited to `ensure_visible`, `scroll_to`, `tap`, `long_press`, `swipe`, `drag`, `type_text`, and `wait_for`.
+- Each `limitation_entries[]` entry uses `{limitation_id, action_id, kind, reason, runner_scope}`.
 - Shared check families are `presence_uniqueness`, `visibility`, `scroll_reachability`, `overflow_clipping`, `occlusion`, `interaction_states`, `computed_styles`, `layout_relations`, `text_overflow`, `accessibility_state`, and `screenshot_baseline`.
 - Required checks for web visual cases: `presence_uniqueness`, `visibility`, `overflow_clipping`, `computed_styles`, `interaction_states`, `scroll_reachability`, `occlusion`.
 - Recommended checks for Android: `visibility`, `overflow_clipping`, `interaction_states`, `scroll_reachability`, `occlusion`.
+- `scroll_reachability` alone is only enough for scroll-only critical actions. Gesture-led actions such as `tap`, `long_press`, `swipe`, and `drag` should have either an authored reachability path on a supported runner or a persisted limitation entry.
+- Canonical reachability paths execute only on `playwright-visual` and `detox-visual`.
+- `android-compose-screenshot`, `shell-contract`, and other non-path runners must not pretend to execute gestures. They should use limitation entries and warning-level coverage gaps instead.
+- Coverage audits should keep declared limitations visible as known gaps instead of treating them as green coverage.
 
 ## Shared Layout Rules
 
@@ -82,6 +90,7 @@ Deterministic verification is the default closeout path for AgentiUX Dev.
 - Persist route IDs and expected states in the design handoff.
 - Prefer one route or state per verification case and group them into suites for broader closeout runs.
 - If semantic assertions are enabled, make Playwright emit a JSON report for the declared checks alongside screenshots and diffs.
+- If critical actions depend on gestures, wire authored reachability paths into the Playwright helper so the semantic report reflects the executed path contract.
 - `browser-layout-audit` cases may start a local server via `argv` or `shell_command`, wait on `readiness_probe`, and then record a JSON audit report plus screenshot under the external artifact root.
 
 ## React Native / Expo
@@ -92,6 +101,7 @@ Deterministic verification is the default closeout path for AgentiUX Dev.
 - Persist stable screen names, device targets, and masked dynamic regions in the design handoff.
 - Prefer one screen-state pair per verification case and stable suites for broader regression runs.
 - If semantic assertions are enabled, make Detox emit a JSON report that records required UI-state checks in addition to screenshots.
+- If critical actions depend on gestures, wire authored reachability paths into the Detox helper so taps, long presses, swipes, drags, waits, and text entry happen before semantic validation.
 - Prefer enabling `native_layout_audit` on Detox visual cases so React Native layouts are checked for overlap, clipping, occlusion, missing style data, suspicious spacing drift, and undersized tap targets even when screenshot diffs are noisy.
 
 ## Android

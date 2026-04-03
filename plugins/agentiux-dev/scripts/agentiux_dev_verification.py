@@ -21,14 +21,19 @@ from agentiux_dev_analytics import append_analytics_event
 from agentiux_dev_auth import resolve_auth_profile_artifact
 from agentiux_dev_lib import (
     PLUGIN_VERSION,
+    SCROLL_ONLY_INTERACTION_TYPES,
+    _design_and_testability_summary,
     _resolve_verification_fragments,
     _tool_available,
     current_task,
     detect_workspace,
+    get_active_brief,
     now_iso,
     plugin_root,
     process_running,
     python_script_command,
+    read_design_brief,
+    read_design_handoff,
     read_stage_register,
     read_workspace_state,
     sanitize_identifier,
@@ -151,6 +156,18 @@ LEGACY_VERIFICATION_HELPER_RELATIVE_ROOT = Path(".agentiux") / "verification-hel
 VERIFICATION_HELPER_MARKER_FILENAME = "bundle.json"
 LAYOUT_AUDIT_RULE_CATALOG_FILENAME = "layout_audit_rules.json"
 _LAYOUT_AUDIT_RULE_CATALOG_CACHE: dict[str, Any] | None = None
+VERIFICATION_RECIPES_SCHEMA_VERSION = 3
+REACHABILITY_PATH_RUNNERS = {"playwright-visual", "detox-visual"}
+CANONICAL_REACHABILITY_ACTIONS = {
+    "ensure_visible",
+    "scroll_to",
+    "tap",
+    "long_press",
+    "swipe",
+    "drag",
+    "type_text",
+    "wait_for",
+}
 
 
 def _verification_file_error(path: Path, exc: Exception, purpose: str | None = None) -> ValueError:
@@ -822,6 +839,90 @@ def _normalize_semantic_platform_hooks(payload: Any) -> dict[str, Any]:
     }
 
 
+def _normalize_string_list(payload: Any) -> list[str]:
+    if payload is None:
+        return []
+    items = payload if isinstance(payload, (list, tuple, set)) else [payload]
+    normalized: list[str] = []
+    for item in items:
+        value = str(item or "").strip()
+        if value and value not in normalized:
+            normalized.append(value)
+    return normalized
+
+
+def _normalize_reachability_step(
+    payload: Any,
+    *,
+    runner: str,
+    path_id: str,
+    index: int,
+    known_target_ids: set[str],
+) -> dict[str, Any]:
+    item = {"action": payload} if isinstance(payload, str) else (copy.deepcopy(payload) if isinstance(payload, dict) else {})
+    action = str(item.get("action") or item.get("step") or item.get("kind") or "").strip().lower()
+    if action not in CANONICAL_REACHABILITY_ACTIONS:
+        raise ValueError(f"Unsupported reachability step action `{action or 'unknown'}` in path `{path_id}`.")
+    item["action"] = action
+    for key in ("target_id", "from_target_id", "to_target_id", "direction", "text", "value"):
+        if key in item:
+            value = str(item.get(key) or "").strip()
+            item[key] = value or None
+    for key in ("target_id", "from_target_id", "to_target_id"):
+        value = item.get(key)
+        if value and known_target_ids and value not in known_target_ids:
+            raise ValueError(f"Reachability path `{path_id}` references unknown semantic target `{value}`.")
+    for key in ("locator", "container_locator", "scroll_container_locator"):
+        item[key] = _normalize_semantic_locator(item.get(key), runner=runner)
+    if item.get("timeout_ms") is not None:
+        item["timeout_ms"] = max(0, int(item.get("timeout_ms") or 0))
+    if item.get("duration_ms") is not None:
+        item["duration_ms"] = max(0, int(item.get("duration_ms") or 0))
+    if item.get("distance_px") is not None:
+        item["distance_px"] = int(item.get("distance_px") or 0)
+    return item
+
+
+def _normalize_reachability_path(
+    payload: Any,
+    *,
+    runner: str,
+    index: int,
+    known_target_ids: set[str],
+) -> dict[str, Any]:
+    item = copy.deepcopy(payload) if isinstance(payload, dict) else {}
+    path_id = str(item.get("path_id") or item.get("id") or f"path-{index}").strip()
+    if not path_id:
+        raise ValueError("Reachability path requires path_id.")
+    item["path_id"] = path_id
+    item["title"] = str(item.get("title") or path_id).strip()
+    target_id = str(item.get("target_id") or "").strip()
+    if target_id and known_target_ids and target_id not in known_target_ids:
+        raise ValueError(f"Reachability path `{path_id}` references unknown semantic target `{target_id}`.")
+    item["target_id"] = target_id or None
+    item["required_for_action_ids"] = _normalize_string_list(item.get("required_for_action_ids"))
+    item["steps"] = [
+        _normalize_reachability_step(step, runner=runner, path_id=path_id, index=step_index, known_target_ids=known_target_ids)
+        for step_index, step in enumerate(item.get("steps") or [], start=1)
+    ]
+    if not item["steps"]:
+        raise ValueError(f"Reachability path `{path_id}` must declare at least one step.")
+    return item
+
+
+def _normalize_limitation_entry(payload: Any, *, index: int, case_runner: str) -> dict[str, Any]:
+    item = copy.deepcopy(payload) if isinstance(payload, dict) else {}
+    limitation_id = str(item.get("limitation_id") or item.get("id") or f"limitation-{index}").strip()
+    if not limitation_id:
+        raise ValueError("Limitation entry requires limitation_id.")
+    item["limitation_id"] = limitation_id
+    item["action_id"] = str(item.get("action_id") or "").strip() or None
+    item["kind"] = str(item.get("kind") or "runner_gap").strip().lower()
+    item["reason"] = str(item.get("reason") or "").strip() or None
+    item["runner_scope"] = _normalize_string_list(item.get("runner_scope")) or [case_runner]
+    return item
+
+
 def _normalize_semantic_assertions(payload: dict[str, Any] | None, case: dict[str, Any]) -> dict[str, Any]:
     config = dict(payload or {})
     enabled = bool(config.get("enabled", False))
@@ -847,18 +948,34 @@ def _normalize_semantic_assertions(payload: dict[str, Any] | None, case: dict[st
         _normalize_semantic_target(target, runner=case.get("runner"), index=index)
         for index, target in enumerate(config.get("targets") or [], start=1)
     ]
+    target_ids = {target["target_id"] for target in targets}
     auto_scan = bool(config.get("auto_scan", enabled))
     heuristics: list[str] = []
     for item in config.get("heuristics") or (DEFAULT_SEMANTIC_HEURISTICS if auto_scan else []):
         heuristic = str(item or "").strip().lower()
         if heuristic and heuristic not in heuristics:
             heuristics.append(heuristic)
+    reachability_paths = [
+        _normalize_reachability_path(
+            item,
+            runner=case.get("runner"),
+            index=index,
+            known_target_ids=target_ids,
+        )
+        for index, item in enumerate(config.get("reachability_paths") or [], start=1)
+    ]
+    limitation_entries = [
+        _normalize_limitation_entry(item, index=index, case_runner=case.get("runner"))
+        for index, item in enumerate(config.get("limitation_entries") or [], start=1)
+    ]
     return {
         "enabled": enabled,
         "report_path": config.get("report_path") or f"{case['id']}-semantic.json",
         "required_checks": required_checks,
         "unsupported_required_checks": unsupported_by_runner,
         "targets": targets,
+        "reachability_paths": reachability_paths,
+        "limitation_entries": limitation_entries,
         "auto_scan": auto_scan,
         "heuristics": heuristics,
         "artifacts": _normalize_semantic_artifacts(config.get("artifacts")),
@@ -946,7 +1063,7 @@ def _normalize_case(case: dict[str, Any]) -> dict[str, Any]:
 
 def _normalize_recipes(recipes: dict[str, Any], workspace: str | Path) -> dict[str, Any]:
     payload = dict(recipes or {})
-    payload["schema_version"] = 2
+    payload["schema_version"] = VERIFICATION_RECIPES_SCHEMA_VERSION
     payload["workspace_path"] = str(Path(workspace).expanduser().resolve())
     payload["updated_at"] = now_iso()
     payload["baseline_policy"] = payload.get("baseline_policy") or {
@@ -962,7 +1079,7 @@ def _default_recipes(workspace: str | Path, workstream_id: str | None = None) ->
     paths = workspace_paths(workspace, workstream_id=workstream_id)
     detection = detect_workspace(workspace)
     payload = {
-        "schema_version": 2,
+        "schema_version": VERIFICATION_RECIPES_SCHEMA_VERSION,
         "workspace_path": str(Path(workspace).expanduser().resolve()),
         "workstream_id": paths["current_workstream_id"],
         "updated_at": now_iso(),
@@ -1001,7 +1118,9 @@ def read_verification_recipes(workspace: str | Path, workstream_id: str | None =
 
 def write_verification_recipes(workspace: str | Path, recipes: dict[str, Any], workstream_id: str | None = None) -> dict[str, Any]:
     paths = _ensure_workspace_paths(workspace, workstream_id=workstream_id)
+    persisted = _load_json(Path(paths["verification_recipes"]), default={}) or {}
     payload = _default_recipes(workspace, workstream_id=workstream_id)
+    payload.update(copy.deepcopy(persisted))
     payload.update(recipes or {})
     payload = _normalize_recipes(payload, workspace)
     payload["workstream_id"] = paths["current_workstream_id"]
@@ -1295,6 +1414,8 @@ def _case_selection_summary(workspace: str | Path, case: dict[str, Any], state: 
         "changed_path_globs": case.get("changed_path_globs") or [],
         "semantic_assertions_enabled": bool(semantic_assertions.get("enabled")),
         "semantic_target_count": len(semantic_assertions.get("targets") or []),
+        "reachability_path_count": len(semantic_assertions.get("reachability_paths") or []),
+        "limitation_entry_count": len(semantic_assertions.get("limitation_entries") or []),
         "semantic_auto_scan": bool(semantic_assertions.get("auto_scan", False)),
         "native_layout_audit_enabled": bool(native_layout_audit.get("enabled")),
         "native_layout_audit_report_path": native_layout_audit.get("report_path"),
@@ -2286,7 +2407,70 @@ def _semantic_preflight_failure(
     }
 
 
-def _semantic_runtime_preflight(workspace: str | Path, run_paths: dict[str, Path], case: dict[str, Any]) -> dict[str, Any]:
+def _design_critical_actions(workspace: str | Path, workstream_id: str | None = None) -> list[dict[str, Any]]:
+    if not workstream_id:
+        return []
+    handoff = read_design_handoff(workspace, workstream_id=workstream_id)
+    brief = read_design_brief(workspace, workstream_id=workstream_id)
+    actions = copy.deepcopy(handoff.get("critical_actions") or [])
+    if actions:
+        return actions
+    return copy.deepcopy(brief.get("critical_actions") or [])
+
+
+def _critical_action_requires_authored_path(action: dict[str, Any]) -> bool:
+    interaction_type = str(action.get("interaction_type") or "").strip().lower()
+    if not interaction_type:
+        return False
+    return interaction_type not in SCROLL_ONLY_INTERACTION_TYPES and interaction_type not in {"view", "observe", "read_only"}
+
+
+def _semantic_runtime_contract_errors(
+    workspace: str | Path,
+    case: dict[str, Any],
+    *,
+    workstream_id: str | None = None,
+) -> list[str]:
+    config = case.get("semantic_assertions") or {}
+    errors: list[str] = []
+    reachability_paths = config.get("reachability_paths") or []
+    limitation_entries = config.get("limitation_entries") or []
+    if reachability_paths and case.get("runner") not in REACHABILITY_PATH_RUNNERS:
+        errors.append(
+            f"Runner `{case.get('runner')}` does not execute authored reachability paths. Use limitation entries instead."
+        )
+    critical_action_ids = {
+        str(item.get("action_id") or "").strip()
+        for item in _design_critical_actions(workspace, workstream_id=workstream_id)
+        if str(item.get("action_id") or "").strip()
+    }
+    if critical_action_ids:
+        referenced_action_ids = {
+            action_id
+            for path in reachability_paths
+            for action_id in (path.get("required_for_action_ids") or [])
+            if str(action_id or "").strip()
+        }
+        limitation_action_ids = {
+            str(entry.get("action_id") or "").strip()
+            for entry in limitation_entries
+            if str(entry.get("action_id") or "").strip()
+        }
+        unknown_action_ids = sorted((referenced_action_ids | limitation_action_ids).difference(critical_action_ids))
+        if unknown_action_ids:
+            errors.append(
+                "Semantic reachability contract references unknown critical actions: " + ", ".join(unknown_action_ids) + "."
+            )
+    return errors
+
+
+def _semantic_runtime_preflight(
+    workspace: str | Path,
+    run_paths: dict[str, Path],
+    case: dict[str, Any],
+    *,
+    workstream_id: str | None = None,
+) -> dict[str, Any]:
     config = case.get("semantic_assertions") or {}
     report_path = _resolve_semantic_report_path(run_paths, case)
     helper_root, materialization = _preferred_verification_helper_root(workspace)
@@ -2377,6 +2561,17 @@ def _semantic_runtime_preflight(workspace: str | Path, run_paths: dict[str, Path
             f"Verification helper bundle is missing at {helper_root}.",
             capability_matrix=capability_matrix,
         )
+    contract_errors = _semantic_runtime_contract_errors(workspace, case, workstream_id=workstream_id)
+    if contract_errors:
+        return _semantic_preflight_failure(
+            case,
+            report_path,
+            helper_root,
+            materialization,
+            "reachability_contract_invalid",
+            " ".join(contract_errors),
+            capability_matrix=capability_matrix,
+        )
     return {
         "enabled": True,
         "status": "ready",
@@ -2399,7 +2594,7 @@ def _write_resolved_semantic_spec(
     spec_path = _resolve_semantic_spec_path(run_paths, case)
     runtime_payload = semantic_runtime or {}
     payload = {
-        "schema_version": 2,
+        "schema_version": 3,
         "helper_bundle_version": _verification_helper_version(),
         "helper_root": runtime_payload.get("helper_root"),
         "helper_materialization": copy.deepcopy(runtime_payload.get("helper_materialization") or {}),
@@ -2410,6 +2605,8 @@ def _write_resolved_semantic_spec(
         "required_checks": list(config.get("required_checks") or []),
         "unsupported_required_checks": list(config.get("unsupported_required_checks") or []),
         "targets": copy.deepcopy(config.get("targets") or []),
+        "reachability_paths": copy.deepcopy(config.get("reachability_paths") or []),
+        "limitation_entries": copy.deepcopy(config.get("limitation_entries") or []),
         "auto_scan": bool(config.get("auto_scan", False)),
         "heuristics": list(config.get("heuristics") or []),
         "artifacts": copy.deepcopy(config.get("artifacts") or {}),
@@ -4029,14 +4226,27 @@ def recent_verification_events(workspace: str | Path, limit: int = 10, workstrea
     return read_verification_events(workspace, run["run_id"], limit=limit, workstream_id=workstream_id)
 
 
-def _coverage_gap(gap_id: str, title: str, recommendation: str, *, category: str = "verification") -> dict[str, Any]:
-    return {
+def _coverage_gap(
+    gap_id: str,
+    title: str,
+    recommendation: str,
+    *,
+    category: str = "verification",
+    surface_type: str | None = None,
+    action_id: str | None = None,
+) -> dict[str, Any]:
+    payload = {
         "gap_id": gap_id,
         "severity": "warning",
         "category": category,
         "title": title,
         "recommendation": recommendation,
     }
+    if surface_type:
+        payload["surface_type"] = surface_type
+    if action_id:
+        payload["action_id"] = action_id
+    return payload
 
 
 def _merge_named_items(base: list[dict[str, Any]], override: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -4130,6 +4340,7 @@ def audit_verification_coverage(workspace: str | Path, workstream_id: str | None
     resolved_workspace = Path(workspace).expanduser().resolve()
     detection = detect_workspace(resolved_workspace)
     paths = workspace_paths(resolved_workspace, workstream_id=workstream_id)
+    current_workstream_id = paths["current_workstream_id"]
     recipes_path = Path(paths["verification_recipes"])
     catalog_runners = set((_load_verification_helper_catalog().get("runners") or {}).keys())
     default_recipes = _default_recipes(resolved_workspace, workstream_id=workstream_id)
@@ -4143,6 +4354,15 @@ def audit_verification_coverage(workspace: str | Path, workstream_id: str | None
     cases = recipes.get("cases", [])
     suites = recipes.get("suites", [])
     suite_ids = {suite.get("id") for suite in suites}
+    active_brief = get_active_brief(resolved_workspace) if current_workstream_id else None
+    design_testability = _design_and_testability_summary(
+        resolved_workspace,
+        workstream_id=current_workstream_id,
+        brief_markdown=(active_brief or {}).get("markdown"),
+        brief_kind="task" if (active_brief or {}).get("mode") == "task" else "workstream",
+    )
+    design_summary = copy.deepcopy(design_testability.get("design_summary") or {})
+    testability_summary = copy.deepcopy(design_testability.get("testability_summary") or {})
     gaps: list[dict[str, Any]] = []
     if not cases:
         gaps.append(
@@ -4188,6 +4408,12 @@ def audit_verification_coverage(workspace: str | Path, workstream_id: str | None
     }
     helper_status = _verification_helper_materialization_status(resolved_workspace)
     semantic_case_ids: list[str] = []
+    supported_path_ids: set[str] = set()
+    unsupported_path_ids: set[str] = set()
+    action_ids_with_supported_paths: set[str] = set()
+    action_ids_with_unsupported_paths: set[str] = set()
+    limitations_by_action: dict[str, list[dict[str, Any]]] = {}
+    scroll_reachability_available = False
     for case in cases:
         case_id = case["id"]
         targeting_signals = bool(case.get("changed_path_globs") or case.get("feature_ids") or case.get("surface_ids") or case.get("routes_or_screens"))
@@ -4217,6 +4443,51 @@ def audit_verification_coverage(workspace: str | Path, workstream_id: str | None
                 )
             )
         semantic_assertions = case.get("semantic_assertions") or {}
+        required_checks = {str(item).strip().lower() for item in semantic_assertions.get("required_checks") or []}
+        scroll_reachability_available = scroll_reachability_available or ("scroll_reachability" in required_checks)
+        runner_supports_reachability = case.get("runner") in REACHABILITY_PATH_RUNNERS
+        reachability_paths = semantic_assertions.get("reachability_paths") or []
+        if reachability_paths and not runner_supports_reachability:
+            gaps.append(
+                _coverage_gap(
+                    f"{case_id}-unsupported-reachability-runner",
+                    f"Verification case `{case_id}` declares authored reachability paths on an unsupported runner",
+                    (
+                        f"Runner `{case.get('runner')}` does not execute canonical gesture paths. Replace authored paths "
+                        "with limitation entries or move the gesture coverage to `playwright-visual` or `detox-visual`."
+                    ),
+                    category="visual",
+                    surface_type=str(case.get("surface_type") or "").lower() or None,
+                )
+            )
+        for path in reachability_paths:
+            path_id = str(path.get("path_id") or "").strip()
+            required_action_ids = [
+                str(item).strip()
+                for item in (path.get("required_for_action_ids") or [])
+                if str(item or "").strip()
+            ]
+            if runner_supports_reachability:
+                if path_id:
+                    supported_path_ids.add(path_id)
+                action_ids_with_supported_paths.update(required_action_ids)
+            else:
+                if path_id:
+                    unsupported_path_ids.add(path_id)
+                action_ids_with_unsupported_paths.update(required_action_ids)
+        for limitation in semantic_assertions.get("limitation_entries") or []:
+            action_id = str(limitation.get("action_id") or "").strip()
+            if not action_id:
+                continue
+            limitations_by_action.setdefault(action_id, []).append(
+                {
+                    "case_id": case_id,
+                    "runner": case.get("runner"),
+                    "kind": limitation.get("kind"),
+                    "reason": limitation.get("reason"),
+                    "runner_scope": copy.deepcopy(limitation.get("runner_scope") or []),
+                }
+            )
         native_layout_audit = case.get("native_layout_audit") or {}
         if _case_requires_web_visual_semantics(case) and not semantic_assertions.get("enabled"):
             gaps.append(
@@ -4506,15 +4777,85 @@ def audit_verification_coverage(workspace: str | Path, workstream_id: str | None
                 category="visual",
             )
         )
+    critical_actions = _design_critical_actions(resolved_workspace, workstream_id=current_workstream_id)
+    for action in critical_actions:
+        action_id = str(action.get("action_id") or "").strip()
+        if not action_id:
+            continue
+        interaction_type = str(action.get("interaction_type") or "").strip().lower()
+        verification_path_id = str(action.get("verification_path_id") or "").strip()
+        surface_type = None
+        surface_id = str(action.get("surface_id") or "").strip()
+        if surface_id:
+            surface_type = surface_id
+        limitation_entries = limitations_by_action.get(action_id) or []
+        has_supported_path = bool(
+            (verification_path_id and verification_path_id in supported_path_ids) or action_id in action_ids_with_supported_paths
+        )
+        has_unsupported_path = bool(
+            (verification_path_id and verification_path_id in unsupported_path_ids) or action_id in action_ids_with_unsupported_paths
+        )
+        if limitation_entries:
+            limitation = limitation_entries[0]
+            reason = limitation.get("reason") or "A known runner or platform gap is persisted for this action."
+            gaps.append(
+                _coverage_gap(
+                    f"{action_id}-declared-limitation",
+                    f"Critical action `{action_id}` is covered only by a declared limitation",
+                    (
+                        f"Known gap on `{limitation.get('runner')}` ({limitation.get('kind') or 'runner_gap'}): {reason} "
+                        "Keep the limitation visible until an authored path or supported runner closes it."
+                    ),
+                    category="design",
+                    surface_type=surface_type,
+                    action_id=action_id,
+                )
+            )
+            continue
+        if has_supported_path:
+            continue
+        if interaction_type in SCROLL_ONLY_INTERACTION_TYPES and scroll_reachability_available:
+            continue
+        if has_unsupported_path:
+            gaps.append(
+                _coverage_gap(
+                    f"{action_id}-unsupported-authored-path",
+                    f"Critical action `{action_id}` only has authored path coverage on unsupported runners",
+                    (
+                        "Move the authored path to `playwright-visual` or `detox-visual`, or persist an explicit "
+                        "limitation entry so the known gap remains visible."
+                    ),
+                    category="visual",
+                    surface_type=surface_type,
+                    action_id=action_id,
+                )
+            )
+            continue
+        if _critical_action_requires_authored_path(action):
+            gaps.append(
+                _coverage_gap(
+                    f"{action_id}-missing-critical-action-path",
+                    f"Critical action `{action_id}` is missing authored gesture-path coverage",
+                    (
+                        "Add a `semantic_assertions.reachability_paths[]` entry on a `playwright-visual` or "
+                        "`detox-visual` case, or persist a limitation entry for the known gap."
+                    ),
+                    category="design",
+                    surface_type=surface_type,
+                    action_id=action_id,
+                )
+            )
     return {
         "workspace_path": str(resolved_workspace),
-        "workstream_id": paths["current_workstream_id"],
+        "workstream_id": current_workstream_id,
         "recipe_source": recipe_source,
         "detected_stacks": detection.get("detected_stacks", []),
         "selected_profiles": detection.get("selected_profiles", []),
         "case_count": len(cases),
         "suite_count": len(suites),
         "coverage": coverage,
+        "design_summary": design_summary,
+        "testability_summary": testability_summary,
         "helper_bundle": helper_status,
         "gaps": gaps,
         "warning_count": len(gaps),
@@ -4633,7 +4974,12 @@ def execute_verification_run(workspace: str | Path, run_id: str, workstream_id: 
     for case_state in run.get("cases", []):
         case = _case_by_id(recipes, case_state["case_id"])
         run_paths = _verification_run_paths(workspace_path, run_id, workstream_id=workstream_id)
-        semantic_runtime = _semantic_runtime_preflight(workspace_path, run_paths, case)
+        semantic_runtime = _semantic_runtime_preflight(
+            workspace_path,
+            run_paths,
+            case,
+            workstream_id=workstream_id,
+        )
         auth_runtime = None
         case_state["status"] = "running"
         case_state["started_at"] = now_iso()

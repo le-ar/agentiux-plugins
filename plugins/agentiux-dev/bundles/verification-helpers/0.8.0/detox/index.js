@@ -4,6 +4,7 @@ import {
   createReportContext,
   ensureTarget,
   finalizeReport,
+  recordReachabilityPath,
   recordCheck,
   runHook,
   writeReport,
@@ -22,6 +23,27 @@ function resolveMatcher(by, locator) {
     default:
       return null;
   }
+}
+
+function targetSpecById(spec, targetId) {
+  return (spec.targets ?? []).find((candidate) => candidate.target_id === targetId) ?? null;
+}
+
+function resolveMatcherFromTargetSpec(by, spec, targetId) {
+  if (!targetId) {
+    return null;
+  }
+  const targetSpec = targetSpecById(spec, targetId);
+  return targetSpec ? resolveMatcher(by, targetSpec.locator) : null;
+}
+
+function resolveStepMatcher(by, spec, pathSpec, step, key = "target_id") {
+  const directMatcher = resolveMatcher(by, step.locator);
+  if (directMatcher) {
+    return directMatcher;
+  }
+  const targetId = step[key] ?? pathSpec.target_id ?? null;
+  return resolveMatcherFromTargetSpec(by, spec, targetId);
 }
 
 async function readAttributes(targetElement) {
@@ -71,10 +93,124 @@ async function attemptScroll(elementFactory, targetElement, scrollLocator, by, e
   return false;
 }
 
+async function ensureVisibleWithScroll(elementFactory, targetElement, scrollLocator, by, expectFn) {
+  try {
+    await expectFn(targetElement).toBeVisible();
+    return true;
+  } catch {
+    return attemptScroll(elementFactory, targetElement, scrollLocator, by, expectFn);
+  }
+}
+
+async function executeReachabilityStep(runtime, spec, pathSpec, step) {
+  const { element, by, expect: detoxExpect = global.expect, waitFor: detoxWaitFor = global.waitFor } = runtime;
+  const timeout = Number(step.timeout_ms ?? 3000);
+  if (step.action === "wait_for") {
+    const matcher = resolveStepMatcher(by, spec, pathSpec, step);
+    if (matcher) {
+      const targetElement = element(matcher);
+      if (typeof detoxWaitFor === "function") {
+        await detoxWaitFor(targetElement).toBeVisible().withTimeout(timeout);
+      } else {
+        await detoxExpect(targetElement).toBeVisible();
+      }
+    } else {
+      await new Promise((resolve) => setTimeout(resolve, timeout));
+    }
+    return { action: step.action, target_id: step.target_id ?? pathSpec.target_id ?? null };
+  }
+  const matcher = resolveStepMatcher(by, spec, pathSpec, step);
+  if (!matcher) {
+    throw new Error(`Reachability step ${step.action} could not resolve a matcher`);
+  }
+  const targetElement = element(matcher);
+  if (step.action === "ensure_visible" || step.action === "scroll_to") {
+    const targetId = step.target_id ?? pathSpec.target_id ?? null;
+    const targetSpec = targetId ? targetSpecById(spec, targetId) : null;
+    const scrollLocator = step.scroll_container_locator ?? targetSpec?.scroll_container_locator ?? null;
+    const visible = await ensureVisibleWithScroll(element, targetElement, scrollLocator, by, detoxExpect);
+    if (!visible) {
+      throw new Error(`Reachability step ${step.action} could not make target visible`);
+    }
+    return { action: step.action, target_id: targetId };
+  }
+  if (step.action === "tap") {
+    await targetElement.tap();
+    return { action: step.action, target_id: step.target_id ?? pathSpec.target_id ?? null };
+  }
+  if (step.action === "long_press") {
+    if (typeof targetElement.longPress === "function") {
+      await targetElement.longPress(Number(step.duration_ms ?? 1000));
+    } else {
+      await targetElement.tap();
+    }
+    return { action: step.action, target_id: step.target_id ?? pathSpec.target_id ?? null };
+  }
+  if (step.action === "swipe") {
+    await targetElement.swipe(String(step.direction ?? "left"), "fast", 0.75);
+    return { action: step.action, target_id: step.target_id ?? pathSpec.target_id ?? null, direction: step.direction ?? "left" };
+  }
+  if (step.action === "drag") {
+    if (typeof targetElement.drag !== "function") {
+      throw new Error("Detox runtime does not expose drag on the resolved element");
+    }
+    await targetElement.drag(Number(step.distance_px ?? 120), String(step.direction ?? "down"), 0.5, 0.5);
+    return {
+      action: step.action,
+      from_target_id: step.from_target_id ?? step.target_id ?? pathSpec.target_id ?? null,
+      to_target_id: step.to_target_id ?? null,
+    };
+  }
+  if (step.action === "type_text") {
+    const textValue = String(step.value ?? step.text ?? "");
+    if (typeof targetElement.replaceText === "function") {
+      await targetElement.replaceText(textValue);
+    } else {
+      await targetElement.typeText(textValue);
+    }
+    return {
+      action: step.action,
+      target_id: step.target_id ?? pathSpec.target_id ?? null,
+      value_length: textValue.length,
+    };
+  }
+  throw new Error(`Unsupported reachability step action ${step.action}`);
+}
+
+async function executeReachabilityPaths(runtime, spec, report) {
+  for (const pathSpec of spec.reachability_paths ?? []) {
+    const executed_steps = [];
+    try {
+      for (const step of pathSpec.steps ?? []) {
+        executed_steps.push(await executeReachabilityStep(runtime, spec, pathSpec, step));
+      }
+      recordReachabilityPath(report, {
+        path_id: pathSpec.path_id,
+        title: pathSpec.title,
+        status: "passed",
+        target_id: pathSpec.target_id ?? null,
+        executed_steps,
+      });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      recordReachabilityPath(report, {
+        path_id: pathSpec.path_id,
+        title: pathSpec.title,
+        status: "failed",
+        target_id: pathSpec.target_id ?? null,
+        executed_steps,
+        message,
+      });
+      throw new Error(`Reachability path ${pathSpec.path_id} failed: ${message}`);
+    }
+  }
+}
+
 export async function runSemanticChecks(runtime, rawSpec, options = {}) {
   const { device, element, by, expect: detoxExpect = global.expect } = runtime;
   const { spec, report } = createReportContext("detox-visual", rawSpec);
   try {
+    await executeReachabilityPaths(runtime, spec, report);
     for (const targetSpec of spec.targets) {
       const matcher = resolveMatcher(by, targetSpec.locator);
       ensureTarget(report, targetSpec.target_id);

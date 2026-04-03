@@ -28,9 +28,108 @@ export const DEFAULT_HEURISTICS = [
   "interactive_overflow_scan",
   "interactive_occlusion_scan",
 ];
+export const REACHABILITY_ACTIONS = new Set([
+  "ensure_visible",
+  "scroll_to",
+  "tap",
+  "long_press",
+  "swipe",
+  "drag",
+  "type_text",
+  "wait_for",
+]);
 
 function clone(value) {
   return JSON.parse(JSON.stringify(value ?? null));
+}
+
+function normalizeStringList(items) {
+  const normalized = [];
+  for (const item of items ?? []) {
+    const value = String(item ?? "").trim();
+    if (value && !normalized.includes(value)) {
+      normalized.push(value);
+    }
+  }
+  return normalized;
+}
+
+function normalizeReachabilityStep(rawStep, pathId, index, knownTargetIds) {
+  if (!rawStep || typeof rawStep !== "object") {
+    throw new Error(`Reachability step ${index} in path ${pathId} must be an object`);
+  }
+  const action = String(rawStep.action ?? rawStep.step ?? rawStep.kind ?? "").trim().toLowerCase();
+  if (!REACHABILITY_ACTIONS.has(action)) {
+    throw new Error(`Unsupported reachability step action \`${action || "unknown"}\` in path ${pathId}`);
+  }
+  const step = clone(rawStep) ?? {};
+  step.action = action;
+  for (const key of ["target_id", "from_target_id", "to_target_id", "direction", "text", "value"]) {
+    if (key in step) {
+      const value = String(step[key] ?? "").trim();
+      step[key] = value || null;
+    }
+  }
+  for (const key of ["target_id", "from_target_id", "to_target_id"]) {
+    const value = step[key];
+    if (value && knownTargetIds.size > 0 && !knownTargetIds.has(value)) {
+      throw new Error(`Reachability path ${pathId} references unknown semantic target ${value}`);
+    }
+  }
+  for (const key of ["locator", "container_locator", "scroll_container_locator"]) {
+    step[key] = clone(step[key]);
+  }
+  for (const key of ["timeout_ms", "duration_ms", "distance_px"]) {
+    if (step[key] != null) {
+      const numeric = Number(step[key]);
+      step[key] = Number.isFinite(numeric) ? numeric : 0;
+    }
+  }
+  return step;
+}
+
+function normalizeReachabilityPath(rawPath, index, knownTargetIds) {
+  if (!rawPath || typeof rawPath !== "object") {
+    throw new Error(`Reachability path ${index} must be an object`);
+  }
+  const pathId = String(rawPath.path_id ?? rawPath.id ?? `path-${index}`).trim();
+  if (!pathId) {
+    throw new Error("Reachability path requires path_id");
+  }
+  const targetId = String(rawPath.target_id ?? "").trim();
+  if (targetId && knownTargetIds.size > 0 && !knownTargetIds.has(targetId)) {
+    throw new Error(`Reachability path ${pathId} references unknown semantic target ${targetId}`);
+  }
+  const steps = (rawPath.steps ?? []).map((step, stepIndex) =>
+    normalizeReachabilityStep(step, pathId, stepIndex + 1, knownTargetIds)
+  );
+  if (steps.length === 0) {
+    throw new Error(`Reachability path ${pathId} must declare at least one step`);
+  }
+  return {
+    path_id: pathId,
+    title: String(rawPath.title ?? pathId).trim() || pathId,
+    target_id: targetId || null,
+    required_for_action_ids: normalizeStringList(rawPath.required_for_action_ids),
+    steps,
+  };
+}
+
+function normalizeLimitationEntry(rawEntry, index, runner) {
+  if (!rawEntry || typeof rawEntry !== "object") {
+    throw new Error(`Limitation entry ${index} must be an object`);
+  }
+  const limitationId = String(rawEntry.limitation_id ?? rawEntry.id ?? `limitation-${index}`).trim();
+  if (!limitationId) {
+    throw new Error("Limitation entry requires limitation_id");
+  }
+  return {
+    limitation_id: limitationId,
+    action_id: String(rawEntry.action_id ?? "").trim() || null,
+    kind: String(rawEntry.kind ?? "runner_gap").trim().toLowerCase() || "runner_gap",
+    reason: String(rawEntry.reason ?? "").trim() || null,
+    runner_scope: normalizeStringList(rawEntry.runner_scope).length > 0 ? normalizeStringList(rawEntry.runner_scope) : [runner],
+  };
 }
 
 export function normalizeStatus(value) {
@@ -76,8 +175,17 @@ export function normalizeSpec(spec = {}) {
       allow_text_truncation: Boolean(rawTarget.allow_text_truncation),
     });
   }
+  const knownTargetIds = new Set(targets.map((target) => target.target_id));
+  const reachabilityPaths = [];
+  for (const [index, rawPath] of (spec.reachability_paths ?? []).entries()) {
+    reachabilityPaths.push(normalizeReachabilityPath(rawPath, index + 1, knownTargetIds));
+  }
+  const limitationEntries = [];
+  for (const [index, rawEntry] of (spec.limitation_entries ?? []).entries()) {
+    limitationEntries.push(normalizeLimitationEntry(rawEntry, index + 1, spec.runner ?? "unknown"));
+  }
   return {
-    schema_version: Number(spec.schema_version ?? 2),
+    schema_version: Number(spec.schema_version ?? 3),
     helper_bundle_version: String(spec.helper_bundle_version ?? HELPER_BUNDLE_VERSION),
     runner: String(spec.runner ?? "unknown"),
     case_id: String(spec.case_id ?? "unknown-case"),
@@ -95,6 +203,8 @@ export function normalizeSpec(spec = {}) {
     freeze_clock: Boolean(spec.freeze_clock),
     masks: Array.isArray(spec.masks) ? [...spec.masks] : [],
     target: clone(spec.target) ?? {},
+    reachability_paths: reachabilityPaths,
+    limitation_entries: limitationEntries,
   };
 }
 
@@ -122,7 +232,11 @@ export function createReportContext(runner, rawSpec) {
       target_count: spec.targets.length,
       failed_checks: [],
       optional_failed_checks: [],
+      reachability_path_count: spec.reachability_paths.length,
+      limitation_entry_count: spec.limitation_entries.length,
     },
+    reachability_paths: [],
+    limitation_entries: clone(spec.limitation_entries) ?? [],
   };
   return { spec, report };
 }
@@ -237,6 +351,14 @@ export async function writeReport(spec, report) {
   await fs.mkdir(path.dirname(reportPath), { recursive: true });
   await fs.writeFile(reportPath, `${JSON.stringify(report, null, 2)}\n`, "utf8");
   return reportPath;
+}
+
+export function recordReachabilityPath(report, pathResult) {
+  if (!Array.isArray(report.reachability_paths)) {
+    report.reachability_paths = [];
+  }
+  report.reachability_paths.push(clone(pathResult));
+  return pathResult;
 }
 
 export function buildArtifactPath(spec, targetId, label, extension = "json") {

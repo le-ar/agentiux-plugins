@@ -353,12 +353,16 @@ def mcp_check(plugin_root: Path) -> dict[str, Any]:
 
 def verification_coverage_check(repo_root: Path) -> dict[str, Any]:
     payload = audit_verification_coverage(repo_root)
+    if "design_summary" not in payload or "testability_summary" not in payload:
+        raise AssertionError("Verification coverage audit did not expose design/testability summaries")
     return {
         "check": "verification-coverage",
         "status": payload["status"],
         "warning_count": payload["warning_count"],
         "gaps": payload["gaps"],
         "coverage": payload["coverage"],
+        "design_summary": payload["design_summary"],
+        "testability_summary": payload["testability_summary"],
     }
 
 
@@ -540,6 +544,9 @@ def dashboard_check(repo_root: Path, plugin_root: Path) -> dict[str, Any]:
         raise AssertionError("Unexpected dashboard plugin payload")
     if fixture_snapshot.get("workspace_cockpit", {}).get("workspace_path") != str(repo_root):
         raise AssertionError("Dashboard fixture did not initialize the expected workspace cockpit")
+    design_state = (fixture_snapshot.get("workspace_cockpit", {}).get("plan") or {}).get("design_state") or {}
+    if "design_summary" not in design_state or "testability_summary" not in design_state:
+        raise AssertionError("Dashboard fixture snapshot did not expose compact design/testability summaries")
     if "auth" not in (cockpit_snapshot.get("integrations") or {}):
         raise AssertionError("Dashboard cockpit is missing auth integration payload")
     if "memory" not in cockpit_snapshot:
@@ -550,6 +557,9 @@ def dashboard_check(repo_root: Path, plugin_root: Path) -> dict[str, Any]:
         raise AssertionError("Dashboard bootstrap did not resolve the requested workspace")
     if plan_panel_snapshot.get("active_panel") != "plan":
         raise AssertionError("Workspace panel endpoint did not resolve the requested panel")
+    plan_panel_design_state = (plan_panel_snapshot.get("panel_payload") or {}).get("design_state") or {}
+    if "design_summary" not in plan_panel_design_state or "testability_summary" not in plan_panel_design_state:
+        raise AssertionError("Plan panel payload did not expose compact design/testability summaries")
     if auth_payload.get("counts") is None or auth_sessions_payload.get("counts") is None or notes_payload.get("counts") is None:
         raise AssertionError("Dashboard auth or note APIs returned incomplete payloads")
     if auth_sessions_payload.get("counts", {}).get("total") is None:
@@ -691,6 +701,8 @@ def dashboard_check(repo_root: Path, plugin_root: Path) -> dict[str, Any]:
             "bootstrap": bootstrap_bytes,
             "plan_panel": plan_panel_bytes,
         },
+        "design_summary": design_state.get("design_summary") or {},
+        "testability_summary": design_state.get("testability_summary") or {},
         "request_timings_ms": {
             "overview": overview_fetch_ms,
             "legacy_cockpit": cockpit_fetch_ms,

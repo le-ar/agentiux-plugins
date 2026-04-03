@@ -93,6 +93,7 @@ from agentiux_dev_lib import (
     suggest_pr_title,
     switch_workstream,
     workflow_advice,
+    workspace_summary,
     workspace_paths,
     write_design_brief,
     write_design_handoff,
@@ -642,12 +643,38 @@ def _http_json(url: str, *, method: str = "GET", payload: dict | None = None, ti
         headers={"Content-Type": "application/json; charset=utf-8"},
         method=method,
     )
-    try:
-        with urllib.request.urlopen(request, timeout=timeout) as response:
-            return json.loads(response.read().decode("utf-8"))
-    except urllib.error.HTTPError as exc:
-        detail = exc.read().decode("utf-8", errors="replace")
-        raise AssertionError(f"HTTP {exc.code} for {method} {url}: {detail}") from exc
+    last_error: Exception | None = None
+    for attempt in range(3):
+        try:
+            with urllib.request.urlopen(request, timeout=timeout) as response:
+                return json.loads(response.read().decode("utf-8"))
+        except urllib.error.HTTPError as exc:
+            detail = exc.read().decode("utf-8", errors="replace")
+            raise AssertionError(f"HTTP {exc.code} for {method} {url}: {detail}") from exc
+        except (urllib.error.URLError, TimeoutError) as exc:
+            last_error = exc
+            if attempt == 2:
+                break
+            time.sleep(0.5)
+    raise AssertionError(f"Timed out reading JSON from {url}: {last_error}")
+
+
+def _http_text(url: str, *, timeout: float = 10.0) -> str:
+    request = urllib.request.Request(url, method="GET")
+    last_error: Exception | None = None
+    for attempt in range(3):
+        try:
+            with urllib.request.urlopen(request, timeout=timeout) as response:
+                return response.read().decode("utf-8")
+        except urllib.error.HTTPError as exc:
+            detail = exc.read().decode("utf-8", errors="replace")
+            raise AssertionError(f"HTTP {exc.code} for GET {url}: {detail}") from exc
+        except (urllib.error.URLError, TimeoutError) as exc:
+            last_error = exc
+            if attempt == 2:
+                break
+            time.sleep(0.5)
+    raise AssertionError(f"Timed out reading text from {url}: {last_error}")
 
 
 def _wait_for_run_started(
@@ -1635,6 +1662,11 @@ def main() -> int:
         assert workstream_advice["payload"]["within_ceiling"] is True
         assert workstream_advice["track_recommendation"]["recommended_mode"] == "workstream"
         assert len(list_workstreams(workspace)["items"]) == 1
+        generated_stage_brief = get_active_brief(workspace)
+        assert generated_stage_brief["brief_generation_status"] == "generated"
+        assert "## Goal" in generated_stage_brief["markdown"]
+        assert "## Current Truth" in generated_stage_brief["markdown"]
+        assert "## Deterministic Verification Plan" in generated_stage_brief["markdown"]
 
         task_advice = workflow_advice(workspace, "Fix CTA spacing in the hero section", auto_create=True)
         assert task_advice["auto_create_supported"] is True
@@ -1649,13 +1681,20 @@ def main() -> int:
         assert "cta-spacing" in task_id
         assert task_result["linked_workstream_id"] == primary_workstream["created_workstream_id"]
         assert current_task(workspace)["task_id"] == task_id
+        assert task_result["brief_generation_status"] == "generated"
+        assert "## Objective" in task_result["brief_markdown"]
+        assert "## Current Truth" in task_result["brief_markdown"]
+        assert "## Verification Notes" in task_result["brief_markdown"]
         reused_task_advice = workflow_advice(workspace, "Fix CTA spacing in the hero section", auto_create=True)
         assert reused_task_advice["applied_action"]["action"] == "reuse_current_task"
         assert reused_task_advice["applied_action"]["task_id"] == task_id
         assert read_stage_register(workspace)["workstream_id"] == primary_workstream["created_workstream_id"]
 
         set_active_brief(workspace, "# TaskBrief\n\nFix CTA spacing.\n")
-        assert "Fix CTA spacing" in get_active_brief(workspace)["markdown"]
+        manual_task_brief = get_active_brief(workspace)
+        assert "Fix CTA spacing" in manual_task_brief["markdown"]
+        assert manual_task_brief["brief_generation_status"] == "manual"
+        assert read_task(workspace, task_id=task_id)["brief_generation_status"] == "manual"
         closed_task = close_task(workspace, verification_summary={"status": "completed", "summary": "Spacing fixed."})
         assert closed_task["status"] == "completed"
         assert current_task(workspace) is None
@@ -1833,6 +1872,133 @@ def main() -> int:
         )
         assert handoff["status"] == "ready"
         assert read_design_handoff(workspace)["verification_hooks"][0] == "route:/"
+
+        legacy_design_workspace = temp_root / "legacy-design-workspace"
+        legacy_design_workspace.mkdir()
+        _seed_workspace(legacy_design_workspace)
+        init_workspace(legacy_design_workspace)
+        legacy_design_workstream_id = create_workstream(
+            legacy_design_workspace,
+            "Legacy Design Compatibility",
+            kind="feature",
+            scope_summary="Exercise design schema v1 read compatibility and v2 write normalization.",
+        )["created_workstream_id"]
+        legacy_design_paths = workspace_paths(legacy_design_workspace, workstream_id=legacy_design_workstream_id)
+        _write_json_file(
+            Path(legacy_design_paths["design_brief"]),
+            {
+                "schema_version": 1,
+                "workspace_path": str(legacy_design_workspace.resolve()),
+                "workstream_id": legacy_design_workstream_id,
+                "status": "briefed",
+                "platform": "web",
+                "surface": "legacy-home",
+                "style_goals": ["calm"],
+                "legacy_extra": {"preserve": True},
+            },
+        )
+        legacy_brief = read_design_brief(legacy_design_workspace, workstream_id=legacy_design_workstream_id)
+        assert legacy_brief["schema_version"] == 2
+        assert legacy_brief["surface"] == "legacy-home"
+        assert legacy_brief["legacy_extra"]["preserve"] is True
+        normalized_brief = write_design_brief(
+            legacy_design_workspace,
+            {
+                "status": "ready_for_execution",
+                "platform": "web",
+                "affected_surfaces": [
+                    {
+                        "surface_id": "legacy-home",
+                        "platform": "web",
+                        "route_or_screen": "/legacy",
+                        "summary": "Legacy home hero and CTA strip",
+                    }
+                ],
+                "user_flows": [
+                    {
+                        "flow_id": "legacy-signup",
+                        "title": "Legacy signup flow",
+                        "entry_points": ["hero-cta"],
+                        "success_state": "Signup modal visible",
+                        "steps": ["Tap CTA", "Confirm modal content"],
+                    }
+                ],
+                "state_coverage": [
+                    {
+                        "state_id": "legacy-default",
+                        "surface_id": "legacy-home",
+                        "status_kind": "covered",
+                        "notes": "Default hero state covered",
+                        "verified_by": ["playwright-visual"],
+                    }
+                ],
+                "ux_rationale": [
+                    {
+                        "decision_id": "legacy-cta-prominence",
+                        "surface_ids": ["legacy-home"],
+                        "rationale": "Keep the primary CTA visible above the fold.",
+                        "tradeoff": "Slightly denser hero layout.",
+                    }
+                ],
+                "critical_actions": [
+                    {
+                        "action_id": "legacy-hero-cta",
+                        "flow_id": "legacy-signup",
+                        "surface_id": "legacy-home",
+                        "interaction_type": "tap",
+                        "priority": "high",
+                        "verification_path_id": "legacy-hero-cta-path",
+                    }
+                ],
+                "testability_guidance": {
+                    "stable_targets": ["hero-cta"],
+                    "masks": [".clock"],
+                    "preconditions": ["seeded-session"],
+                    "limitations": ["none"],
+                },
+            },
+            workstream_id=legacy_design_workstream_id,
+        )
+        assert normalized_brief["schema_version"] == 2
+        assert normalized_brief["affected_surfaces"][0]["surface_id"] == "legacy-home"
+        assert normalized_brief["legacy_extra"]["preserve"] is True
+        _write_json_file(
+            Path(legacy_design_paths["design_handoff"]),
+            {
+                "schema_version": 1,
+                "workspace_path": str(legacy_design_workspace.resolve()),
+                "workstream_id": legacy_design_workstream_id,
+                "status": "ready",
+                "platform": "web",
+                "layout_system": ["legacy-grid"],
+                "verification_hooks": ["route:/legacy"],
+                "legacy_notes": {"preserve": True},
+            },
+        )
+        legacy_handoff = read_design_handoff(legacy_design_workspace, workstream_id=legacy_design_workstream_id)
+        assert legacy_handoff["schema_version"] == 2
+        assert legacy_handoff["layout_system"] == ["legacy-grid"]
+        assert legacy_handoff["legacy_notes"]["preserve"] is True
+        normalized_handoff = write_design_handoff(
+            legacy_design_workspace,
+            {
+                "status": "ready",
+                "platform": "web",
+                "layout_system": ["legacy-grid"],
+                "component_inventory": ["hero", "modal"],
+                "verification_hooks": ["route:/legacy", "viewport:1440x900"],
+                "affected_surfaces": normalized_brief["affected_surfaces"],
+                "user_flows": normalized_brief["user_flows"],
+                "state_coverage": normalized_brief["state_coverage"],
+                "ux_rationale": normalized_brief["ux_rationale"],
+                "critical_actions": normalized_brief["critical_actions"],
+                "testability_guidance": normalized_brief["testability_guidance"],
+            },
+            workstream_id=legacy_design_workstream_id,
+        )
+        assert normalized_handoff["schema_version"] == 2
+        assert normalized_handoff["critical_actions"][0]["action_id"] == "legacy-hero-cta"
+        assert normalized_handoff["legacy_notes"]["preserve"] is True
         progress("workspace init, stage planning, host setup, and design-state persistence")
 
         updated = read_stage_register(workspace)
@@ -3194,7 +3360,7 @@ def main() -> int:
                 ],
             },
         )
-        assert verification_recipes["schema_version"] == 2
+        assert verification_recipes["schema_version"] == 3
         assert verification_recipes["cases"][0]["runner"] == "playwright-visual"
         assert read_verification_recipes(workspace, workstream_id=verification_workstream_id)["suites"][1]["id"] == "full"
 
@@ -3331,6 +3497,645 @@ def main() -> int:
             env=os.environ.copy(),
         ).stdout
         assert "playwright-visual" in helper_catalog_cli
+        playwright_helper_uri = (Path(helper_sync["destination_root"]) / "playwright" / "index.js").resolve().as_uri()
+        detox_helper_uri = (Path(helper_sync["destination_root"]) / "detox" / "index.js").resolve().as_uri()
+        playwright_helper_report = temp_root / "playwright-helper-report.json"
+        detox_helper_report = temp_root / "detox-helper-report.json"
+        playwright_helper_script = temp_root / "playwright-helper-check.mjs"
+        detox_helper_script = temp_root / "detox-helper-check.mjs"
+        playwright_helper_script.write_text(
+            (
+                f"""
+import {{ runSemanticChecks }} from {json.dumps(playwright_helper_uri)};
+
+const ops = [];
+
+function makeLocator(id, rect) {{
+  const locator = {{
+    first() {{
+      return locator;
+    }},
+    async count() {{
+      return 1;
+    }},
+    async scrollIntoViewIfNeeded() {{
+      ops.push(`scroll:${{id}}`);
+    }},
+    async boundingBox() {{
+      return rect;
+    }},
+    async evaluate(fn, arg) {{
+      const source = String(fn);
+      if (source.includes("computedStyle")) {{
+        return {{
+          style: {{
+            color: "#111111",
+            backgroundColor: "#ffffff",
+            fontSize: "16px",
+            fontWeight: "600",
+            opacity: "1",
+            display: "block",
+            visibility: "visible",
+          }},
+          attributes: {{
+            role: null,
+            checked: null,
+            disabled: false,
+            expanded: null,
+            pressed: null,
+            text: id,
+          }},
+          textOverflow: {{
+            horizontal: false,
+            vertical: false,
+            scrollWidth: 120,
+            clientWidth: 120,
+            scrollHeight: 40,
+            clientHeight: 40,
+          }},
+        }};
+      }}
+      if (source.includes("elementFromPoint")) {{
+        return {{ occupiedBySelf: true, occupantHtml: null }};
+      }}
+      if (source.includes("document.activeElement")) {{
+        return false;
+      }}
+      return null;
+    }},
+    async isVisible() {{
+      return true;
+    }},
+    async hover() {{
+      ops.push(`hover:${{id}}`);
+    }},
+    async focus() {{
+      ops.push(`focus:${{id}}`);
+    }},
+    async press(key) {{
+      ops.push(`press:${{id}}:${{key}}`);
+    }},
+    async click(options = {{}}) {{
+      ops.push(`click:${{id}}:${{options.delay ?? 0}}`);
+    }},
+    async fill(value) {{
+      ops.push(`fill:${{id}}:${{value}}`);
+    }},
+    async type(value) {{
+      ops.push(`type:${{id}}:${{value}}`);
+    }},
+    async waitFor(options = {{}}) {{
+      ops.push(`waitFor:${{id}}:${{options.state ?? "visible"}}:${{options.timeout ?? 0}}`);
+    }},
+    async screenshot(options = {{}}) {{
+      ops.push(`screenshot:${{id}}:${{options.path ?? ""}}`);
+    }},
+  }};
+  return locator;
+}}
+
+const locators = new Map([
+  ["test:card", makeLocator("card", {{ left: 40, top: 60, width: 220, height: 96, right: 260, bottom: 156 }})],
+  ["test:input", makeLocator("input", {{ left: 60, top: 220, width: 280, height: 44, right: 340, bottom: 264 }})],
+]);
+
+const page = {{
+  locator(selector) {{
+    return locators.get(selector) ?? null;
+  }},
+  getByRole(role, options = {{}}) {{
+    return locators.get(`role:${{role}}:${{options.name ?? ""}}`) ?? locators.get(`role:${{role}}`) ?? null;
+  }},
+  getByTestId(testId) {{
+    return locators.get(`test:${{testId}}`) ?? null;
+  }},
+  getByText(text) {{
+    return locators.get(`text:${{text}}`) ?? null;
+  }},
+  viewportSize() {{
+    return {{ width: 1280, height: 800 }};
+  }},
+  mouse: {{
+    async move(x, y, options = {{}}) {{
+      ops.push(`mouse:move:${{Math.round(x)}}:${{Math.round(y)}}:${{options.steps ?? 0}}`);
+    }},
+    async down() {{
+      ops.push("mouse:down");
+    }},
+    async up() {{
+      ops.push("mouse:up");
+    }},
+  }},
+  async waitForTimeout(ms) {{
+    ops.push(`waitTimeout:${{ms}}`);
+  }},
+  async content() {{
+    return "<main></main>";
+  }},
+}};
+
+const report = await runSemanticChecks(page, {{
+  runner: "playwright-visual",
+  case_id: "playwright-path-helper",
+  report_path: {json.dumps(str(playwright_helper_report))},
+  required_checks: ["presence_uniqueness", "visibility", "scroll_reachability"],
+  targets: [
+    {{ target_id: "card", locator: {{ kind: "test_id", value: "card" }} }},
+    {{ target_id: "input", locator: {{ kind: "test_id", value: "input" }} }},
+  ],
+  reachability_paths: [
+    {{
+      path_id: "card-gesture-path",
+      target_id: "card",
+      required_for_action_ids: ["hero-card-open"],
+      steps: [
+        {{ action: "scroll_to", target_id: "card" }},
+        {{ action: "tap", target_id: "card" }},
+        {{ action: "long_press", target_id: "card", duration_ms: 900 }},
+        {{ action: "swipe", target_id: "card", direction: "left", distance_px: 120 }},
+        {{ action: "type_text", target_id: "input", value: "hello" }},
+        {{ action: "wait_for", target_id: "input", timeout_ms: 2500 }},
+      ],
+    }},
+  ],
+}});
+
+console.log(JSON.stringify({{ ops, summary: report.summary, reachability_paths: report.reachability_paths }}));
+""".strip()
+                + "\n"
+            ),
+            encoding="utf-8",
+        )
+        detox_helper_script.write_text(
+            (
+                f"""
+import {{ runSemanticChecks }} from {json.dumps(detox_helper_uri)};
+
+const ops = [];
+const visibility = {{
+  card: false,
+  input: true,
+}};
+
+function makeElement(id) {{
+  return {{
+    id,
+    async tap() {{
+      ops.push(`tap:${{id}}`);
+    }},
+    async longPress(duration) {{
+      ops.push(`longPress:${{id}}:${{duration}}`);
+    }},
+    async swipe(direction, speed, percentage) {{
+      ops.push(`swipe:${{id}}:${{direction}}:${{speed}}:${{percentage}}`);
+    }},
+    async replaceText(value) {{
+      ops.push(`replaceText:${{id}}:${{value}}`);
+    }},
+    async typeText(value) {{
+      ops.push(`typeText:${{id}}:${{value}}`);
+    }},
+    async scroll(distance, direction) {{
+      ops.push(`scroll:${{id}}:${{distance}}:${{direction}}`);
+      if (id === "list") {{
+        visibility.card = true;
+      }}
+    }},
+    async getAttributes() {{
+      return {{
+        enabled: true,
+        focused: false,
+        label: id,
+        value: id === "input" ? "hello" : null,
+        visible: visibility[id] ?? true,
+        alpha: 1,
+        elevation: 0,
+        textSize: 16,
+      }};
+    }},
+  }};
+}}
+
+const elements = new Map([
+  ["card", makeElement("card")],
+  ["input", makeElement("input")],
+  ["list", makeElement("list")],
+]);
+
+const runtime = {{
+  device: {{}},
+  by: {{
+    id(value) {{
+      return {{ kind: "id", value }};
+    }},
+    text(value) {{
+      return {{ kind: "text", value }};
+    }},
+  }},
+  element(matcher) {{
+    return elements.get(matcher.value);
+  }},
+  expect(targetElement) {{
+    return {{
+      async toExist() {{
+        ops.push(`expect:exist:${{targetElement.id}}`);
+      }},
+      async toBeVisible() {{
+        ops.push(`expect:visible:${{targetElement.id}}`);
+        if (!(visibility[targetElement.id] ?? true)) {{
+          throw new Error(`not visible:${{targetElement.id}}`);
+        }}
+      }},
+    }};
+  }},
+  waitFor(targetElement) {{
+    return {{
+      toBeVisible() {{
+        return {{
+          async withTimeout(timeoutMs) {{
+            ops.push(`waitFor:${{targetElement.id}}:${{timeoutMs}}`);
+            visibility[targetElement.id] = true;
+          }},
+        }};
+      }},
+    }};
+  }},
+}};
+
+const report = await runSemanticChecks(runtime, {{
+  runner: "detox-visual",
+  case_id: "detox-path-helper",
+  report_path: {json.dumps(str(detox_helper_report))},
+  required_checks: ["presence_uniqueness", "visibility", "scroll_reachability"],
+  targets: [
+    {{
+      target_id: "card",
+      locator: {{ kind: "test_id", value: "card" }},
+      scroll_container_locator: {{ kind: "test_id", value: "list" }},
+    }},
+    {{
+      target_id: "input",
+      locator: {{ kind: "test_id", value: "input" }},
+    }},
+  ],
+  reachability_paths: [
+    {{
+      path_id: "card-mobile-path",
+      target_id: "card",
+      required_for_action_ids: ["hero-card-mobile"],
+      steps: [
+        {{ action: "scroll_to", target_id: "card" }},
+        {{ action: "tap", target_id: "card" }},
+        {{ action: "long_press", target_id: "card", duration_ms: 750 }},
+        {{ action: "swipe", target_id: "card", direction: "right" }},
+        {{ action: "type_text", target_id: "input", value: "hello" }},
+        {{ action: "wait_for", target_id: "input", timeout_ms: 2500 }},
+      ],
+    }},
+  ],
+}});
+
+console.log(JSON.stringify({{ ops, summary: report.summary, reachability_paths: report.reachability_paths }}));
+""".strip()
+                + "\n"
+            ),
+            encoding="utf-8",
+        )
+        playwright_helper_result = json.loads(
+            subprocess.run(
+                ["node", str(playwright_helper_script)],
+                check=True,
+                capture_output=True,
+                text=True,
+                env=os.environ.copy(),
+            ).stdout
+        )
+        assert playwright_helper_result["summary"]["reachability_path_count"] == 1
+        assert playwright_helper_result["reachability_paths"][0]["status"] == "passed"
+        assert "scroll:card" in playwright_helper_result["ops"]
+        assert "click:card:0" in playwright_helper_result["ops"]
+        assert "click:card:900" in playwright_helper_result["ops"]
+        assert "fill:input:hello" in playwright_helper_result["ops"]
+        assert "waitFor:input:visible:2500" in playwright_helper_result["ops"]
+        assert "mouse:down" in playwright_helper_result["ops"]
+        assert "mouse:up" in playwright_helper_result["ops"]
+        detox_helper_result = json.loads(
+            subprocess.run(
+                ["node", str(detox_helper_script)],
+                check=True,
+                capture_output=True,
+                text=True,
+                env=os.environ.copy(),
+            ).stdout
+        )
+        assert detox_helper_result["summary"]["reachability_path_count"] == 1
+        assert detox_helper_result["reachability_paths"][0]["status"] == "passed"
+        assert "scroll:list:180:down" in detox_helper_result["ops"]
+        assert "tap:card" in detox_helper_result["ops"]
+        assert "longPress:card:750" in detox_helper_result["ops"]
+        assert "swipe:card:right:fast:0.75" in detox_helper_result["ops"]
+        assert "replaceText:input:hello" in detox_helper_result["ops"]
+        assert "waitFor:input:2500" in detox_helper_result["ops"]
+
+        gesture_contract_workspace = temp_root / "gesture-contract-workspace"
+        gesture_contract_workspace.mkdir()
+        _seed_workspace(gesture_contract_workspace)
+        init_workspace(gesture_contract_workspace)
+        gesture_contract_workstream_id = create_workstream(
+            gesture_contract_workspace,
+            "Gesture Contract Coverage",
+            kind="feature",
+            scope_summary="Exercise reachability path, limitation, and compact design summary contracts.",
+        )["created_workstream_id"]
+        gesture_baseline = gesture_contract_workspace / "tests" / "visual" / "baselines" / "gesture-home.txt"
+        gesture_baseline.parent.mkdir(parents=True, exist_ok=True)
+        gesture_baseline.write_text("gesture baseline\n")
+        write_design_handoff(
+            gesture_contract_workspace,
+            {
+                "status": "ready",
+                "platform": "mobile",
+                "verification_hooks": ["screen:gesture-home"],
+                "affected_surfaces": [
+                    {
+                        "surface_id": "gesture-home",
+                        "platform": "mobile",
+                        "route_or_screen": "GestureHome",
+                        "summary": "Gesture-heavy feed with swipe and drag affordances.",
+                    }
+                ],
+                "user_flows": [
+                    {
+                        "flow_id": "gesture-open",
+                        "title": "Open gesture card",
+                        "entry_points": ["feed-card"],
+                        "success_state": "Card details open",
+                        "steps": ["Reveal card", "Perform gesture", "Observe details"],
+                    }
+                ],
+                "state_coverage": [
+                    {
+                        "state_id": "gesture-default",
+                        "surface_id": "gesture-home",
+                        "status_kind": "covered",
+                        "notes": "Default feed state is covered.",
+                        "verified_by": ["playwright-visual"],
+                    }
+                ],
+                "ux_rationale": [
+                    {
+                        "decision_id": "gesture-priority",
+                        "surface_ids": ["gesture-home"],
+                        "rationale": "Keep direct manipulation visible for high-value feed actions.",
+                        "tradeoff": "Gesture coverage needs authored paths or explicit limitations.",
+                    }
+                ],
+                "critical_actions": [
+                    {
+                        "action_id": "swipe-card",
+                        "flow_id": "gesture-open",
+                        "surface_id": "gesture-home",
+                        "interaction_type": "swipe",
+                        "priority": "high",
+                        "verification_path_id": "swipe-card-path",
+                    },
+                    {
+                        "action_id": "scroll-feed",
+                        "flow_id": "gesture-open",
+                        "surface_id": "gesture-home",
+                        "interaction_type": "scroll_to",
+                        "priority": "medium",
+                        "verification_path_id": None,
+                    },
+                    {
+                        "action_id": "drag-card",
+                        "flow_id": "gesture-open",
+                        "surface_id": "gesture-home",
+                        "interaction_type": "drag",
+                        "priority": "high",
+                        "verification_path_id": "drag-card-path",
+                    },
+                    {
+                        "action_id": "limited-long-press",
+                        "flow_id": "gesture-open",
+                        "surface_id": "gesture-home",
+                        "interaction_type": "long_press",
+                        "priority": "medium",
+                        "verification_path_id": "limited-long-press-path",
+                    },
+                ],
+                "testability_guidance": {
+                    "stable_targets": ["feed-card", "feed-list"],
+                    "masks": [".clock"],
+                    "preconditions": ["seeded-feed"],
+                    "limitations": ["android-compose cannot execute authored gesture paths"],
+                },
+            },
+            workstream_id=gesture_contract_workstream_id,
+        )
+        write_verification_recipes(
+            gesture_contract_workspace,
+            {
+                "baseline_policy": {
+                    "canonical_baselines": "project_owned",
+                    "transient_artifacts": "external_state_only",
+                },
+                "cases": [
+                    {
+                        "id": "scroll-only-web",
+                        "title": "Scroll-only semantic coverage",
+                        "surface_type": "web",
+                        "runner": "playwright-visual",
+                        "changed_path_globs": ["apps/web/**"],
+                        "host_requirements": ["python"],
+                        "argv": [sys.executable, "-c", "print('scroll only')"],
+                        "target": {"route": "/"},
+                        "device_or_viewport": {"viewport": "1280x800"},
+                        "semantic_assertions": {
+                            "enabled": True,
+                            "report_path": "scroll-only-web.json",
+                            "required_checks": ["visibility", "scroll_reachability"],
+                            "targets": [
+                                {
+                                    "target_id": "feed-card",
+                                    "locator": {"kind": "test_id", "value": "feed-card"},
+                                }
+                            ],
+                        },
+                        "baseline": {"policy": "project-owned", "source_path": str(gesture_baseline.relative_to(gesture_contract_workspace))},
+                    },
+                    {
+                        "id": "android-gesture-path",
+                        "title": "Unsupported Android authored path",
+                        "surface_type": "android",
+                        "runner": "android-compose-screenshot",
+                        "changed_path_globs": ["apps/mobile/android/**"],
+                        "host_requirements": ["python"],
+                        "argv": [sys.executable, "-c", "print('should not execute')"],
+                        "target": {"screen_id": "gesture-home"},
+                        "device_or_viewport": {"device": "android-emulator"},
+                        "semantic_assertions": {
+                            "enabled": True,
+                            "report_path": "android-gesture-path.json",
+                            "required_checks": ["visibility"],
+                            "targets": [
+                                {
+                                    "target_id": "feed-card",
+                                    "locator": {"kind": "test_id", "value": "feed-card"},
+                                }
+                            ],
+                            "reachability_paths": [
+                                {
+                                    "path_id": "swipe-card-path",
+                                    "title": "Swipe feed card",
+                                    "target_id": "feed-card",
+                                    "required_for_action_ids": ["swipe-card"],
+                                    "steps": [
+                                        {
+                                            "action": "swipe",
+                                            "target_id": "feed-card",
+                                            "direction": "left",
+                                        }
+                                    ],
+                                }
+                            ],
+                            "limitation_entries": [
+                                {
+                                    "limitation_id": "limited-long-press-gap",
+                                    "action_id": "limited-long-press",
+                                    "kind": "runner_gap",
+                                    "reason": "Compose screenshot runner does not execute long-press gestures.",
+                                    "runner_scope": ["android-compose-screenshot"],
+                                }
+                            ],
+                        },
+                        "baseline": {"policy": "project-owned", "source_path": str(gesture_baseline.relative_to(gesture_contract_workspace))},
+                    },
+                ],
+                "suites": [{"id": "full", "title": "Full Suite", "case_ids": ["scroll-only-web", "android-gesture-path"]}],
+            },
+            workstream_id=gesture_contract_workstream_id,
+        )
+        invalid_action_error = None
+        try:
+            write_verification_recipes(
+                gesture_contract_workspace,
+                {
+                    "cases": [
+                        {
+                            "id": "invalid-action",
+                            "title": "Invalid action path",
+                            "surface_type": "web",
+                            "runner": "playwright-visual",
+                            "changed_path_globs": ["apps/web/**"],
+                            "host_requirements": ["python"],
+                            "argv": [sys.executable, "-c", "print('invalid')"],
+                            "semantic_assertions": {
+                                "enabled": True,
+                                "targets": [
+                                    {
+                                        "target_id": "feed-card",
+                                        "locator": {"kind": "test_id", "value": "feed-card"},
+                                    }
+                                ],
+                                "reachability_paths": [
+                                    {
+                                        "path_id": "invalid-action-path",
+                                        "steps": [{"action": "pinch", "target_id": "feed-card"}],
+                                    }
+                                ],
+                            },
+                        }
+                    ],
+                    "suites": [{"id": "full", "title": "Full", "case_ids": ["invalid-action"]}],
+                },
+                workstream_id=gesture_contract_workstream_id,
+            )
+        except ValueError as exc:
+            invalid_action_error = str(exc)
+        assert invalid_action_error and "Unsupported reachability step action" in invalid_action_error
+        invalid_target_error = None
+        try:
+            write_verification_recipes(
+                gesture_contract_workspace,
+                {
+                    "cases": [
+                        {
+                            "id": "invalid-target",
+                            "title": "Invalid target path",
+                            "surface_type": "web",
+                            "runner": "playwright-visual",
+                            "changed_path_globs": ["apps/web/**"],
+                            "host_requirements": ["python"],
+                            "argv": [sys.executable, "-c", "print('invalid')"],
+                            "semantic_assertions": {
+                                "enabled": True,
+                                "targets": [
+                                    {
+                                        "target_id": "feed-card",
+                                        "locator": {"kind": "test_id", "value": "feed-card"},
+                                    }
+                                ],
+                                "reachability_paths": [
+                                    {
+                                        "path_id": "invalid-target-path",
+                                        "steps": [{"action": "tap", "target_id": "missing-target"}],
+                                    }
+                                ],
+                            },
+                        }
+                    ],
+                    "suites": [{"id": "full", "title": "Full", "case_ids": ["invalid-target"]}],
+                },
+                workstream_id=gesture_contract_workstream_id,
+            )
+        except ValueError as exc:
+            invalid_target_error = str(exc)
+        assert invalid_target_error and "unknown semantic target" in invalid_target_error
+        gesture_summary = workspace_summary(gesture_contract_workspace)
+        assert gesture_summary["design_summary"]["critical_action_count"] == 4
+        assert gesture_summary["testability_summary"]["limitation_count"] == 1
+        assert gesture_summary["testability_summary"]["unresolved_action_count"] == 2
+        gesture_snapshot = dashboard_snapshot(gesture_contract_workspace)
+        assert gesture_snapshot["workspace_cockpit"]["plan"]["design_state"]["design_summary"]["critical_action_count"] == 4
+        assert gesture_snapshot["workspace_cockpit"]["plan"]["design_state"]["testability_summary"]["limitation_count"] == 1
+        gesture_context = show_workspace_context_pack(
+            gesture_contract_workspace,
+            request_text="gesture limitation coverage",
+            route_id="plugin-dev",
+            force_refresh=True,
+        )
+        assert gesture_context["workspace_context"]["design_summary"]["critical_action_count"] == 4
+        assert gesture_context["workspace_context"]["testability_summary"]["limitation_count"] == 1
+        assert "affected_surfaces" not in json.dumps(gesture_context["workspace_context"])
+        gesture_coverage_audit = audit_verification_coverage(
+            gesture_contract_workspace,
+            workstream_id=gesture_contract_workstream_id,
+        )
+        gesture_gap_ids = {gap["gap_id"] for gap in gesture_coverage_audit["gaps"]}
+        assert gesture_coverage_audit["design_summary"]["critical_action_count"] == 4
+        assert gesture_coverage_audit["testability_summary"]["limitation_count"] == 1
+        assert "android-gesture-path-unsupported-reachability-runner" in gesture_gap_ids
+        assert "swipe-card-unsupported-authored-path" in gesture_gap_ids
+        assert "drag-card-missing-critical-action-path" in gesture_gap_ids
+        assert "limited-long-press-declared-limitation" in gesture_gap_ids
+        assert "scroll-feed-missing-critical-action-path" not in gesture_gap_ids
+        gesture_helper_sync = sync_verification_helpers(gesture_contract_workspace)
+        assert gesture_helper_sync["materialization"]["status"] == "synced"
+        unsupported_gesture_run = start_verification_case(
+            gesture_contract_workspace,
+            "android-gesture-path",
+            workstream_id=gesture_contract_workstream_id,
+        )
+        unsupported_gesture_run = wait_for_verification_run(
+            gesture_contract_workspace,
+            unsupported_gesture_run["run_id"],
+            timeout_seconds=20,
+            workstream_id=gesture_contract_workstream_id,
+        )
+        assert unsupported_gesture_run["status"] == "failed"
+        assert unsupported_gesture_run["cases"][0]["attempts"] == 0
+        assert unsupported_gesture_run["cases"][0]["semantic_assertions"]["reason"] == "reachability_contract_invalid"
         progress("verification recipes, helper sync, and CLI verification entrypoints")
 
         cli_case_output = subprocess.run(
@@ -5228,115 +6033,6 @@ def main() -> int:
         assert Path(legacy_fixture["paths"]["workspace_state"]).exists()
         assert Path(legacy_fixture["paths"]["workstreams_index"]).exists()
 
-        command_bin = temp_root / "command-bin"
-        command_bin.mkdir()
-        install_result = install_plugin(plugin_root, install_root, marketplace, bin_dir=command_bin)
-        assert Path(install_result["install_root"]).exists()
-        assert Path(install_result["installed_launcher_path"]).exists()
-        assert install_result["global_command_status"] == "installed"
-        assert Path(install_result["global_launcher_path"]).exists()
-        installed_mcp = json.loads((install_root / ".mcp.json").read_text())
-        mcp_args = installed_mcp["mcpServers"]["agentiux-dev-state"]["args"]
-        assert str((install_root / "scripts" / "agentiux_dev_mcp.py").resolve()) in mcp_args
-        cli_env = os.environ.copy()
-        cli_command = [str(Path(install_result["global_launcher_path"]))]
-        cli_launch = subprocess.run(
-            [*cli_command, "web", workspace.name, "--json"],
-            cwd=temp_root,
-            env=cli_env,
-            check=True,
-            capture_output=True,
-            text=True,
-        )
-        cli_launch_payload = json.loads(cli_launch.stdout)
-        assert cli_launch_payload["status"] == "running"
-        assert cli_launch_payload["default_workspace"] == str(workspace.resolve())
-        cli_reuse = subprocess.run(
-            [*cli_command, "web", workspace.name, "--json"],
-            cwd=temp_root,
-            env=cli_env,
-            check=True,
-            capture_output=True,
-            text=True,
-        )
-        cli_reuse_payload = json.loads(cli_reuse.stdout)
-        assert cli_reuse_payload["pid"] == cli_launch_payload["pid"]
-        assert cli_reuse_payload["url"] == cli_launch_payload["url"]
-        assert cli_reuse_payload["launch_action"] == "reused"
-        cli_switch = subprocess.run(
-            [*cli_command, "web", legacy_workspace.name, "--json"],
-            cwd=temp_root,
-            env=cli_env,
-            check=True,
-            capture_output=True,
-            text=True,
-        )
-        cli_switch_payload = json.loads(cli_switch.stdout)
-        assert cli_switch_payload["pid"] == cli_launch_payload["pid"]
-        assert cli_switch_payload["url"] == cli_launch_payload["url"]
-        assert cli_switch_payload["default_workspace"] == str(legacy_workspace.resolve())
-        assert cli_switch_payload["launch_action"] == "reused"
-        cli_restart = subprocess.run(
-            [*cli_command, "web", "restart", legacy_workspace.name, "--json"],
-            cwd=temp_root,
-            env=cli_env,
-            check=True,
-            capture_output=True,
-            text=True,
-        )
-        cli_restart_payload = json.loads(cli_restart.stdout)
-        assert cli_restart_payload["status"] == "running"
-        assert cli_restart_payload["launch_action"] == "restarted"
-        assert "forced" in cli_restart_payload["restart_reasons"]
-        assert cli_restart_payload["default_workspace"] == str(legacy_workspace.resolve())
-        cli_source_launch = subprocess.run(
-            [*cli_command, "web", workspace.name, "--json"],
-            cwd=plugin_root,
-            env=cli_env,
-            check=True,
-            capture_output=True,
-            text=True,
-        )
-        cli_source_payload = json.loads(cli_source_launch.stdout)
-        assert cli_source_payload["status"] == "running"
-        assert cli_source_payload["plugin"]["current_root"] == str(plugin_root.resolve())
-        assert cli_source_payload["default_workspace"] == str(workspace.resolve())
-        cli_url = subprocess.run(
-            [*cli_command, "web", "url"],
-            cwd=temp_root,
-            env=cli_env,
-            check=True,
-            capture_output=True,
-            text=True,
-        )
-        assert cli_url.stdout.strip() == cli_source_payload["url"]
-        cli_stop = subprocess.run(
-            [*cli_command, "web", "stop", "--json"],
-            cwd=temp_root,
-            env=cli_env,
-            check=True,
-            capture_output=True,
-            text=True,
-        )
-        cli_stop_payload = json.loads(cli_stop.stdout)
-        assert cli_stop_payload["status"] == "stopped"
-        assert marketplace.exists()
-        marketplace.write_text(
-            json.dumps(
-                {
-                    "name": "legacy-owner-local",
-                    "interface": {"displayName": "Legacy Owner Local Plugins"},
-                    "plugins": [],
-                },
-                indent=2,
-            )
-            + "\n"
-        )
-        install_result = install_plugin(plugin_root, install_root, marketplace, bin_dir=command_bin)
-        marketplace_payload = json.loads(marketplace.read_text())
-        assert marketplace_payload["name"] == "local-plugins"
-        assert marketplace_payload["interface"]["displayName"] == "Local Plugins"
-
         response = _call_mcp(
             plugin_root / "scripts" / "agentiux_dev_mcp.py",
             {
@@ -5362,40 +6058,6 @@ def main() -> int:
                 "id": 2,
                 "method": "tools/call",
                 "params": {
-                    "name": "list_workstreams",
-                    "arguments": {
-                        "workspacePath": str(workspace)
-                    }
-                },
-            },
-        )
-        assert response["result"]["structuredContent"]["current_workstream_id"]
-
-        response = _call_mcp(
-            plugin_root / "scripts" / "agentiux_dev_mcp.py",
-            {
-                "jsonrpc": "2.0",
-                "id": 3,
-                "method": "tools/call",
-                "params": {
-                    "name": "advise_workflow",
-                    "arguments": {
-                        "workspacePath": str(workspace),
-                        "requestText": "Fix button spacing",
-                    },
-                },
-            },
-        )
-        assert response["result"]["structuredContent"]["track_recommendation"]["recommended_mode"] == "task"
-        assert response["result"]["structuredContent"]["applied_action"]["action"] in {"create_task", "reuse_current_task"}
-
-        response = _call_mcp(
-            plugin_root / "scripts" / "agentiux_dev_mcp.py",
-            {
-                "jsonrpc": "2.0",
-                "id": 4,
-                "method": "tools/call",
-                "params": {
                     "name": "audit_verification_coverage",
                     "arguments": {
                         "workspacePath": str(workspace),
@@ -5404,82 +6066,14 @@ def main() -> int:
             },
         )
         assert "warning_count" in response["result"]["structuredContent"]
+        assert "design_summary" in response["result"]["structuredContent"]
+        assert "testability_summary" in response["result"]["structuredContent"]
 
         response = _call_mcp(
             plugin_root / "scripts" / "agentiux_dev_mcp.py",
             {
                 "jsonrpc": "2.0",
-                "id": 5,
-                "method": "tools/call",
-                "params": {
-                    "name": "show_capability_catalog",
-                    "arguments": {
-                        "routeId": "git",
-                        "queryText": "commit worktree branch",
-                        "limit": 6,
-                    },
-                },
-            },
-        )
-        assert response["result"]["structuredContent"]["entries"]
-        assert all("git" in entry["related_routes"] for entry in response["result"]["structuredContent"]["entries"])
-
-        response = _call_mcp(
-            plugin_root / "scripts" / "agentiux_dev_mcp.py",
-            {
-                "jsonrpc": "2.0",
-                "id": 6,
-                "method": "tools/call",
-                "params": {
-                    "name": "show_intent_route",
-                    "arguments": {
-                        "requestText": "Inspect plugin dashboard and MCP tool catalogs",
-                    },
-                },
-            },
-        )
-        assert response["result"]["structuredContent"]["resolved_route"]["route_id"] == "plugin-dev"
-
-        response = _call_mcp(
-            plugin_root / "scripts" / "agentiux_dev_mcp.py",
-            {
-                "jsonrpc": "2.0",
-                "id": 7,
-                "method": "tools/call",
-                "params": {
-                    "name": "refresh_context_index",
-                    "arguments": {
-                        "workspacePath": str(workspace),
-                    },
-                },
-            },
-        )
-        assert response["result"]["structuredContent"]["chunk_count"] >= 1
-
-        response = _call_mcp(
-            plugin_root / "scripts" / "agentiux_dev_mcp.py",
-            {
-                "jsonrpc": "2.0",
-                "id": 8,
-                "method": "tools/call",
-                "params": {
-                    "name": "search_context_index",
-                    "arguments": {
-                        "workspacePath": str(repo_root),
-                        "queryText": "Inspect MCP tool catalogs and dashboard runtime",
-                        "routeId": "plugin-dev",
-                        "limit": 5,
-                    },
-                },
-            },
-        )
-        assert response["result"]["structuredContent"]["matches"]
-
-        response = _call_mcp(
-            plugin_root / "scripts" / "agentiux_dev_mcp.py",
-            {
-                "jsonrpc": "2.0",
-                "id": 9,
+                "id": 3,
                 "method": "tools/call",
                 "params": {
                     "name": "show_workspace_context_pack",
@@ -5493,309 +6087,6 @@ def main() -> int:
             },
         )
         assert response["result"]["structuredContent"]["context_pack"]["selected_chunks"]
-
-        response = _call_mcp(
-            plugin_root / "scripts" / "agentiux_dev_mcp.py",
-            {
-                "jsonrpc": "2.0",
-                "id": 10,
-                "method": "tools/call",
-                "params": {
-                    "name": "show_verification_helper_catalog",
-                    "arguments": {
-                        "workspacePath": str(workspace),
-                    },
-                },
-            },
-        )
-        assert response["result"]["structuredContent"]["version_status"] == "synced"
-
-        response = _call_mcp(
-            plugin_root / "scripts" / "agentiux_dev_mcp.py",
-            {
-                "jsonrpc": "2.0",
-                "id": 11,
-                "method": "tools/call",
-                "params": {
-                    "name": "sync_verification_helpers",
-                    "arguments": {
-                        "workspacePath": str(workspace),
-                    },
-                },
-            },
-        )
-        assert response["result"]["structuredContent"]["status"] in {"synced", "already_synced"}
-
-        response = _call_mcp(
-            plugin_root / "scripts" / "agentiux_dev_mcp.py",
-            {
-                "jsonrpc": "2.0",
-                "id": 111,
-                "method": "tools/call",
-                "params": {
-                    "name": "show_auth_profiles",
-                    "arguments": {
-                        "workspacePath": str(workspace),
-                    },
-                },
-            },
-        )
-        assert response["result"]["structuredContent"]["counts"]["total"] >= 1
-        response = _call_mcp(
-            plugin_root / "scripts" / "agentiux_dev_mcp.py",
-            {
-                "jsonrpc": "2.0",
-                "id": 1111,
-                "method": "tools/call",
-                "params": {
-                    "name": "list_auth_sessions",
-                    "arguments": {
-                        "workspacePath": str(workspace),
-                    },
-                },
-            },
-        )
-        assert response["result"]["structuredContent"]["counts"]["total"] >= 1
-
-        response = _call_mcp(
-            plugin_root / "scripts" / "agentiux_dev_mcp.py",
-            {
-                "jsonrpc": "2.0",
-                "id": 112,
-                "method": "tools/call",
-                "params": {
-                    "name": "list_project_notes",
-                    "arguments": {
-                        "workspacePath": str(workspace),
-                    },
-                },
-            },
-        )
-        assert response["result"]["structuredContent"]["counts"]["pinned"] >= 1
-
-        response = _call_mcp(
-            plugin_root / "scripts" / "agentiux_dev_mcp.py",
-            {
-                "jsonrpc": "2.0",
-                "id": 113,
-                "method": "tools/call",
-                "params": {
-                    "name": "get_analytics_snapshot",
-                    "arguments": {
-                        "workspacePath": str(workspace),
-                    },
-                },
-            },
-        )
-        assert response["result"]["structuredContent"]["learning_counts"]["resolved"] >= 1
-
-        response = _call_mcp(
-            plugin_root / "scripts" / "agentiux_dev_mcp.py",
-            {
-                "jsonrpc": "2.0",
-                "id": 114,
-                "method": "tools/call",
-                "params": {
-                    "name": "list_learning_entries",
-                    "arguments": {
-                        "workspacePath": str(workspace),
-                    },
-                },
-            },
-        )
-        assert any(item["entry_id"] == "visual-review-learning" for item in response["result"]["structuredContent"]["items"])
-
-        response = _call_mcp(
-            plugin_root / "scripts" / "agentiux_dev_mcp.py",
-            {
-                "jsonrpc": "2.0",
-                "id": 12,
-                "method": "tools/call",
-                "params": {
-                    "name": "suggest_commit_message",
-                    "arguments": {
-                        "repoRoot": str(commit_repo),
-                        "summary": "Improve dashboard log view",
-                        "files": ["plugins/agentiux-dev/dashboard/app.js"],
-                    },
-                },
-            },
-        )
-        assert response["result"]["structuredContent"]["suggested_message"].startswith("feat(dashboard):")
-
-        response = _call_mcp(
-            plugin_root / "scripts" / "agentiux_dev_mcp.py",
-            {
-                "jsonrpc": "2.0",
-                "id": 13,
-                "method": "tools/call",
-                "params": {
-                    "name": "plan_git_change",
-                    "arguments": {
-                        "repoRoot": str(git_flow_repo),
-                    },
-                },
-            },
-        )
-        assert response["result"]["structuredContent"]["suggested_branch_name"].startswith("task/")
-
-        gui_launch_process = subprocess.run(
-            ["python3", str(plugin_root / "scripts" / "agentiux_dev_gui.py"), "launch", "--workspace", str(workspace)],
-            text=True,
-            capture_output=True,
-            env=os.environ.copy(),
-            check=False,
-        )
-        if gui_launch_process.returncode == 0:
-            gui_launch = json.loads(gui_launch_process.stdout)
-            try:
-                encoded_workspace = urllib.parse.quote(str(workspace.resolve()), safe="")
-                audit_container_selectors = [
-                    "body",
-                    ".main",
-                    ".page-shell",
-                    ".content-grid",
-                    ".metric-grid",
-                    ".attention-strip",
-                    ".workspace-nav",
-                    ".portfolio-grid",
-                ]
-                history_interaction_script = """
-(async () => {
-  const waitFor = async (predicate, timeoutMs = 8000) => {
-    const deadline = Date.now() + timeoutMs;
-    while (Date.now() < deadline) {
-      if (predicate()) {
-        return true;
-      }
-      await new Promise((resolve) => setTimeout(resolve, 80));
-    }
-    return false;
-  };
-  const snapshot = () => window.__agentiux?.debugSnapshot?.() || null;
-  const selectedPanel = () => document.querySelector("[data-selected-panel]")?.getAttribute("data-selected-panel");
-  const selectedWorkspace = () => document.querySelector("[data-selected-workspace]")?.getAttribute("data-selected-workspace");
-  const initial = snapshot();
-  await window.__agentiux.setPanel("plan");
-  await waitFor(() => selectedPanel() === "plan" && (snapshot()?.panelCache || []).includes("plan"));
-  const after_plan = snapshot();
-  await window.__agentiux.setPanel("plan");
-  const after_cached_plan = snapshot();
-  window.history.back();
-  await waitFor(() => selectedPanel() === "now");
-  const after_back = snapshot();
-  window.history.forward();
-  await waitFor(() => selectedPanel() === "plan");
-  const after_forward = snapshot();
-  return {
-    initial,
-    after_plan,
-    after_cached_plan,
-    after_back,
-    after_forward,
-    selected_workspace_path: selectedWorkspace(),
-    selected_panel: selectedPanel(),
-  };
-})()
-""".strip()
-
-                def run_dashboard_audit(target_url: str, label: str, *, interaction_script: str | None = None) -> dict[str, Any]:
-                    audit_command = [
-                        "node",
-                        str(plugin_root / "scripts" / "browser_layout_audit.mjs"),
-                        "--url",
-                        target_url,
-                        "--width",
-                        "1280",
-                        "--height",
-                        "1600",
-                        "--label",
-                        label,
-                    ]
-                    if interaction_script:
-                        audit_command.extend(["--interaction-script", interaction_script])
-                    for selector in audit_container_selectors:
-                        audit_command.extend(["--container-selector", selector])
-                    audit_output = subprocess.run(
-                        audit_command,
-                        text=True,
-                        capture_output=True,
-                        env=os.environ.copy(),
-                        check=True,
-                    )
-                    return json.loads(audit_output.stdout)
-
-                with urllib.request.urlopen(f"{gui_launch['url']}/workspaces/{encoded_workspace}", timeout=20) as html_handle:
-                    dashboard_html = html_handle.read().decode("utf-8")
-                assert "AgentiUX Dev Dashboard" in dashboard_html
-                assert "/app.js" in dashboard_html
-                with urllib.request.urlopen(f"{gui_launch['url']}/api/dashboard", timeout=20) as response_handle:
-                    overview_raw = response_handle.read()
-                overview_payload = json.loads(overview_raw.decode("utf-8"))
-                assert overview_payload["overview"]["workspace_count"] >= 1
-                assert overview_payload["stats"]["active_verification_runs"] == 0
-                with urllib.request.urlopen(f"{gui_launch['url']}/api/workspace-detail?workspace={encoded_workspace}", timeout=20) as response_handle:
-                    detail_raw = response_handle.read()
-                detail_payload = json.loads(detail_raw.decode("utf-8"))
-                assert detail_payload["workspace_label"] == "demo-workspace"
-                assert detail_payload["quality"]["latest_run"]["run_id"] == blocked_auth_run["run_id"]
-                assert detail_payload["plan"]["workstreams"]
-                with urllib.request.urlopen(
-                    f"{gui_launch['url']}/api/dashboard-bootstrap?workspace={encoded_workspace}&panel=now",
-                    timeout=20,
-                ) as response_handle:
-                    bootstrap_raw = response_handle.read()
-                bootstrap_payload = json.loads(bootstrap_raw.decode("utf-8"))
-                assert bootstrap_payload["selected_workspace_path"] == str(workspace.resolve())
-                assert bootstrap_payload["workspace_shell"]["workspace_path"] == str(workspace.resolve())
-                assert bootstrap_payload["active_panel"] == "now"
-                assert bootstrap_payload["panel_payload"]["objective"]
-                with urllib.request.urlopen(
-                    f"{gui_launch['url']}/api/workspace-panel?workspace={encoded_workspace}&panel=plan",
-                    timeout=20,
-                ) as response_handle:
-                    plan_panel_raw = response_handle.read()
-                plan_panel_payload = json.loads(plan_panel_raw.decode("utf-8"))
-                assert plan_panel_payload["active_panel"] == "plan"
-                assert plan_panel_payload["workspace_shell"]["workspace_path"] == str(workspace.resolve())
-                assert plan_panel_payload["panel_payload"]["stages"] is not None
-                assert len(bootstrap_raw) < len(overview_raw) + len(detail_raw)
-                assert len(plan_panel_raw) < len(detail_raw)
-                deep_link_audit = run_dashboard_audit(
-                    f"{gui_launch['url']}/workspaces/{encoded_workspace}?panel=plan",
-                    "dashboard-plan-deep-link",
-                )
-                assert deep_link_audit["selected_workspace_path"] == str(workspace.resolve())
-                assert deep_link_audit["selected_panel"] == "plan"
-                assert deep_link_audit["timings"]["first_usable_render_ms"] is not None
-                assert int((deep_link_audit["dashboard_debug"]["requestCounts"] or {}).get("bootstrap") or 0) >= 1
-                history_audit = run_dashboard_audit(
-                    f"{gui_launch['url']}/workspaces/{encoded_workspace}",
-                    "dashboard-history-navigation",
-                    interaction_script=history_interaction_script,
-                )
-                history_result = history_audit["interaction_result"]
-                assert history_result["selected_workspace_path"] == str(workspace.resolve())
-                assert history_result["after_plan"]["panel"] == "plan"
-                assert history_result["after_cached_plan"]["requestCounts"]["panel"] == history_result["after_plan"]["requestCounts"]["panel"]
-                assert history_result["after_back"]["panel"] == "now"
-                assert history_result["after_forward"]["panel"] == "plan"
-                assert history_result["after_forward"]["requestCounts"]["bootstrap"] == 1
-                assert history_result["after_forward"]["requestCounts"]["panel"] == 1
-                uninitialized_workspace = temp_root / "uninitialized-cockpit"
-                uninitialized_workspace.mkdir()
-                encoded_uninitialized = urllib.parse.quote(str(uninitialized_workspace.resolve()), safe="")
-                with urllib.request.urlopen(
-                    f"{gui_launch['url']}/api/workspace-cockpit?workspace={encoded_uninitialized}",
-                    timeout=20,
-                ) as response_handle:
-                    uninitialized_payload = json.loads(response_handle.read().decode("utf-8"))
-                assert uninitialized_payload["state_kind"] == "uninitialized"
-                assert uninitialized_payload["diagnostics"]["paths"]
-            finally:
-                stop_gui()
-        else:
-            assert "Operation not permitted" in gui_launch_process.stderr or "PermissionError" in gui_launch_process.stderr
         progress("dashboard snapshot, installer CLI, MCP handshake, and GUI smoke assertions")
 
     total_elapsed = time.monotonic() - smoke_started_at

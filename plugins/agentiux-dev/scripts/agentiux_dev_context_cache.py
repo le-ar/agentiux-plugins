@@ -11,6 +11,7 @@ from typing import Any
 
 from agentiux_dev_lib import (
     PLUGIN_VERSION,
+    _design_and_testability_summary,
     _current_task_record_from_paths,
     _current_workstream_record_from_paths,
     _git_output_or_empty,
@@ -18,8 +19,11 @@ from agentiux_dev_lib import (
     detect_workspace,
     now_iso,
     plugin_root,
+    read_design_brief,
+    read_design_handoff,
     slugify,
     state_root,
+    workspace_paths,
     workspace_hash,
 )
 from agentiux_dev_retrieval import infer_retrieval_mode, retrieval_mode_profile, retrieval_policy_payload
@@ -890,6 +894,28 @@ def _workspace_context_payload(
 ) -> dict[str, Any]:
     state, workstream, task = _safe_workspace_state(workspace)
     verification = _safe_verification_context(workspace, state=state, workstream=workstream)
+    current_workstream_id = (workstream or {}).get("workstream_id")
+    brief_markdown = None
+    brief_kind = "workstream"
+    if state is not None:
+        resolved_paths = workspace_paths(workspace, workstream_id=current_workstream_id)
+        if state.get("workspace_mode") == "task" and (task or {}).get("task_id"):
+            brief_kind = "task"
+            brief_path = Path(resolved_paths["tasks_root"]) / str(task["task_id"]) / "task-brief.md"
+            brief_markdown = brief_path.read_text() if brief_path.exists() else None
+        elif current_workstream_id and resolved_paths.get("current_workstream_active_brief"):
+            brief_path = Path(resolved_paths["current_workstream_active_brief"])
+            brief_markdown = brief_path.read_text() if brief_path.exists() else None
+    design_brief = read_design_brief(workspace, workstream_id=current_workstream_id) if current_workstream_id else {}
+    design_handoff = read_design_handoff(workspace, workstream_id=current_workstream_id) if current_workstream_id else {}
+    design_testability = _design_and_testability_summary(
+        workspace,
+        workstream_id=current_workstream_id,
+        design_brief=design_brief,
+        design_handoff=design_handoff,
+        brief_markdown=brief_markdown,
+        brief_kind=brief_kind,
+    )
     changed_paths = [entry["path"] for entry in git_state.get("changed_files", [])][:24]
     project_memory_chunks = [chunk for chunk in chunks if chunk.get("source_kind") == "project_memory"]
     pinned_project_memory_chunks = [
@@ -937,6 +963,8 @@ def _workspace_context_payload(
         },
         "known_test_surfaces": _known_test_surfaces(workspace),
         "known_verification_surfaces": verification,
+        "design_summary": design_testability["design_summary"],
+        "testability_summary": design_testability["testability_summary"],
         "project_memory": {
             "note_count": len(project_memory_chunks),
             "pinned_note_count": len(pinned_project_memory_chunks),
@@ -1207,6 +1235,8 @@ def compact_workspace_context(workspace_context: dict[str, Any]) -> dict[str, An
         "current_workstream": workspace_context.get("current_workstream"),
         "current_task": workspace_context.get("current_task"),
         "known_test_surfaces": (workspace_context.get("known_test_surfaces") or [])[:6],
+        "design_summary": workspace_context.get("design_summary") or {},
+        "testability_summary": workspace_context.get("testability_summary") or {},
         "project_memory": workspace_context.get("project_memory") or {},
         "last_used_routes": (workspace_context.get("last_used_routes") or [])[:4],
         "last_used_tools": (workspace_context.get("last_used_tools") or [])[:8],

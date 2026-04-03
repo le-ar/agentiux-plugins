@@ -105,6 +105,21 @@ TASK_BRIEF_PLACEHOLDER = """# TaskBrief
 No active task brief is recorded yet.
 """
 
+DESIGN_BRIEF_SCHEMA_VERSION = 2
+DESIGN_HANDOFF_SCHEMA_VERSION = 2
+BRIEF_METADATA_SCHEMA_VERSION = 1
+BRIEF_GENERATED_MARKER = "brief-generated"
+BRIEF_KIND_MARKER = "brief-kind"
+BRIEF_VERSION_MARKER = "brief-schema-version"
+BRIEF_UPDATED_AT_MARKER = "brief-updated-at"
+DEFAULT_TESTABILITY_GUIDANCE = {
+    "stable_targets": [],
+    "masks": [],
+    "preconditions": [],
+    "limitations": [],
+}
+SCROLL_ONLY_INTERACTION_TYPES = {"ensure_visible", "scroll", "scroll_only", "scroll_to"}
+
 TASK_TIME_TRACKING_SCHEMA_VERSION = 2
 DASHBOARD_PANEL_IDS = ("now", "plan", "quality", "integrations", "memory", "diagnostics")
 
@@ -1146,9 +1161,98 @@ def _strip_mirror_markers_from_markdown(markdown: str | None) -> str:
     return "\n".join(filtered_lines).strip()
 
 
-def _canonical_brief_markdown(markdown: str | None) -> str:
+def _brief_placeholder(kind: str) -> str:
+    return TASK_BRIEF_PLACEHOLDER.strip() if kind == "task" else BRIEF_PLACEHOLDER.strip()
+
+
+def _canonicalize_brief_markdown(markdown: str | None, *, kind: str = "workstream") -> str:
     stripped = _strip_mirror_markers_from_markdown(markdown)
-    return stripped or BRIEF_PLACEHOLDER.strip()
+    return stripped or _brief_placeholder(kind)
+
+
+def _canonical_brief_markdown(markdown: str | None) -> str:
+    return _canonicalize_brief_markdown(markdown, kind="workstream")
+
+
+def _canonical_task_brief_markdown(markdown: str | None) -> str:
+    return _canonicalize_brief_markdown(markdown, kind="task")
+
+
+def _brief_metadata_markers(kind: str, *, updated_at: str | None = None) -> list[str]:
+    return [
+        f"<!-- {BRIEF_GENERATED_MARKER}: true -->",
+        f"<!-- {BRIEF_KIND_MARKER}: {kind} -->",
+        f"<!-- {BRIEF_VERSION_MARKER}: {BRIEF_METADATA_SCHEMA_VERSION} -->",
+        f"<!-- {BRIEF_UPDATED_AT_MARKER}: {updated_at or now_iso()} -->",
+    ]
+
+
+def _brief_metadata(markdown: str | None) -> dict[str, Any]:
+    text = (markdown or "").replace("\r\n", "\n")
+    metadata: dict[str, Any] = {
+        "generated": False,
+        "kind": None,
+        "schema_version": None,
+        "updated_at": None,
+    }
+    marker_patterns = {
+        BRIEF_GENERATED_MARKER: "generated",
+        BRIEF_KIND_MARKER: "kind",
+        BRIEF_VERSION_MARKER: "schema_version",
+        BRIEF_UPDATED_AT_MARKER: "updated_at",
+    }
+    for line in text.splitlines():
+        stripped = line.strip()
+        if not stripped.startswith("<!--") or not stripped.endswith("-->"):
+            continue
+        for marker, target_key in marker_patterns.items():
+            match = re.match(rf"^\s*<!--\s*{re.escape(marker)}:\s*(.*?)\s*-->\s*$", stripped)
+            if not match:
+                continue
+            raw_value = match.group(1).strip()
+            if target_key == "generated":
+                metadata[target_key] = raw_value.lower() == "true"
+            elif target_key == "schema_version":
+                try:
+                    metadata[target_key] = int(raw_value)
+                except ValueError:
+                    metadata[target_key] = None
+            else:
+                metadata[target_key] = raw_value or None
+    return metadata
+
+
+def _strip_brief_metadata(markdown: str | None) -> str:
+    text = _strip_mirror_markers_from_markdown(markdown)
+    filtered_lines = [
+        line
+        for line in text.splitlines()
+        if not re.match(
+            rf"^\s*<!--\s*({re.escape(BRIEF_GENERATED_MARKER)}|{re.escape(BRIEF_KIND_MARKER)}|{re.escape(BRIEF_VERSION_MARKER)}|{re.escape(BRIEF_UPDATED_AT_MARKER)}):",
+            line,
+        )
+    ]
+    return "\n".join(filtered_lines).strip()
+
+
+def _brief_generation_status(markdown: str | None, *, kind: str) -> str:
+    canonical = _canonicalize_brief_markdown(markdown, kind=kind)
+    if _strip_brief_metadata(canonical) == _brief_placeholder(kind):
+        return "placeholder"
+    metadata = _brief_metadata(canonical)
+    if metadata.get("generated"):
+        return "generated"
+    return "manual"
+
+
+def _brief_preview_lines(markdown: str | None, *, limit: int = 4) -> list[str]:
+    body = _strip_brief_metadata(markdown)
+    return [line for line in body.splitlines() if line.strip()][:limit]
+
+
+def _render_generated_brief(kind: str, body_lines: list[str], *, updated_at: str | None = None) -> str:
+    lines = [*_brief_metadata_markers(kind, updated_at=updated_at), "", *body_lines]
+    return "\n".join(lines).rstrip() + "\n"
 
 
 def _strip_mirror_fields(payload: dict[str, Any]) -> dict[str, Any]:
@@ -1665,9 +1769,19 @@ def _workflow_workspace_state_summary(payload: dict[str, Any] | None) -> dict[st
     }
 
 
-def _workflow_workstream_summary(payload: dict[str, Any] | None) -> dict[str, Any] | None:
+def _workflow_workstream_summary(workspace: str | Path, payload: dict[str, Any] | None) -> dict[str, Any] | None:
     if not payload:
         return None
+    workstream_id = payload.get("workstream_id")
+    summary = {}
+    if workstream_id:
+        paths = _workstream_paths(workspace, workstream_id)
+        summary = _design_and_testability_summary(
+            workspace,
+            workstream_id=workstream_id,
+            brief_markdown=_read_text(Path(paths["current_workstream_active_brief"]), default=BRIEF_PLACEHOLDER),
+            brief_kind="workstream",
+        )
     summary = {
         "workstream_id": payload.get("workstream_id"),
         "title": payload.get("title"),
@@ -1680,6 +1794,7 @@ def _workflow_workstream_summary(payload: dict[str, Any] | None) -> dict[str, An
         "current_slice": payload.get("current_slice"),
         "last_completed_stage": payload.get("last_completed_stage"),
         "updated_at": payload.get("updated_at"),
+        **summary,
     }
     if payload.get("register"):
         register = payload["register"]
@@ -1689,9 +1804,17 @@ def _workflow_workstream_summary(payload: dict[str, Any] | None) -> dict[str, An
     return summary
 
 
-def _workflow_task_summary(payload: dict[str, Any] | None) -> dict[str, Any] | None:
+def _workflow_task_summary(workspace: str | Path, payload: dict[str, Any] | None) -> dict[str, Any] | None:
     if not payload:
         return None
+    task_paths = _task_paths(workspace, payload.get("task_id"))
+    linked_workstream_id = payload.get("linked_workstream_id")
+    summary = _design_and_testability_summary(
+        workspace,
+        workstream_id=linked_workstream_id,
+        brief_markdown=_read_text(Path(task_paths["current_task_brief"]), default=TASK_BRIEF_PLACEHOLDER),
+        brief_kind="task",
+    )
     return {
         "task_id": payload.get("task_id"),
         "title": payload.get("title"),
@@ -1702,6 +1825,7 @@ def _workflow_task_summary(payload: dict[str, Any] | None) -> dict[str, Any] | N
         "verification_mode_default": payload.get("verification_mode_default"),
         "docs_sync_required": payload.get("docs_sync_required"),
         "updated_at": payload.get("updated_at"),
+        **summary,
     }
 
 
@@ -1832,8 +1956,8 @@ def workflow_advice(workspace: str | Path, request_text: str | None = None, auto
         "starter_recommendation": starter,
         "track_recommendation": track_recommendation,
         "workspace_state": _workflow_workspace_state_summary(workspace_state_payload),
-        "current_workstream": _workflow_workstream_summary(current_workstream_payload),
-        "current_task": _workflow_task_summary(current_task_payload),
+        "current_workstream": _workflow_workstream_summary(workspace, current_workstream_payload),
+        "current_task": _workflow_task_summary(workspace, current_task_payload),
         "language_policy": language_policy(),
         "applied_action": applied_action,
         "requires_confirmation": bool(initialization_advice or starter or (track_recommendation and not track_recommendation.get("auto_applied"))),
@@ -3069,7 +3193,7 @@ def _materialize_stage_entry(
 
 def _default_design_brief(workspace_path: str, paths: dict[str, str]) -> dict[str, Any]:
     return {
-        "schema_version": 1,
+        "schema_version": DESIGN_BRIEF_SCHEMA_VERSION,
         "workspace_path": workspace_path,
         "status": "not_started",
         "platform": None,
@@ -3079,9 +3203,148 @@ def _default_design_brief(workspace_path: str, paths: dict[str, str]) -> dict[st
         "style_goals": [],
         "exclusions": [],
         "notes": [],
+        "affected_surfaces": [],
+        "user_flows": [],
+        "state_coverage": [],
+        "ux_rationale": [],
+        "critical_actions": [],
+        "testability_guidance": copy.deepcopy(DEFAULT_TESTABILITY_GUIDANCE),
         "reference_board_path": paths["reference_board"],
         "design_handoff_path": paths["design_handoff"],
         "updated_at": now_iso(),
+    }
+
+
+def _normalized_optional_string(value: Any) -> str | None:
+    text = str(value or "").strip()
+    return text or None
+
+
+def _normalized_string_list(payload: Any) -> list[str]:
+    if payload is None:
+        return []
+    if isinstance(payload, (list, tuple, set)):
+        items = payload
+    else:
+        items = [payload]
+    normalized: list[str] = []
+    for item in items:
+        text = str(item or "").strip()
+        if text and text not in normalized:
+            normalized.append(text)
+    return normalized
+
+
+def _normalized_list_copy(payload: Any) -> list[Any]:
+    return copy.deepcopy(payload) if isinstance(payload, list) else []
+
+
+def _normalize_affected_surface(payload: Any, *, index: int) -> dict[str, Any]:
+    item = copy.deepcopy(payload) if isinstance(payload, dict) else {}
+    item["surface_id"] = _normalized_optional_string(item.get("surface_id")) or f"surface-{index}"
+    item["platform"] = _normalized_optional_string(item.get("platform"))
+    item["route_or_screen"] = _normalized_optional_string(item.get("route_or_screen") or item.get("route") or item.get("screen"))
+    item["summary"] = _normalized_optional_string(item.get("summary"))
+    return item
+
+
+def _normalize_user_flow(payload: Any, *, index: int) -> dict[str, Any]:
+    item = copy.deepcopy(payload) if isinstance(payload, dict) else {}
+    item["flow_id"] = _normalized_optional_string(item.get("flow_id")) or f"flow-{index}"
+    item["title"] = _normalized_optional_string(item.get("title")) or item["flow_id"]
+    item["entry_points"] = _normalized_string_list(item.get("entry_points"))
+    item["success_state"] = _normalized_optional_string(item.get("success_state"))
+    item["steps"] = _normalized_string_list(item.get("steps"))
+    return item
+
+
+def _normalize_state_coverage_entry(payload: Any, *, index: int) -> dict[str, Any]:
+    item = copy.deepcopy(payload) if isinstance(payload, dict) else {}
+    item["state_id"] = _normalized_optional_string(item.get("state_id")) or f"state-{index}"
+    item["surface_id"] = _normalized_optional_string(item.get("surface_id"))
+    item["status_kind"] = _normalized_optional_string(item.get("status_kind")) or "unknown"
+    item["notes"] = _normalized_optional_string(item.get("notes"))
+    item["verified_by"] = _normalized_string_list(item.get("verified_by"))
+    return item
+
+
+def _normalize_ux_rationale_entry(payload: Any, *, index: int) -> dict[str, Any]:
+    item = copy.deepcopy(payload) if isinstance(payload, dict) else {}
+    item["decision_id"] = _normalized_optional_string(item.get("decision_id")) or f"decision-{index}"
+    item["surface_ids"] = _normalized_string_list(item.get("surface_ids"))
+    item["rationale"] = _normalized_optional_string(item.get("rationale"))
+    item["tradeoff"] = _normalized_optional_string(item.get("tradeoff"))
+    return item
+
+
+def _normalize_critical_action_entry(payload: Any, *, index: int) -> dict[str, Any]:
+    item = copy.deepcopy(payload) if isinstance(payload, dict) else {}
+    item["action_id"] = _normalized_optional_string(item.get("action_id")) or f"action-{index}"
+    item["flow_id"] = _normalized_optional_string(item.get("flow_id"))
+    item["surface_id"] = _normalized_optional_string(item.get("surface_id"))
+    item["interaction_type"] = (_normalized_optional_string(item.get("interaction_type")) or "unknown").lower()
+    item["priority"] = (_normalized_optional_string(item.get("priority")) or "normal").lower()
+    item["verification_path_id"] = _normalized_optional_string(item.get("verification_path_id"))
+    return item
+
+
+def _normalize_testability_guidance(payload: Any) -> dict[str, Any]:
+    item = copy.deepcopy(DEFAULT_TESTABILITY_GUIDANCE)
+    if isinstance(payload, dict):
+        item.update(copy.deepcopy(payload))
+    item["stable_targets"] = _normalized_string_list(item.get("stable_targets"))
+    item["masks"] = _normalized_string_list(item.get("masks"))
+    item["preconditions"] = _normalized_string_list(item.get("preconditions"))
+    item["limitations"] = _normalized_string_list(item.get("limitations"))
+    return item
+
+
+def _normalize_design_brief_payload(
+    workspace_path: str,
+    paths: dict[str, str],
+    *,
+    persisted: dict[str, Any] | None = None,
+    incoming: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    payload = _default_design_brief(workspace_path, paths)
+    for source in (persisted or {}, incoming or {}):
+        payload.update(copy.deepcopy(source))
+    payload["schema_version"] = DESIGN_BRIEF_SCHEMA_VERSION
+    payload["workspace_path"] = workspace_path
+    payload["status"] = _normalized_optional_string(payload.get("status")) or "not_started"
+    payload["platform"] = _normalized_optional_string(payload.get("platform"))
+    payload["surface"] = _normalized_optional_string(payload.get("surface"))
+    payload["audience"] = _normalized_optional_string(payload.get("audience"))
+    payload["constraints"] = _normalized_string_list(payload.get("constraints"))
+    payload["style_goals"] = _normalized_string_list(payload.get("style_goals"))
+    payload["exclusions"] = _normalized_string_list(payload.get("exclusions"))
+    payload["notes"] = _normalized_string_list(payload.get("notes"))
+    payload["affected_surfaces"] = [
+        _normalize_affected_surface(item, index=index)
+        for index, item in enumerate(payload.get("affected_surfaces") or [], start=1)
+    ]
+    payload["user_flows"] = [
+        _normalize_user_flow(item, index=index)
+        for index, item in enumerate(payload.get("user_flows") or [], start=1)
+    ]
+    payload["state_coverage"] = [
+        _normalize_state_coverage_entry(item, index=index)
+        for index, item in enumerate(payload.get("state_coverage") or [], start=1)
+    ]
+    payload["ux_rationale"] = [
+        _normalize_ux_rationale_entry(item, index=index)
+        for index, item in enumerate(payload.get("ux_rationale") or [], start=1)
+    ]
+    payload["critical_actions"] = [
+        _normalize_critical_action_entry(item, index=index)
+        for index, item in enumerate(payload.get("critical_actions") or [], start=1)
+    ]
+    payload["testability_guidance"] = _normalize_testability_guidance(payload.get("testability_guidance"))
+    payload["reference_board_path"] = paths["reference_board"]
+    payload["design_handoff_path"] = paths["design_handoff"]
+    payload["updated_at"] = _normalized_optional_string(payload.get("updated_at")) or now_iso()
+    return {
+        **payload,
     }
 
 
@@ -3106,7 +3369,7 @@ def _default_reference_board(workspace_path: str, paths: dict[str, str], board_i
 def _default_design_handoff(workspace_path: str, handoff_id: str = "current") -> dict[str, Any]:
     handoff_key = sanitize_identifier(handoff_id, "current")
     return {
-        "schema_version": 1,
+        "schema_version": DESIGN_HANDOFF_SCHEMA_VERSION,
         "workspace_path": workspace_path,
         "handoff_id": handoff_key,
         "status": "not_started",
@@ -3120,8 +3383,63 @@ def _default_design_handoff(workspace_path: str, handoff_id: str = "current") ->
         "copy_tone": [],
         "platform_deltas": [],
         "verification_hooks": [],
+        "affected_surfaces": [],
+        "user_flows": [],
+        "state_coverage": [],
+        "ux_rationale": [],
+        "critical_actions": [],
+        "testability_guidance": copy.deepcopy(DEFAULT_TESTABILITY_GUIDANCE),
         "updated_at": now_iso(),
     }
+
+
+def _normalize_design_handoff_payload(
+    workspace_path: str,
+    handoff_id: str,
+    *,
+    persisted: dict[str, Any] | None = None,
+    incoming: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    payload = _default_design_handoff(workspace_path, handoff_id)
+    for source in (persisted or {}, incoming or {}):
+        payload.update(copy.deepcopy(source))
+    payload["schema_version"] = DESIGN_HANDOFF_SCHEMA_VERSION
+    payload["workspace_path"] = workspace_path
+    payload["handoff_id"] = sanitize_identifier(handoff_id or payload.get("handoff_id"), "current")
+    payload["status"] = _normalized_optional_string(payload.get("status")) or "not_started"
+    payload["platform"] = _normalized_optional_string(payload.get("platform"))
+    payload["layout_system"] = _normalized_list_copy(payload.get("layout_system"))
+    payload["component_inventory"] = _normalized_list_copy(payload.get("component_inventory"))
+    payload["motion_rules"] = _normalized_list_copy(payload.get("motion_rules"))
+    payload["typography"] = copy.deepcopy(payload.get("typography") or {})
+    payload["color_system"] = copy.deepcopy(payload.get("color_system") or {})
+    payload["accessibility_constraints"] = _normalized_list_copy(payload.get("accessibility_constraints"))
+    payload["copy_tone"] = _normalized_list_copy(payload.get("copy_tone"))
+    payload["platform_deltas"] = _normalized_list_copy(payload.get("platform_deltas"))
+    payload["verification_hooks"] = _normalized_list_copy(payload.get("verification_hooks"))
+    payload["affected_surfaces"] = [
+        _normalize_affected_surface(item, index=index)
+        for index, item in enumerate(payload.get("affected_surfaces") or [], start=1)
+    ]
+    payload["user_flows"] = [
+        _normalize_user_flow(item, index=index)
+        for index, item in enumerate(payload.get("user_flows") or [], start=1)
+    ]
+    payload["state_coverage"] = [
+        _normalize_state_coverage_entry(item, index=index)
+        for index, item in enumerate(payload.get("state_coverage") or [], start=1)
+    ]
+    payload["ux_rationale"] = [
+        _normalize_ux_rationale_entry(item, index=index)
+        for index, item in enumerate(payload.get("ux_rationale") or [], start=1)
+    ]
+    payload["critical_actions"] = [
+        _normalize_critical_action_entry(item, index=index)
+        for index, item in enumerate(payload.get("critical_actions") or [], start=1)
+    ]
+    payload["testability_guidance"] = _normalize_testability_guidance(payload.get("testability_guidance"))
+    payload["updated_at"] = _normalized_optional_string(payload.get("updated_at")) or now_iso()
+    return payload
 
 
 def _default_task_record(
@@ -4847,26 +5165,24 @@ def get_active_brief(workspace: str | Path) -> dict[str, Any]:
     paths = _ensure_workspace_initialized(workspace)
     workspace_state = read_workspace_state(workspace)
     if workspace_state.get("workspace_mode") == "task" and workspace_state.get("current_task_id"):
-        task = read_task(workspace, task_id=workspace_state["current_task_id"])
+        task = _task_payload_from_disk(workspace, workspace_state["current_task_id"])
         task_paths = _task_paths(workspace, task["task_id"])
-        return {
-            "workspace_path": paths["workspace_path"],
-            "mode": "task",
-            "task_id": task["task_id"],
-            "active_brief_path": task_paths["current_task_brief"],
-            "markdown": _read_text(Path(task_paths["current_task_brief"]), default=TASK_BRIEF_PLACEHOLDER),
-        }
+        return _ensure_active_brief_payload(
+            workspace,
+            mode="task",
+            path=Path(task_paths["current_task_brief"]),
+            task=task,
+        )
     workstream_id = workspace_state.get("current_workstream_id")
     if not workstream_id:
         raise _no_current_workstream_error()
     workstream_paths = _workstream_paths(workspace, workstream_id)
-    return {
-        "workspace_path": paths["workspace_path"],
-        "mode": "workstream",
-        "workstream_id": workstream_id,
-        "active_brief_path": workstream_paths["current_workstream_active_brief"],
-        "markdown": _canonical_brief_markdown(_read_text(Path(workstream_paths["current_workstream_active_brief"]), default=BRIEF_PLACEHOLDER)),
-    }
+    return _ensure_active_brief_payload(
+        workspace,
+        mode="workstream",
+        path=Path(workstream_paths["current_workstream_active_brief"]),
+        workstream_id=workstream_id,
+    )
 
 
 def set_active_brief(workspace: str | Path, markdown: str) -> dict[str, Any]:
@@ -4874,7 +5190,7 @@ def set_active_brief(workspace: str | Path, markdown: str) -> dict[str, Any]:
     state = read_workspace_state(workspace)
     if state.get("workspace_mode") == "task" and state.get("current_task_id"):
         task_paths = _task_paths(workspace, state["current_task_id"])
-        _write_text(Path(task_paths["current_task_brief"]), markdown or TASK_BRIEF_PLACEHOLDER)
+        _write_text(Path(task_paths["current_task_brief"]), _canonical_task_brief_markdown(markdown or TASK_BRIEF_PLACEHOLDER))
         return get_active_brief(workspace)
     workstream_id = state.get("current_workstream_id")
     if not workstream_id:
@@ -5074,17 +5390,20 @@ def read_design_brief(workspace: str | Path, workstream_id: str | None = None) -
     target_id = _resolve_target_workstream_id(workspace, workstream_id)
     paths = _workstream_paths(workspace, target_id)
     path = Path(paths["design_brief"])
-    return _load_json(path, default=_default_design_brief(paths["workspace_path"], paths))
+    persisted = _load_json(path, default={}) or {}
+    return _normalize_design_brief_payload(paths["workspace_path"], paths, persisted=persisted)
 
 
 def write_design_brief(workspace: str | Path, brief: dict[str, Any], workstream_id: str | None = None) -> dict[str, Any]:
     target_id = _resolve_target_workstream_id(workspace, workstream_id)
     paths = _workstream_paths(workspace, target_id)
-    payload = _default_design_brief(paths["workspace_path"], paths)
-    payload.update(brief or {})
-    payload["workspace_path"] = paths["workspace_path"]
-    payload["reference_board_path"] = paths["reference_board"]
-    payload["design_handoff_path"] = paths["design_handoff"]
+    persisted = _load_json(Path(paths["design_brief"]), default={}) or {}
+    payload = _normalize_design_brief_payload(
+        paths["workspace_path"],
+        paths,
+        persisted=persisted,
+        incoming=brief or {},
+    )
     payload["updated_at"] = now_iso()
     _write_json(Path(paths["design_brief"]), payload)
     return payload
@@ -5205,7 +5524,8 @@ def read_design_handoff(workspace: str | Path, handoff_id: str = "current", work
     paths = _workstream_paths(workspace, target_id)
     handoff_key = sanitize_identifier(handoff_id, "current")
     path = Path(paths["design_handoff"]) if handoff_key == "current" else Path(paths["design_handoffs_dir"]) / f"{handoff_key}.json"
-    return _load_json(path, default=_default_design_handoff(paths["workspace_path"], handoff_key))
+    persisted = _load_json(path, default={}) or {}
+    return _normalize_design_handoff_payload(paths["workspace_path"], handoff_key, persisted=persisted)
 
 
 def write_design_handoff(
@@ -5218,15 +5538,526 @@ def write_design_handoff(
     target_id = _resolve_target_workstream_id(workspace, workstream_id)
     paths = _workstream_paths(workspace, target_id)
     handoff_key = sanitize_identifier(handoff_id or handoff.get("handoff_id"), "current")
-    payload = _default_design_handoff(paths["workspace_path"], handoff_key)
-    payload.update(handoff or {})
-    payload["workspace_path"] = paths["workspace_path"]
-    payload["handoff_id"] = handoff_key
-    payload["updated_at"] = now_iso()
     handoff_path = Path(paths["design_handoffs_dir"]) / f"{handoff_key}.json"
+    persisted_sources = []
+    if handoff_key == "current":
+        persisted_sources.append(_load_json(Path(paths["design_handoff"]), default={}) or {})
+    persisted_sources.append(_load_json(handoff_path, default={}) or {})
+    persisted: dict[str, Any] = {}
+    for source in persisted_sources:
+        if isinstance(source, dict):
+            persisted.update(copy.deepcopy(source))
+    payload = _normalize_design_handoff_payload(
+        paths["workspace_path"],
+        handoff_key,
+        persisted=persisted,
+        incoming=handoff or {},
+    )
+    payload["updated_at"] = now_iso()
     _write_json(handoff_path, payload)
     if make_current or handoff_key == "current":
         _write_json(Path(paths["design_handoff"]), payload)
+    return payload
+
+
+def _design_artifact_items(design_brief: dict[str, Any], design_handoff: dict[str, Any], field: str) -> list[Any]:
+    handoff_items = copy.deepcopy(design_handoff.get(field) or [])
+    if handoff_items:
+        return handoff_items
+    return copy.deepcopy(design_brief.get(field) or [])
+
+
+def _critical_action_requires_authored_path(action: dict[str, Any]) -> bool:
+    interaction_type = str(action.get("interaction_type") or "").lower()
+    if not interaction_type:
+        return False
+    return interaction_type not in SCROLL_ONLY_INTERACTION_TYPES and interaction_type not in {"view", "observe", "read_only"}
+
+
+def _brief_path_and_kind_for_state(workspace: str | Path, workspace_state: dict[str, Any]) -> tuple[Path, str]:
+    if workspace_state.get("workspace_mode") == "task" and workspace_state.get("current_task_id"):
+        task_paths = _task_paths(workspace, workspace_state["current_task_id"])
+        return Path(task_paths["current_task_brief"]), "task"
+    workstream_id = workspace_state.get("current_workstream_id")
+    if not workstream_id:
+        raise _no_current_workstream_error()
+    workstream_paths = _workstream_paths(workspace, workstream_id)
+    return Path(workstream_paths["current_workstream_active_brief"]), "workstream"
+
+
+def _brief_summary_payload(markdown: str | None, *, kind: str) -> dict[str, Any]:
+    metadata = _brief_metadata(markdown)
+    return {
+        "brief_generation_status": _brief_generation_status(markdown, kind=kind),
+        "brief_metadata": metadata,
+        "preview_lines": _brief_preview_lines(markdown, limit=8),
+    }
+
+
+def _design_and_testability_summary(
+    workspace: str | Path,
+    *,
+    workstream_id: str | None = None,
+    design_brief: dict[str, Any] | None = None,
+    design_handoff: dict[str, Any] | None = None,
+    brief_markdown: str | None = None,
+    brief_kind: str = "workstream",
+) -> dict[str, Any]:
+    summary = {
+        "design_summary": {
+            "affected_surface_count": 0,
+            "user_flow_count": 0,
+            "state_coverage_count": 0,
+            "verified_state_count": 0,
+            "ux_rationale_count": 0,
+            "critical_action_count": 0,
+            "brief_generation_status": _brief_generation_status(brief_markdown, kind=brief_kind),
+            "handoff_status": str((design_handoff or {}).get("status") or "not_started"),
+        },
+        "testability_summary": {
+            "critical_action_count": 0,
+            "scroll_only_action_count": 0,
+            "authored_path_count": 0,
+            "covered_action_count": 0,
+            "limited_action_count": 0,
+            "unresolved_action_count": 0,
+            "limitation_count": 0,
+            "unsupported_path_count": 0,
+            "covered_action_ids": [],
+            "limited_action_ids": [],
+            "unresolved_action_ids": [],
+            "brief_generation_status": _brief_generation_status(brief_markdown, kind=brief_kind),
+            "handoff_status": str((design_handoff or {}).get("status") or "not_started"),
+        },
+    }
+    if not workstream_id:
+        return summary
+
+    try:
+        from agentiux_dev_verification import read_verification_recipes
+    except Exception:
+        read_verification_recipes = None  # type: ignore[assignment]
+
+    design_brief_payload = copy.deepcopy(design_brief or read_design_brief(workspace, workstream_id=workstream_id))
+    design_handoff_payload = copy.deepcopy(design_handoff or read_design_handoff(workspace, workstream_id=workstream_id))
+    affected_surfaces = _design_artifact_items(design_brief_payload, design_handoff_payload, "affected_surfaces")
+    user_flows = _design_artifact_items(design_brief_payload, design_handoff_payload, "user_flows")
+    state_coverage = _design_artifact_items(design_brief_payload, design_handoff_payload, "state_coverage")
+    ux_rationale = _design_artifact_items(design_brief_payload, design_handoff_payload, "ux_rationale")
+    critical_actions = _design_artifact_items(design_brief_payload, design_handoff_payload, "critical_actions")
+    summary["design_summary"].update(
+        {
+            "affected_surface_count": len(affected_surfaces),
+            "user_flow_count": len(user_flows),
+            "state_coverage_count": len(state_coverage),
+            "verified_state_count": sum(
+                1
+                for item in state_coverage
+                if str(item.get("status_kind") or "").lower() in {"verified", "covered", "passed", "ready"}
+            ),
+            "ux_rationale_count": len(ux_rationale),
+            "critical_action_count": len(critical_actions),
+            "handoff_status": str(design_handoff_payload.get("status") or "not_started"),
+        }
+    )
+    summary["testability_summary"].update(
+        {
+            "critical_action_count": len(critical_actions),
+            "scroll_only_action_count": sum(
+                1 for item in critical_actions if str(item.get("interaction_type") or "").lower() in SCROLL_ONLY_INTERACTION_TYPES
+            ),
+            "handoff_status": str(design_handoff_payload.get("status") or "not_started"),
+        }
+    )
+    if read_verification_recipes is None:
+        return summary
+
+    recipes = read_verification_recipes(workspace, workstream_id=workstream_id)
+    supported_path_runners = {"playwright-visual", "detox-visual"}
+    path_ids_on_supported_runners: set[str] = set()
+    path_ids_on_unsupported_runners: set[str] = set()
+    action_ids_with_supported_paths: set[str] = set()
+    action_ids_with_unsupported_paths: set[str] = set()
+    limitation_ids: set[str] = set()
+    limited_action_ids: set[str] = set()
+    scroll_reachability_available = False
+    for case in recipes.get("cases") or []:
+        semantic_assertions = case.get("semantic_assertions") or {}
+        required_checks = {str(item).lower() for item in semantic_assertions.get("required_checks") or []}
+        scroll_reachability_available = scroll_reachability_available or ("scroll_reachability" in required_checks)
+        runner_supported = case.get("runner") in supported_path_runners
+        for path in semantic_assertions.get("reachability_paths") or []:
+            path_id = str(path.get("path_id") or "").strip()
+            action_ids = [str(item).strip() for item in (path.get("required_for_action_ids") or []) if str(item or "").strip()]
+            if runner_supported:
+                if path_id:
+                    path_ids_on_supported_runners.add(path_id)
+                action_ids_with_supported_paths.update(action_ids)
+            else:
+                if path_id:
+                    path_ids_on_unsupported_runners.add(path_id)
+                action_ids_with_unsupported_paths.update(action_ids)
+        for limitation in semantic_assertions.get("limitation_entries") or []:
+            limitation_id = str(limitation.get("limitation_id") or "").strip()
+            action_id = str(limitation.get("action_id") or "").strip()
+            if limitation_id:
+                limitation_ids.add(limitation_id)
+            if action_id:
+                limited_action_ids.add(action_id)
+    covered_action_ids: list[str] = []
+    unresolved_action_ids: list[str] = []
+    for action in critical_actions:
+        action_id = str(action.get("action_id") or "").strip()
+        if not action_id:
+            continue
+        interaction_type = str(action.get("interaction_type") or "").lower()
+        verification_path_id = str(action.get("verification_path_id") or "").strip()
+        if action_id in limited_action_ids:
+            continue
+        has_supported_path = (
+            (verification_path_id and verification_path_id in path_ids_on_supported_runners)
+            or action_id in action_ids_with_supported_paths
+        )
+        has_unsupported_path = (
+            (verification_path_id and verification_path_id in path_ids_on_unsupported_runners)
+            or action_id in action_ids_with_unsupported_paths
+        )
+        if has_supported_path or (interaction_type in SCROLL_ONLY_INTERACTION_TYPES and scroll_reachability_available):
+            covered_action_ids.append(action_id)
+        elif _critical_action_requires_authored_path(action) or has_unsupported_path:
+            unresolved_action_ids.append(action_id)
+    summary["testability_summary"].update(
+        {
+            "authored_path_count": len(path_ids_on_supported_runners) + len(path_ids_on_unsupported_runners),
+            "covered_action_count": len(covered_action_ids),
+            "limited_action_count": len(limited_action_ids),
+            "unresolved_action_count": len(unresolved_action_ids),
+            "limitation_count": len(limitation_ids),
+            "unsupported_path_count": len(path_ids_on_unsupported_runners),
+            "covered_action_ids": covered_action_ids[:8],
+            "limited_action_ids": sorted(limited_action_ids)[:8],
+            "unresolved_action_ids": unresolved_action_ids[:8],
+        }
+    )
+    return summary
+
+
+def _brief_lines_from_items(items: list[str], *, empty_message: str, limit: int = 6) -> list[str]:
+    if not items:
+        return [empty_message]
+    return [f"- {item}" for item in items[:limit]]
+
+
+def _format_surface_summary(surface: dict[str, Any]) -> str:
+    route = surface.get("route_or_screen") or "surface"
+    summary = surface.get("summary")
+    platform = surface.get("platform")
+    lead = f"{surface.get('surface_id') or route}"
+    extras = " / ".join(part for part in [platform, route] if part)
+    text = f"{lead}: {extras}" if extras else lead
+    return f"{text} - {summary}" if summary else text
+
+
+def _format_flow_summary(flow: dict[str, Any]) -> str:
+    success_state = flow.get("success_state")
+    entry_points = ", ".join(flow.get("entry_points") or [])
+    lead = f"{flow.get('flow_id')}: {flow.get('title') or flow.get('flow_id')}"
+    details = []
+    if entry_points:
+        details.append(f"entry {entry_points}")
+    if success_state:
+        details.append(f"success {success_state}")
+    return f"{lead} ({'; '.join(details)})" if details else lead
+
+
+def _format_state_summary(entry: dict[str, Any]) -> str:
+    lead = f"{entry.get('state_id')}: {entry.get('status_kind') or 'unknown'}"
+    if entry.get("surface_id"):
+        lead = f"{lead} on {entry['surface_id']}"
+    if entry.get("notes"):
+        lead = f"{lead} - {entry['notes']}"
+    return lead
+
+
+def _format_action_summary(action: dict[str, Any]) -> str:
+    bits = [action.get("action_id"), action.get("interaction_type")]
+    if action.get("surface_id"):
+        bits.append(f"surface {action['surface_id']}")
+    if action.get("flow_id"):
+        bits.append(f"flow {action['flow_id']}")
+    if action.get("verification_path_id"):
+        bits.append(f"path {action['verification_path_id']}")
+    return " | ".join(str(bit) for bit in bits if bit)
+
+
+def _task_brief_body_lines(
+    workspace: str | Path,
+    task: dict[str, Any],
+    *,
+    linked_workstream: dict[str, Any] | None,
+    design_brief: dict[str, Any],
+    design_handoff: dict[str, Any],
+    summary: dict[str, Any],
+    verification_selection: dict[str, Any] | None,
+) -> list[str]:
+    affected_surfaces = _design_artifact_items(design_brief, design_handoff, "affected_surfaces")
+    state_coverage = _design_artifact_items(design_brief, design_handoff, "state_coverage")
+    critical_actions = _design_artifact_items(design_brief, design_handoff, "critical_actions")
+    target_scope = _normalized_string_list(task.get("scope"))
+    selector_scope = [
+        f"{key}={', '.join(value)}"
+        for key, value in (task.get("verification_selectors") or {}).items()
+        if isinstance(value, list) and value
+    ]
+    lines = [
+        "# TaskBrief",
+        "",
+        "## Objective",
+        task.get("objective") or task.get("title") or "No task objective is recorded yet.",
+        "",
+        "## Scope",
+        *_brief_lines_from_items(
+            [
+                *[f"Task scope: {item}" for item in target_scope],
+                *( [f"Linked workstream: {linked_workstream.get('title') or linked_workstream.get('workstream_id')}"] if linked_workstream else [] ),
+                *( [f"Verification selectors: {item}" for item in selector_scope] if selector_scope else [] ),
+                *( [f"External issue: {(task.get('external_issue') or {}).get('issue_key')}"] if (task.get("external_issue") or {}).get("issue_key") else [] ),
+            ],
+            empty_message="No explicit scoped slices are recorded beyond the current task objective.",
+        ),
+        "",
+        "## Current Truth",
+        *_brief_lines_from_items(
+            [
+                f"Task status: {task.get('status') or 'planned'}",
+                *( [f"Stage: {task.get('stage_id')}"] if task.get("stage_id") else [] ),
+                *( [f"Workstream plan status: {(linked_workstream or {}).get('plan_status')}"] if linked_workstream and linked_workstream.get("plan_status") else [] ),
+                f"Design handoff: {design_handoff.get('status') or 'not_started'}",
+                f"Brief mode: {summary['design_summary'].get('brief_generation_status')}",
+            ],
+            empty_message="No persisted task truth is recorded yet.",
+        ),
+        "",
+        "## Target States",
+        *_brief_lines_from_items(
+            [
+                *[_format_surface_summary(item) for item in affected_surfaces],
+                *[_format_state_summary(item) for item in state_coverage[:4]],
+            ],
+            empty_message="No persisted rich design states are recorded for this task yet.",
+        ),
+        "",
+        "## Critical Actions",
+        *_brief_lines_from_items(
+            [_format_action_summary(item) for item in critical_actions],
+            empty_message="No critical actions are persisted yet.",
+        ),
+        "",
+        "## Verification Notes",
+        *_brief_lines_from_items(
+            [
+                *( [f"Resolved suite: {(verification_selection.get('selected_suite') or {}).get('id')}"] if verification_selection and verification_selection.get("selected_suite") else [] ),
+                *( [f"Selected cases: {', '.join(item.get('case_id') for item in (verification_selection.get('selected_cases') or []) if item.get('case_id'))}"] if verification_selection and verification_selection.get("selected_cases") else [] ),
+                f"Covered critical actions: {summary['testability_summary'].get('covered_action_count') or 0}",
+                f"Known limitations: {summary['testability_summary'].get('limitation_count') or 0}",
+                *( [verification_selection.get("reason")] if verification_selection and verification_selection.get("reason") else [] ),
+            ],
+            empty_message="No deterministic verification plan is resolved yet.",
+        ),
+        "",
+        "## Risks",
+        *_brief_lines_from_items(
+            [
+                *( [f"Unresolved critical actions: {', '.join(summary['testability_summary'].get('unresolved_action_ids') or [])}"] if summary["testability_summary"].get("unresolved_action_ids") else [] ),
+                *( [f"Manual follow-up required for {summary['testability_summary'].get('limitation_count')} limitation entries."] if int(summary["testability_summary"].get("limitation_count") or 0) else [] ),
+                *( [f"Coverage gaps remain because {summary['testability_summary'].get('unsupported_path_count')} authored paths target unsupported runners."] if int(summary["testability_summary"].get("unsupported_path_count") or 0) else [] ),
+            ],
+            empty_message="No explicit task risks are persisted yet.",
+        ),
+    ]
+    return lines
+
+
+def _stage_brief_body_lines(
+    workstream: dict[str, Any],
+    register: dict[str, Any],
+    *,
+    design_brief: dict[str, Any],
+    design_handoff: dict[str, Any],
+    summary: dict[str, Any],
+    verification_selection: dict[str, Any] | None,
+) -> list[str]:
+    affected_surfaces = _design_artifact_items(design_brief, design_handoff, "affected_surfaces")
+    user_flows = _design_artifact_items(design_brief, design_handoff, "user_flows")
+    state_coverage = _design_artifact_items(design_brief, design_handoff, "state_coverage")
+    lines = [
+        "# StageExecutionBrief",
+        "",
+        "## Goal",
+        register.get("active_goal") or workstream.get("scope_summary") or workstream.get("title") or "No active stage goal is recorded yet.",
+        "",
+        "## Current Truth",
+        *_brief_lines_from_items(
+            [
+                f"Plan status: {register.get('plan_status') or 'needs_user_confirmation'}",
+                *( [f"Current stage: {register.get('current_stage')}"] if register.get("current_stage") else [] ),
+                *( [f"Current slice: {register.get('current_slice')}"] if register.get("current_slice") else [] ),
+                *( [f"Stage status: {register.get('stage_status')}"] if register.get("stage_status") else [] ),
+                *( [f"Last completed stage: {register.get('last_completed_stage')}"] if register.get("last_completed_stage") else [] ),
+            ],
+            empty_message="No current stage truth is recorded yet.",
+        ),
+        "",
+        "## Active Surfaces",
+        *_brief_lines_from_items(
+            [_format_surface_summary(item) for item in affected_surfaces],
+            empty_message="No affected surfaces are persisted yet.",
+        ),
+        "",
+        "## Flows and States",
+        *_brief_lines_from_items(
+            [
+                *[_format_flow_summary(item) for item in user_flows],
+                *[_format_state_summary(item) for item in state_coverage[:4]],
+            ],
+            empty_message="No persisted flow or state coverage is recorded yet.",
+        ),
+        "",
+        "## Design/Testability Signals",
+        *_brief_lines_from_items(
+            [
+                f"Affected surfaces: {summary['design_summary'].get('affected_surface_count') or 0}",
+                f"User flows: {summary['design_summary'].get('user_flow_count') or 0}",
+                f"State coverage entries: {summary['design_summary'].get('state_coverage_count') or 0}",
+                f"Critical actions: {summary['design_summary'].get('critical_action_count') or 0}",
+                f"Covered actions: {summary['testability_summary'].get('covered_action_count') or 0}",
+                f"Known limitations: {summary['testability_summary'].get('limitation_count') or 0}",
+                f"Handoff status: {summary['design_summary'].get('handoff_status') or 'not_started'}",
+                f"Brief mode: {summary['design_summary'].get('brief_generation_status')}",
+            ],
+            empty_message="No design or testability signals are persisted yet.",
+        ),
+        "",
+        "## Deterministic Verification Plan",
+        *_brief_lines_from_items(
+            [
+                *( [f"Resolved suite: {(verification_selection.get('selected_suite') or {}).get('id')}"] if verification_selection and verification_selection.get("selected_suite") else [] ),
+                *( [f"Selected cases: {', '.join(item.get('case_id') for item in (verification_selection.get('selected_cases') or []) if item.get('case_id'))}"] if verification_selection and verification_selection.get("selected_cases") else [] ),
+                *( [verification_selection.get("reason")] if verification_selection and verification_selection.get("reason") else [] ),
+                f"Authored path count: {summary['testability_summary'].get('authored_path_count') or 0}",
+                f"Unresolved critical actions: {summary['testability_summary'].get('unresolved_action_count') or 0}",
+            ],
+            empty_message="No deterministic verification plan is resolved yet.",
+        ),
+        "",
+        "## Exit Criteria",
+        *_brief_lines_from_items(
+            [
+                "Design brief and handoff stay useful for the active surfaces, even when the rich workflow is still sparse.",
+                "Critical actions are either covered by authored paths, covered by scroll reachability when scroll-only, or declared as limitations.",
+                "Deterministic evidence is recorded before closeout.",
+            ],
+            empty_message="Persist explicit exit criteria before closeout.",
+        ),
+    ]
+    return lines
+
+
+def _generate_active_brief_markdown(workspace: str | Path, *, mode: str, task: dict[str, Any] | None = None) -> str:
+    state = read_workspace_state(workspace)
+    workstream_id = None
+    linked_workstream = None
+    register = None
+    if mode == "task" and task:
+        workstream_id = task.get("linked_workstream_id") or state.get("current_workstream_id")
+        if workstream_id:
+            if state.get("current_workstream_id") == workstream_id:
+                linked_workstream = current_workstream(workspace)
+            else:
+                paths = _ensure_workspace_initialized(workspace)
+                index = _load_workstreams_index(paths)
+                linked_workstream = _workstream_record_by_id(index, workstream_id)
+                linked_workstream = {
+                    **linked_workstream,
+                    "register": read_stage_register(workspace, workstream_id=workstream_id),
+                }
+            register = read_stage_register(workspace, workstream_id=workstream_id)
+    else:
+        workstream_id = state.get("current_workstream_id")
+        linked_workstream = current_workstream(workspace)
+        register = read_stage_register(workspace, workstream_id=workstream_id) if workstream_id else None
+    design_brief = read_design_brief(workspace, workstream_id=workstream_id) if workstream_id else _default_design_brief(str(Path(workspace).expanduser().resolve()), workspace_paths(workspace))
+    design_handoff = read_design_handoff(workspace, workstream_id=workstream_id) if workstream_id else _default_design_handoff(str(Path(workspace).expanduser().resolve()))
+    try:
+        from agentiux_dev_verification import resolve_verification_selection
+
+        verification_selection = resolve_verification_selection(workspace) if (task or workstream_id) else None
+    except Exception:
+        verification_selection = None
+    summary = _design_and_testability_summary(
+        workspace,
+        workstream_id=workstream_id,
+        design_brief=design_brief,
+        design_handoff=design_handoff,
+        brief_markdown=None,
+        brief_kind="task" if mode == "task" else "workstream",
+    )
+    if mode == "task" and task:
+        body_lines = _task_brief_body_lines(
+            workspace,
+            task,
+            linked_workstream=linked_workstream,
+            design_brief=design_brief,
+            design_handoff=design_handoff,
+            summary=summary,
+            verification_selection=verification_selection,
+        )
+    else:
+        body_lines = _stage_brief_body_lines(
+            linked_workstream or {},
+            register or {},
+            design_brief=design_brief,
+            design_handoff=design_handoff,
+            summary=summary,
+            verification_selection=verification_selection,
+        )
+    return _render_generated_brief("task" if mode == "task" else "workstream", body_lines)
+
+
+def _ensure_active_brief_payload(
+    workspace: str | Path,
+    *,
+    mode: str,
+    path: Path,
+    task: dict[str, Any] | None = None,
+    workstream_id: str | None = None,
+) -> dict[str, Any]:
+    kind = "task" if mode == "task" else "workstream"
+    default_markdown = _brief_placeholder(kind)
+    raw_markdown = _read_text(path, default=default_markdown)
+    canonical_markdown = _canonicalize_brief_markdown(raw_markdown, kind=kind)
+    generation_status = _brief_generation_status(canonical_markdown, kind=kind)
+    if generation_status in {"placeholder", "generated"}:
+        generated_markdown = _generate_active_brief_markdown(workspace, mode=mode, task=task)
+        if generated_markdown.strip() != canonical_markdown.strip():
+            _write_text(path, generated_markdown)
+            canonical_markdown = generated_markdown.strip() + "\n"
+        else:
+            canonical_markdown = generated_markdown
+        generation_status = "generated"
+    payload = {
+        "workspace_path": str(Path(workspace).expanduser().resolve()),
+        "mode": mode,
+        "active_brief_path": str(path),
+        "markdown": canonical_markdown,
+        "brief_generation_status": generation_status,
+        "brief_metadata": _brief_metadata(canonical_markdown),
+        "preview_lines": _brief_preview_lines(canonical_markdown, limit=8),
+    }
+    if task:
+        payload["task_id"] = task.get("task_id")
+    if workstream_id:
+        payload["workstream_id"] = workstream_id
     return payload
 
 
@@ -5437,7 +6268,7 @@ def create_task(
     if make_current:
         payload = _activate_task_payload(payload)
     _write_json(Path(task_paths["current_task_record"]), payload)
-    _write_text(Path(task_paths["current_task_brief"]), TASK_BRIEF_PLACEHOLDER)
+    _write_text(Path(task_paths["current_task_brief"]), _canonical_task_brief_markdown(TASK_BRIEF_PLACEHOLDER))
     _write_json(Path(task_paths["current_task_verification_summary"]), _default_verification_summary())
     index["items"].append(payload)
     if make_current:
@@ -5460,20 +6291,15 @@ def create_task(
     }
 
 
-def read_task(workspace: str | Path, task_id: str | None = None) -> dict[str, Any]:
-    paths = _ensure_workspace_initialized(workspace)
-    index = _load_tasks_index(paths)
-    resolved_id = sanitize_identifier(task_id or index.get("current_task_id"), "")
-    if not resolved_id:
-        raise FileNotFoundError("No current task is selected.")
+def _task_payload_from_disk(workspace: str | Path, resolved_id: str) -> dict[str, Any]:
     task_paths = _task_paths(workspace, resolved_id)
     payload = _normalize_task_payload(
         _load_json(
-        Path(task_paths["current_task_record"]),
-        default={},
-        strict=True,
-        purpose=f"task record `{resolved_id}`",
-    )
+            Path(task_paths["current_task_record"]),
+            default={},
+            strict=True,
+            purpose=f"task record `{resolved_id}`",
+        )
         or {}
     )
     if not payload:
@@ -5481,7 +6307,6 @@ def read_task(workspace: str | Path, task_id: str | None = None) -> dict[str, An
     payload["task_brief_path"] = task_paths["current_task_brief"]
     payload["brief_path"] = task_paths["current_task_brief"]
     payload["verification_summary_path"] = task_paths["current_task_verification_summary"]
-    payload["brief_markdown"] = _read_text(Path(task_paths["current_task_brief"]), default=TASK_BRIEF_PLACEHOLDER)
     payload["verification_summary"] = _load_json(
         Path(task_paths["current_task_verification_summary"]),
         default=_default_verification_summary(),
@@ -5491,6 +6316,25 @@ def read_task(workspace: str | Path, task_id: str | None = None) -> dict[str, An
         {"explicit_targets": [payload["verification_target"]]} if payload.get("verification_target") else {}
     )
     payload["verification_mode_default"] = payload.get("verification_mode_default") or "targeted"
+    return payload
+
+
+def read_task(workspace: str | Path, task_id: str | None = None) -> dict[str, Any]:
+    paths = _ensure_workspace_initialized(workspace)
+    index = _load_tasks_index(paths)
+    resolved_id = sanitize_identifier(task_id or index.get("current_task_id"), "")
+    if not resolved_id:
+        raise FileNotFoundError("No current task is selected.")
+    payload = _task_payload_from_disk(workspace, resolved_id)
+    brief_payload = _ensure_active_brief_payload(
+        workspace,
+        mode="task",
+        path=Path(payload["task_brief_path"]),
+        task=payload,
+    )
+    payload["brief_markdown"] = brief_payload["markdown"]
+    payload["brief_generation_status"] = brief_payload["brief_generation_status"]
+    payload["brief_metadata"] = brief_payload["brief_metadata"]
     tracking = _normalize_task_time_tracking(payload.get("time_tracking"))
     running_minutes = _session_minutes_between(tracking.get("active_session_started_at"), now_iso()) if tracking.get("active_session_started_at") else 0
     payload["time_tracking"] = {
@@ -6026,6 +6870,15 @@ def workspace_summary(workspace: str | Path) -> dict[str, Any]:
     board = read_reference_board(workspace, workstream_id=workspace_state["current_workstream_id"]) if workstream else None
     handoff = read_design_handoff(workspace, workstream_id=workspace_state["current_workstream_id"]) if workstream else None
     verification_selection = resolve_verification_selection(workspace) if (task or workstream) else None
+    design_brief = read_design_brief(workspace, workstream_id=workspace_state["current_workstream_id"]) if workstream else None
+    design_testability = _design_and_testability_summary(
+        workspace,
+        workstream_id=workspace_state.get("current_workstream_id"),
+        design_brief=design_brief,
+        design_handoff=handoff,
+        brief_markdown=brief.get("markdown"),
+        brief_kind="task" if task else "workstream",
+    )
     return {
         "workspace_path": paths["workspace_path"],
         "workspace_label": workspace_state.get("workspace_label"),
@@ -6050,14 +6903,17 @@ def workspace_summary(workspace: str | Path) -> dict[str, Any]:
         "blockers": register.get("blockers", []) if register else [],
         "updated_at": workspace_state.get("updated_at"),
         "summary_counts": counts,
-        "active_brief_preview": brief["markdown"].strip().splitlines()[:4],
+        "active_brief_preview": _brief_preview_lines(brief.get("markdown"), limit=4),
+        "brief_generation_status": brief.get("brief_generation_status"),
         "design": {
-            "brief_status": read_design_brief(workspace).get("status") if workstream else None,
+            "brief_status": design_brief.get("status") if design_brief else None,
             "current_board_title": board.get("title") if board else None,
             "current_board_candidates": len(board.get("candidates", [])) if board else 0,
             "current_handoff_status": handoff.get("status") if handoff else None,
             "verification_hooks": len(handoff.get("verification_hooks", [])) if handoff else 0,
         },
+        "design_summary": design_testability["design_summary"],
+        "testability_summary": design_testability["testability_summary"],
         "workstream": {
             "workstream_id": workstream.get("workstream_id") if workstream else None,
             "title": workstream.get("title") if workstream else None,
@@ -6163,9 +7019,20 @@ def _dashboard_workspace_summary(workspace: str | Path) -> dict[str, Any]:
     register = _load_workstream_register(workspace, workstream_id) if workstream_id else None
     task_id = workspace_state.get("current_task_id")
     task_payload = read_task(workspace, task_id=task_id) if task_id else None
+    brief_payload = get_active_brief(workspace) if (task_payload or workstream_id) else None
+    design_brief = read_design_brief(workspace, workstream_id=workstream_id) if workstream_id else None
+    design_handoff = read_design_handoff(workspace, workstream_id=workstream_id) if workstream_id else None
     verification_runs = list_verification_runs(workspace, limit=3) if workstream_id else _empty_verification_runs_payload(workspace)
     verification_selection = resolve_verification_selection(workspace) if (task_payload or workstream_id) else None
     youtrack_summary = workspace_youtrack_summary(workspace)
+    design_testability = _design_and_testability_summary(
+        workspace,
+        workstream_id=workstream_id,
+        design_brief=design_brief,
+        design_handoff=design_handoff,
+        brief_markdown=(brief_payload or {}).get("markdown"),
+        brief_kind="task" if task_payload else "workstream",
+    )
     return {
         "workspace_path": paths["workspace_path"],
         "workspace_label": workspace_state.get("workspace_label"),
@@ -6189,6 +7056,9 @@ def _dashboard_workspace_summary(workspace: str | Path) -> dict[str, Any]:
         "next_task": task_payload.get("objective") if task_payload else (register.get("next_task") if register else None),
         "blockers": copy.deepcopy(register.get("blockers") or []) if register else [],
         "summary_counts": counts,
+        "brief_generation_status": (brief_payload or {}).get("brief_generation_status"),
+        "design_summary": design_testability["design_summary"],
+        "testability_summary": design_testability["testability_summary"],
         "plugin_platform": workspace_state.get("plugin_platform", {"enabled": False}),
         "auth": {
             "profile_count": counts.get("auth_profiles", 0),
@@ -6482,6 +7352,8 @@ def _dashboard_next_action(summary: dict[str, Any]) -> str:
 def _dashboard_attention_from_summary(summary: dict[str, Any]) -> list[dict[str, Any]]:
     attention: list[dict[str, Any]] = []
     blockers = summary.get("blockers") or []
+    design_summary = summary.get("design_summary") or {}
+    testability_summary = summary.get("testability_summary") or {}
     if blockers:
         attention.append(
             _dashboard_attention_item(
@@ -6531,6 +7403,36 @@ def _dashboard_attention_from_summary(summary: dict[str, Any]) -> list[dict[str,
                 "Verification plan is unresolved",
                 (verification.get("selection") or {}).get("reason") or "No deterministic verification target has been resolved.",
                 section="quality",
+            )
+        )
+    if int(testability_summary.get("unresolved_action_count") or 0) > 0:
+        attention.append(
+            _dashboard_attention_item(
+                "critical-actions-unresolved",
+                "warn",
+                "Critical actions need deterministic coverage",
+                f"{int(testability_summary.get('unresolved_action_count') or 0)} critical actions still have no authored path or declared limitation.",
+                section="quality",
+            )
+        )
+    if int(testability_summary.get("limitation_count") or 0) > 0:
+        attention.append(
+            _dashboard_attention_item(
+                "design-limitations-recorded",
+                "warn",
+                "Known design limitations are recorded",
+                f"{int(testability_summary.get('limitation_count') or 0)} limitation entries remain visible in operator summaries.",
+                section="quality",
+            )
+        )
+    if int(design_summary.get("affected_surface_count") or 0) == 0 and int(design_summary.get("critical_action_count") or 0) == 0:
+        attention.append(
+            _dashboard_attention_item(
+                "design-state-sparse",
+                "warn",
+                "Design state is still sparse",
+                "Rich design artifacts have not been authored yet, so execution is relying on compact task or workstream truth only.",
+                section="plan",
             )
         )
     if int((summary.get("youtrack") or {}).get("connection_count") or 0) == 0:
@@ -6816,13 +7718,22 @@ def _dashboard_shell_supporting_text(summary: dict[str, Any]) -> str:
 def _dashboard_panel_counts(summary: dict[str, Any], attention: list[dict[str, Any]]) -> dict[str, int]:
     counts = summary.get("summary_counts") or {}
     selection = (summary.get("verification_selection") or {})
+    design_summary = summary.get("design_summary") or {}
+    testability_summary = summary.get("testability_summary") or {}
     return {
         "now": len(attention) + len(summary.get("blockers") or []),
-        "plan": max(int(counts.get("total_stages") or 0), int(counts.get("tasks") or 0)),
+        "plan": max(
+            int(counts.get("total_stages") or 0),
+            int(counts.get("tasks") or 0),
+            int(design_summary.get("user_flow_count") or 0),
+            int(design_summary.get("state_coverage_count") or 0),
+        ),
         "quality": max(
             int(counts.get("failed_verification_runs") or 0),
             int(counts.get("verification_runs") or 0),
             len(selection.get("selected_cases") or []),
+            int(testability_summary.get("unresolved_action_count") or 0),
+            int(testability_summary.get("limitation_count") or 0),
         ),
         "integrations": int(counts.get("auth_profiles") or 0) + int((summary.get("youtrack") or {}).get("connection_count") or 0),
         "memory": int(counts.get("pinned_project_notes") or 0) + int(counts.get("open_learning_entries") or 0),
@@ -7093,9 +8004,9 @@ def _dashboard_uninitialized_cockpit(workspace: str | Path) -> dict[str, Any]:
 
 
 def _dashboard_now_panel_payload(workspace: str | Path, summary: dict[str, Any], shell: dict[str, Any]) -> dict[str, Any]:
-    active_brief_markdown = ""
+    active_brief_payload: dict[str, Any] | None = None
     if summary.get("current_task") or summary.get("current_workstream"):
-        active_brief_markdown = ((get_active_brief(workspace) or {}).get("markdown") or "").strip()
+        active_brief_payload = get_active_brief(workspace) or None
     return {
         "objective": summary.get("next_task") or "No explicit next objective is recorded yet.",
         "guidance": [
@@ -7104,7 +8015,8 @@ def _dashboard_now_panel_payload(workspace: str | Path, summary: dict[str, Any],
             "Use Quality for verification health and Diagnostics for raw state paths.",
         ],
         "blockers": copy.deepcopy(summary.get("blockers") or []),
-        "brief_preview": active_brief_markdown.splitlines()[:8] if active_brief_markdown else [],
+        "brief_preview": copy.deepcopy((active_brief_payload or {}).get("preview_lines") or []),
+        "brief_generation_status": (active_brief_payload or {}).get("brief_generation_status"),
         "focus_cards": [
             _dashboard_metric("Current stage", summary.get("current_stage") or "none"),
             _dashboard_metric("Last completed stage", summary.get("last_completed_stage") or "none"),
@@ -7143,12 +8055,25 @@ def _dashboard_plan_panel_payload(workspace: str | Path, summary: dict[str, Any]
     current_board = read_reference_board(workspace) if summary.get("current_workstream_id") else {}
     current_handoff = read_design_handoff(workspace) if summary.get("current_workstream_id") else {}
     workstreams = list_workstreams(workspace)
+    design_summary = copy.deepcopy(summary.get("design_summary") or {})
+    testability_summary = copy.deepcopy(summary.get("testability_summary") or {})
+    design_readiness = (
+        "ready"
+        if (current_handoff.get("status") in {"ready", "approved"} and int(design_summary.get("critical_action_count") or 0) > 0)
+        else ("in_progress" if int(design_summary.get("affected_surface_count") or 0) > 0 else "sparse")
+    )
     return {
         "summary_cards": [
             _dashboard_metric("Workstreams", len(workstreams.get("items", []))),
             _dashboard_metric("Tasks", len(tasks)),
             _dashboard_metric("Stages", len(stage_cards)),
             _dashboard_metric("Planned", _dashboard_stage_summary(stages)["planned"], tone="warn"),
+            _dashboard_metric("Surfaces", int(design_summary.get("affected_surface_count") or 0)),
+            _dashboard_metric(
+                "Design readiness",
+                design_readiness.replace("_", " "),
+                tone="ok" if design_readiness == "ready" else ("warn" if design_readiness == "in_progress" else "neutral"),
+            ),
         ],
         "current_workstream": _dashboard_workstream_card(summary.get("current_workstream")) if summary.get("current_workstream") else None,
         "workstreams": [_dashboard_workstream_card(item) for item in workstreams.get("items", [])],
@@ -7157,10 +8082,14 @@ def _dashboard_plan_panel_payload(workspace: str | Path, summary: dict[str, Any]
         "task_buckets": _dashboard_task_buckets(tasks),
         "design_state": {
             "brief_status": design_brief.get("status") or "not_started",
+            "brief_generation_status": summary.get("brief_generation_status") or design_summary.get("brief_generation_status"),
             "current_board_title": current_board.get("title"),
             "current_board_candidates": len(current_board.get("candidates") or []),
             "current_handoff_status": current_handoff.get("status") or "not_started",
             "verification_hooks": len(current_handoff.get("verification_hooks") or []),
+            "design_readiness": design_readiness,
+            "design_summary": design_summary,
+            "testability_summary": testability_summary,
         },
     }
 
@@ -7177,6 +8106,7 @@ def _dashboard_quality_panel_payload(workspace: str | Path, summary: dict[str, A
     coverage_audit = audit_verification_coverage(workspace) if summary.get("current_workstream_id") else None
     helper_materialization = (((verification_selection or {}).get("helper_guidance") or {}).get("materialization") or {})
     current_log_run = verification_runs.get("active_run") or verification_runs.get("latest_run")
+    testability_summary = copy.deepcopy(summary.get("testability_summary") or {})
     verification_auth_resolution = _verification_auth_resolution_summary(
         workspace,
         verification_selection,
@@ -7194,10 +8124,22 @@ def _dashboard_quality_panel_payload(workspace: str | Path, summary: dict[str, A
                 tone="warn" if (coverage_audit or {}).get("warning_count") else "ok",
             ),
             _dashboard_metric("Helpers", helper_materialization.get("status") or "unknown", tone=_dashboard_tone(helper_materialization.get("status"))),
+            _dashboard_metric("Paths", int(testability_summary.get("authored_path_count") or 0)),
+            _dashboard_metric(
+                "Limitations",
+                int(testability_summary.get("limitation_count") or 0),
+                tone="warn" if int(testability_summary.get("limitation_count") or 0) else "ok",
+            ),
+            _dashboard_metric(
+                "Unresolved actions",
+                int(testability_summary.get("unresolved_action_count") or 0),
+                tone="warn" if int(testability_summary.get("unresolved_action_count") or 0) else "ok",
+            ),
         ],
         "health": copy.deepcopy(shell.get("verification_status") or {}),
         "latest_run": _dashboard_compact_run(verification_runs.get("latest_run")),
         "latest_completed_run": _dashboard_compact_run(verification_runs.get("latest_completed_run")),
+        "testability_summary": testability_summary,
         "selection": {
             "selection_status": verification_selection.get("selection_status") if verification_selection else None,
             "requested_mode": verification_selection.get("requested_mode") if verification_selection else None,
@@ -7213,10 +8155,13 @@ def _dashboard_quality_panel_payload(workspace: str | Path, summary: dict[str, A
             "status": coverage_audit.get("status"),
             "warning_count": coverage_audit.get("warning_count"),
             "coverage": coverage_audit.get("coverage"),
+            "design_summary": coverage_audit.get("design_summary"),
+            "testability_summary": coverage_audit.get("testability_summary"),
             "gaps": [
                 {
                     "gap_id": gap.get("gap_id"),
                     "title": gap.get("title"),
+                    "category": gap.get("category"),
                     "surface_type": gap.get("surface_type"),
                 }
                 for gap in (coverage_audit.get("gaps") or [])
