@@ -14,6 +14,7 @@ SURFACE_PAYLOAD_CEILINGS = {
     "search_context_index": 24 * 1024,
     "show_context_structure": 24 * 1024,
     "show_workspace_context_pack": 32 * 1024,
+    "run_analysis_audit": 40 * 1024,
 }
 
 RETRIEVAL_MODE_PROFILES = {

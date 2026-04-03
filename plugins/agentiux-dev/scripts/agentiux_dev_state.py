@@ -119,6 +119,7 @@ from agentiux_dev_lib import (
 )
 from agentiux_dev_context import (
     refresh_context_index,
+    run_analysis_audit,
     search_context_index,
     show_capability_catalog,
     show_context_structure,
@@ -389,12 +390,14 @@ def parse_args() -> argparse.Namespace:
     cmd.add_argument("--route-id")
     cmd.add_argument("--limit", type=int)
     cmd.add_argument("--force-refresh", action="store_true")
+    cmd.add_argument("--semantic-mode", choices=["disabled", "auto", "enabled"], default="disabled")
 
     cmd = subparsers.add_parser("search-context-index")
     add_workspace_arg(cmd)
     cmd.add_argument("--query-text", required=True)
     cmd.add_argument("--route-id")
     cmd.add_argument("--limit", type=int)
+    cmd.add_argument("--semantic-mode", choices=["disabled", "auto", "enabled"], default="disabled")
 
     cmd = subparsers.add_parser("show-context-structure")
     add_workspace_arg(cmd)
@@ -402,6 +405,15 @@ def parse_args() -> argparse.Namespace:
     cmd.add_argument("--route-id")
     cmd.add_argument("--module-path")
     cmd.add_argument("--limit", type=int)
+    cmd.add_argument("--semantic-mode", choices=["disabled", "auto", "enabled"], default="disabled")
+
+    cmd = subparsers.add_parser("run-analysis-audit")
+    add_workspace_arg(cmd)
+    cmd.add_argument("--mode", required=True, choices=["architecture", "performance", "docs_style"])
+    cmd.add_argument("--query-text")
+    cmd.add_argument("--module-path")
+    cmd.add_argument("--limit", type=int)
+    cmd.add_argument("--semantic-mode", choices=["disabled", "auto", "enabled"], default="auto")
 
     cmd = subparsers.add_parser("refresh-context-index")
     add_workspace_arg(cmd)
@@ -865,9 +877,16 @@ def main() -> int:
                 route_id=args.route_id,
                 limit=args.limit,
                 force_refresh=args.force_refresh,
+                semantic_mode=args.semantic_mode,
             )
         elif args.command == "search-context-index":
-            payload = search_context_index(args.workspace, args.query_text, route_id=args.route_id, limit=args.limit)
+            payload = search_context_index(
+                args.workspace,
+                args.query_text,
+                route_id=args.route_id,
+                limit=args.limit,
+                semantic_mode=args.semantic_mode,
+            )
         elif args.command == "show-context-structure":
             payload = show_context_structure(
                 args.workspace,
@@ -875,6 +894,16 @@ def main() -> int:
                 route_id=args.route_id,
                 module_path=args.module_path,
                 limit=args.limit,
+                semantic_mode=args.semantic_mode,
+            )
+        elif args.command == "run-analysis-audit":
+            payload = run_analysis_audit(
+                args.workspace,
+                args.mode,
+                query_text=args.query_text,
+                module_path=args.module_path,
+                limit=args.limit,
+                semantic_mode=args.semantic_mode,
             )
         elif args.command == "refresh-context-index":
             payload = refresh_context_index(args.workspace, force=args.force)

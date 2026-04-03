@@ -2529,6 +2529,43 @@
         "references/command-surface.md",
         "references/visual-verification.md"
       ],
+      "id": "run_analysis_audit",
+      "kind": "mcp_tool",
+      "path": "scripts/agentiux_dev_mcp.py",
+      "primary_surface": "mcp",
+      "read_only": true,
+      "related_routes": [
+        "analysis",
+        "verification"
+      ],
+      "required_inputs": [
+        "workspacePath",
+        "mode"
+      ],
+      "returns": "Structured JSON payload for inspection and routing.",
+      "summary": "Run a read-only architecture, performance, or docs-style audit with optional semantic shortlist expansion.",
+      "tags": [
+        "analysis",
+        "audit",
+        "run",
+        "run_analysis_audit",
+        "verification"
+      ],
+      "title": "Run Analysis Audit",
+      "tool_name": "run_analysis_audit",
+      "triggers": [
+        "analysis",
+        "run analysis audit",
+        "verification"
+      ]
+    },
+    {
+      "cost_hint": "low",
+      "follow_up_paths": [
+        "README.md",
+        "references/command-surface.md",
+        "references/visual-verification.md"
+      ],
       "id": "run_verification_case",
       "kind": "mcp_tool",
       "path": "scripts/agentiux_dev_mcp.py",
@@ -3933,7 +3970,7 @@
       ]
     }
   ],
-  "entry_count": 113,
+  "entry_count": 114,
   "plugin": {
     "name": "agentiux-dev",
     "version": "0.8.0"

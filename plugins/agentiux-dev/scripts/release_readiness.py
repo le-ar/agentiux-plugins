@@ -24,7 +24,13 @@ from agentiux_dev_lib import (
     python_launcher_tokens,
     python_script_command,
 )
-from agentiux_dev_context import refresh_context_index, search_context_index, show_context_structure, show_workspace_context_pack
+from agentiux_dev_context import (
+    refresh_context_index,
+    run_analysis_audit,
+    search_context_index,
+    show_context_structure,
+    show_workspace_context_pack,
+)
 from agentiux_dev_verification import audit_verification_coverage
 from build_context_catalogs import check_catalogs
 
@@ -287,6 +293,7 @@ def mcp_check(plugin_root: Path) -> dict[str, Any]:
         "show_workspace_context_pack",
         "search_context_index",
         "show_context_structure",
+        "run_analysis_audit",
         "refresh_context_index",
         "show_auth_profiles",
         "list_auth_sessions",
@@ -380,6 +387,9 @@ def context_structure_check(repo_root: Path) -> dict[str, Any]:
         "parser_backend_status",
         "structure_summary",
         "hotspot_summary",
+        "semantic_summary",
+        "semantic_rebuilt_unit_count",
+        "semantic_reused_unit_count",
     }
     missing_refresh_fields = sorted(field for field in required_refresh_fields if field not in refresh_payload)
     if missing_refresh_fields:
@@ -391,6 +401,7 @@ def context_structure_check(repo_root: Path) -> dict[str, Any]:
         route_id="analysis",
         module_path="plugins/agentiux-dev",
         limit=6,
+        semantic_mode="enabled",
     )
     parser_backends = structure_payload.get("parser_backends") or {}
     if (parser_backends.get("python_ast") or {}).get("status") != "active":
@@ -402,26 +413,69 @@ def context_structure_check(repo_root: Path) -> dict[str, Any]:
         raise AssertionError(f"Unexpected TypeScript backend status: {ts_backend_status}")
     if not structure_payload.get("summary", {}).get("chunk_counts"):
         raise AssertionError("show_context_structure did not expose chunk counts")
+    if "semantic_summary" not in structure_payload:
+        raise AssertionError("show_context_structure did not expose semantic_summary")
     if not structure_payload.get("modules"):
         raise AssertionError("show_context_structure did not expose module summaries")
     if not structure_payload.get("matches"):
         raise AssertionError("show_context_structure did not expose structural matches")
 
-    search_payload = search_context_index(repo_root, "context structure hotspot symbol", route_id="analysis", limit=4)
+    search_payload = search_context_index(repo_root, "context structure hotspot symbol", route_id="analysis", limit=4, semantic_mode="enabled")
     if not search_payload.get("matches"):
         raise AssertionError("search_context_index did not return structural matches")
-    if any("match_kind" not in match for match in search_payload["matches"]):
-        raise AssertionError("search_context_index matches are missing match_kind")
+    if any("match_kind" not in match or "match_source" not in match for match in search_payload["matches"]):
+        raise AssertionError("search_context_index matches are missing match_kind or match_source")
+    search_auto_payload = search_context_index(
+        repo_root,
+        "context structure hotspot symbol semantic memory",
+        limit=6,
+        semantic_mode="auto",
+    )
+    if any(match.get("match_source") == "semantic_assisted" for match in search_auto_payload.get("matches") or []):
+        raise AssertionError("search_context_index enabled semantic auto mode without an explicit analysis route")
 
     context_pack_payload = show_workspace_context_pack(
         repo_root,
         request_text="inspect structural hotspots and modules",
         route_id="analysis",
         limit=4,
+        semantic_mode="enabled",
     )
     workspace_context = context_pack_payload.get("workspace_context") or {}
-    if "structure_summary" not in workspace_context or "hotspot_summary" not in workspace_context:
-        raise AssertionError("show_workspace_context_pack did not expose structural summaries")
+    if "structure_summary" not in workspace_context or "hotspot_summary" not in workspace_context or "semantic_summary" not in workspace_context:
+        raise AssertionError("show_workspace_context_pack did not expose structural/semantic summaries")
+    context_pack_auto_payload = show_workspace_context_pack(
+        repo_root,
+        request_text="inspect structural hotspots and semantic memory",
+        limit=4,
+        semantic_mode="auto",
+    )
+    context_pack_auto_chunks = ((context_pack_auto_payload.get("context_pack") or {}).get("selected_chunks") or [])
+    if any(chunk.get("match_source") == "semantic_assisted" for chunk in context_pack_auto_chunks):
+        raise AssertionError("show_workspace_context_pack enabled semantic auto mode without an explicit analysis route")
+
+    audit_payload = run_analysis_audit(
+        repo_root,
+        "docs_style",
+        query_text="operator docs command surface semantic summary",
+        module_path="plugins/agentiux-dev",
+        limit=4,
+        semantic_mode="auto",
+    )
+    required_audit_fields = {
+        "mode",
+        "semantic_mode",
+        "semantic_backend_status",
+        "findings",
+        "evidence",
+        "semantic_matches",
+        "memory_snapshot_draft",
+        "recommended_follow_ups",
+        "payload",
+    }
+    missing_audit_fields = sorted(field for field in required_audit_fields if field not in audit_payload)
+    if missing_audit_fields:
+        raise AssertionError(f"run_analysis_audit missing fields: {missing_audit_fields}")
 
     return {
         "check": "context-structure",
@@ -438,15 +492,20 @@ def context_structure_check(repo_root: Path) -> dict[str, Any]:
                 "parser_backend_status",
                 "structure_summary",
                 "hotspot_summary",
+                "semantic_summary",
+                "semantic_rebuilt_unit_count",
+                "semantic_reused_unit_count",
             ]
         },
         "structure_summary": structure_payload.get("summary"),
         "parser_backends": parser_backends,
         "match_count": len(structure_payload.get("matches") or []),
         "search_match_count": len(search_payload.get("matches") or []),
+        "audit_finding_count": len(audit_payload.get("findings") or []),
         "workspace_context": {
             "structure_summary": workspace_context.get("structure_summary"),
             "hotspot_summary": workspace_context.get("hotspot_summary"),
+            "semantic_summary": workspace_context.get("semantic_summary"),
         },
     }
 
@@ -630,8 +689,8 @@ def dashboard_check(repo_root: Path, plugin_root: Path) -> dict[str, Any]:
     if fixture_snapshot.get("workspace_cockpit", {}).get("workspace_path") != str(repo_root):
         raise AssertionError("Dashboard fixture did not initialize the expected workspace cockpit")
     design_state = (fixture_snapshot.get("workspace_cockpit", {}).get("plan") or {}).get("design_state") or {}
-    if "design_summary" not in design_state or "testability_summary" not in design_state:
-        raise AssertionError("Dashboard fixture snapshot did not expose compact design/testability summaries")
+    if "design_summary" not in design_state or "testability_summary" not in design_state or "semantic_summary" not in design_state:
+        raise AssertionError("Dashboard fixture snapshot did not expose compact design/testability/semantic summaries")
     if "auth" not in (cockpit_snapshot.get("integrations") or {}):
         raise AssertionError("Dashboard cockpit is missing auth integration payload")
     if "memory" not in cockpit_snapshot:
@@ -643,8 +702,12 @@ def dashboard_check(repo_root: Path, plugin_root: Path) -> dict[str, Any]:
     if plan_panel_snapshot.get("active_panel") != "plan":
         raise AssertionError("Workspace panel endpoint did not resolve the requested panel")
     plan_panel_design_state = (plan_panel_snapshot.get("panel_payload") or {}).get("design_state") or {}
-    if "design_summary" not in plan_panel_design_state or "testability_summary" not in plan_panel_design_state:
-        raise AssertionError("Plan panel payload did not expose compact design/testability summaries")
+    if (
+        "design_summary" not in plan_panel_design_state
+        or "testability_summary" not in plan_panel_design_state
+        or "semantic_summary" not in plan_panel_design_state
+    ):
+        raise AssertionError("Plan panel payload did not expose compact design/testability/semantic summaries")
     if auth_payload.get("counts") is None or auth_sessions_payload.get("counts") is None or notes_payload.get("counts") is None:
         raise AssertionError("Dashboard auth or note APIs returned incomplete payloads")
     if auth_sessions_payload.get("counts", {}).get("total") is None:

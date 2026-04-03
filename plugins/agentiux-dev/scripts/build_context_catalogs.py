@@ -28,7 +28,7 @@ SUPPORTED_ROUTE_IDS = (
 ROUTE_DEFINITIONS: dict[str, dict[str, Any]] = {
     "analysis": {
         "title": "Structural Analysis",
-        "summary": "Inspect module, symbol, doc-section, hotspot, and incremental index summaries without hydrating full artifacts.",
+        "summary": "Inspect module, symbol, doc-section, hotspot, incremental index, and optional semantic audit summaries without hydrating full artifacts.",
         "tags": ["analysis", "hotspot", "incremental", "module", "section", "structural", "symbol"],
         "triggers": ["context structure", "hotspot", "incremental index", "module", "section", "symbol"],
         "recommended_skills": ["workspace-kernel", "plugin-platform"],
@@ -38,9 +38,10 @@ ROUTE_DEFINITIONS: dict[str, dict[str, Any]] = {
             "show_workspace_context_pack",
             "search_context_index",
             "show_context_structure",
+            "run_analysis_audit",
             "refresh_context_index",
         ],
-        "summary_surfaces": ["show_workspace_context_pack", "show_context_structure", "search_context_index"],
+        "summary_surfaces": ["show_workspace_context_pack", "show_context_structure", "search_context_index", "run_analysis_audit"],
         "primary_paths": [
             "references/command-surface.md",
             "references/workflow-kernel.md",

@@ -100,7 +100,14 @@ from agentiux_dev_lib import (
     write_reference_board,
     write_stage_register,
 )
-from agentiux_dev_memory import archive_project_note, get_project_note, list_project_notes, search_project_notes
+from agentiux_dev_memory import (
+    archive_project_note,
+    get_project_note,
+    list_generated_memory_snapshots,
+    list_project_notes,
+    persist_generated_memory_snapshot,
+    search_project_notes,
+)
 from agentiux_dev_verification import (
     active_verification_run,
     audit_verification_coverage,
@@ -131,6 +138,7 @@ from install_home_local import install_plugin
 from build_context_catalogs import check_catalogs
 from agentiux_dev_context import (
     refresh_context_index,
+    run_analysis_audit,
     search_context_index,
     show_capability_catalog,
     show_context_structure,
@@ -1378,6 +1386,121 @@ def main() -> int:
             )
             assert structure_pack["workspace_context"]["structure_summary"]["large_file_count"] >= 1
             assert "hotspot_summary" in structure_pack["workspace_context"]
+            assert "semantic_summary" in structure_pack["workspace_context"]
+            init_workspace(structure_workspace)
+
+            semantic_snapshot = persist_generated_memory_snapshot(
+                structure_workspace,
+                {
+                    "title": "Cross-cutting analysis memory",
+                    "source_audit_mode": "architecture",
+                    "source_query_text": "boundary coupling broadread",
+                    "source_module_path": "packages/analysis-core",
+                    "confidence": 0.81,
+                    "body_markdown": "- Boundary pressure between entrypoints and helpers.\n- Broadread risk around large module coordination.\n",
+                    "provenance": {"source": "smoke-test"},
+                },
+            )
+            assert semantic_snapshot["snapshot"]["snapshot_id"]
+            assert list_generated_memory_snapshots(structure_workspace)["counts"]["active"] >= 1
+            semantic_refresh = refresh_context_index(structure_workspace)
+            assert semantic_refresh["semantic_summary"]["unit_count"] >= 1
+            assert semantic_refresh["semantic_summary"]["snapshot_count"] >= 1
+            assert semantic_refresh["semantic_rebuilt_unit_count"] >= 1
+            semantic_refresh_again = refresh_context_index(structure_workspace)
+            assert semantic_refresh_again["semantic_reused_unit_count"] >= 1
+
+            semantic_disabled_search = search_context_index(
+                structure_workspace,
+                "crosscutting broadread memory snapshot",
+                route_id="analysis",
+                limit=4,
+                semantic_mode="disabled",
+            )
+            semantic_enabled_search = search_context_index(
+                structure_workspace,
+                "crosscutting broadread memory snapshot",
+                route_id="analysis",
+                limit=8,
+                semantic_mode="enabled",
+            )
+            assert all(match["match_source"] == "symbolic" for match in semantic_disabled_search["matches"])
+            assert any(match["match_source"] == "semantic_assisted" for match in semantic_enabled_search["matches"])
+            semantic_auto_without_explicit_analysis = search_context_index(
+                structure_workspace,
+                "crosscutting broadread memory snapshot",
+                limit=8,
+                semantic_mode="auto",
+            )
+            assert all(
+                match["match_source"] == "symbolic"
+                for match in semantic_auto_without_explicit_analysis["matches"]
+            )
+
+            semantic_structure_view = show_context_structure(
+                structure_workspace,
+                query_text="crosscutting broadread memory snapshot",
+                route_id="analysis",
+                limit=8,
+                semantic_mode="enabled",
+            )
+            assert semantic_structure_view["semantic_summary"]["unit_count"] >= 1
+            assert any(match["match_source"] == "semantic_assisted" for match in semantic_structure_view["matches"])
+
+            semantic_context_pack = show_workspace_context_pack(
+                structure_workspace,
+                request_text="crosscutting broadread memory snapshot",
+                route_id="analysis",
+                limit=4,
+                semantic_mode="enabled",
+            )
+            assert semantic_context_pack["semantic_mode"] == "enabled"
+            assert semantic_context_pack["workspace_context"]["semantic_summary"]["snapshot_count"] >= 1
+            assert any(chunk.get("match_source") == "semantic_assisted" for chunk in semantic_context_pack["context_pack"]["selected_chunks"])
+            semantic_context_pack_auto = show_workspace_context_pack(
+                structure_workspace,
+                request_text="crosscutting broadread memory snapshot",
+                limit=4,
+                semantic_mode="auto",
+            )
+            assert not any(
+                chunk.get("match_source") == "semantic_assisted"
+                for chunk in semantic_context_pack_auto["context_pack"]["selected_chunks"]
+            )
+
+            architecture_audit = run_analysis_audit(
+                structure_workspace,
+                "architecture",
+                query_text="crosscutting broadread memory snapshot",
+                module_path="packages/analysis-core",
+                limit=4,
+                semantic_mode="enabled",
+            )
+            assert architecture_audit["mode"] == "architecture"
+            assert architecture_audit["findings"]
+            assert architecture_audit["evidence"]
+            assert architecture_audit["semantic_matches"]
+            assert architecture_audit["memory_snapshot_draft"]["source_audit_mode"] == "architecture"
+
+            performance_audit = run_analysis_audit(
+                structure_workspace,
+                "performance",
+                query_text="large file bounded read hotspot",
+                limit=4,
+                semantic_mode="auto",
+            )
+            assert performance_audit["mode"] == "performance"
+            assert performance_audit["findings"]
+
+            docs_style_audit = run_analysis_audit(
+                structure_workspace,
+                "docs_style",
+                query_text="operator docs command surface",
+                limit=4,
+                semantic_mode="disabled",
+            )
+            assert docs_style_audit["mode"] == "docs_style"
+            assert docs_style_audit["memory_snapshot_draft"]["source_audit_mode"] == "docs_style"
 
             (src_root / "alpha.py").write_text(
                 "import json\nfrom pathlib import Path\n\nclass FeatureGate:\n    pass\n\n\ndef run_job():\n    return Path('updated')\n",
@@ -1392,6 +1515,22 @@ def main() -> int:
             removal_refresh = refresh_context_index(structure_workspace)
             assert removal_refresh["status"] == "refreshed"
             assert removal_refresh["removed_file_count"] >= 1
+            updated_snapshot = persist_generated_memory_snapshot(
+                structure_workspace,
+                {
+                    "snapshot_id": semantic_snapshot["snapshot"]["snapshot_id"],
+                    "title": "Cross-cutting analysis memory",
+                    "source_audit_mode": "architecture",
+                    "source_query_text": "boundary coupling broadread",
+                    "source_module_path": "packages/analysis-core",
+                    "confidence": 0.86,
+                    "body_markdown": "- Boundary pressure changed after worker removal.\n- Rebuild cost shifted to remaining symbols.\n",
+                    "provenance": {"source": "smoke-test-update"},
+                },
+            )
+            assert updated_snapshot["snapshot"]["confidence"] == 0.86
+            semantic_after_snapshot_edit = refresh_context_index(structure_workspace)
+            assert semantic_after_snapshot_edit["semantic_rebuilt_unit_count"] >= 1
 
         with tempfile.TemporaryDirectory() as fallback_fixture_dir:
             fallback_workspace = Path(fallback_fixture_dir)

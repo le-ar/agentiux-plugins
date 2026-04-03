@@ -1436,6 +1436,7 @@ def workspace_paths(workspace: str | Path, workstream_id: str | None = None, tas
     memory_root = workspace_dir / "memory"
     memory_notes_root = memory_root / "notes"
     memory_revisions_root = memory_root / "revisions"
+    memory_generated_snapshots_root = memory_root / "generated-snapshots"
     analytics_root = state_root() / "analytics"
     analytics_events_root = analytics_root / "events"
     analytics_learnings_dir = analytics_root / "learnings"
@@ -1503,6 +1504,8 @@ def workspace_paths(workspace: str | Path, workstream_id: str | None = None, tas
         "memory_notes_root": str(memory_notes_root),
         "memory_notes_index": str(memory_notes_root / "index.json"),
         "memory_revisions_root": str(memory_revisions_root),
+        "memory_generated_snapshots_root": str(memory_generated_snapshots_root),
+        "memory_generated_snapshots_index": str(memory_generated_snapshots_root / "index.json"),
         "analytics_root": str(analytics_root),
         "analytics_events_root": str(analytics_events_root),
         "analytics_learnings_dir": str(analytics_learnings_dir),
@@ -4282,9 +4285,14 @@ def _ensure_workspace_runtime_files(paths: dict[str, str]) -> None:
 
         _write_json(Path(paths["auth_sessions_index"]), _default_auth_sessions_index())
     if not Path(paths["memory_notes_index"]).exists():
-        from agentiux_dev_memory import _default_notes_index
+        from agentiux_dev_memory import _default_generated_snapshot_index, _default_notes_index
 
         _write_json(Path(paths["memory_notes_index"]), _default_notes_index())
+        _write_json(Path(paths["memory_generated_snapshots_index"]), _default_generated_snapshot_index())
+    elif not Path(paths["memory_generated_snapshots_index"]).exists():
+        from agentiux_dev_memory import _default_generated_snapshot_index
+
+        _write_json(Path(paths["memory_generated_snapshots_index"]), _default_generated_snapshot_index())
     if not Path(paths["analytics_index"]).exists():
         from agentiux_dev_analytics import _default_analytics_index
 
@@ -6917,6 +6925,7 @@ def workspace_summary(workspace: str | Path) -> dict[str, Any]:
         "testability_summary": design_testability["testability_summary"],
         "structure_summary": context_cache_summary["structure_summary"],
         "hotspot_summary": context_cache_summary["hotspot_summary"],
+        "semantic_summary": context_cache_summary["semantic_summary"],
         "workstream": {
             "workstream_id": workstream.get("workstream_id") if workstream else None,
             "title": workstream.get("title") if workstream else None,
@@ -7017,6 +7026,7 @@ def _context_cache_summary(workspace: str | Path) -> dict[str, Any]:
     return {
         "structure_summary": copy.deepcopy(workspace_context.get("structure_summary") or {}),
         "hotspot_summary": copy.deepcopy(workspace_context.get("hotspot_summary") or {}),
+        "semantic_summary": copy.deepcopy(workspace_context.get("semantic_summary") or {}),
     }
 
 
@@ -7075,6 +7085,7 @@ def _dashboard_workspace_summary(workspace: str | Path) -> dict[str, Any]:
         "testability_summary": design_testability["testability_summary"],
         "structure_summary": context_cache_summary["structure_summary"],
         "hotspot_summary": context_cache_summary["hotspot_summary"],
+        "semantic_summary": context_cache_summary["semantic_summary"],
         "plugin_platform": workspace_state.get("plugin_platform", {"enabled": False}),
         "auth": {
             "profile_count": counts.get("auth_profiles", 0),
@@ -8073,6 +8084,7 @@ def _dashboard_plan_panel_payload(workspace: str | Path, summary: dict[str, Any]
     workstreams = list_workstreams(workspace)
     design_summary = copy.deepcopy(summary.get("design_summary") or {})
     testability_summary = copy.deepcopy(summary.get("testability_summary") or {})
+    semantic_summary = copy.deepcopy(summary.get("semantic_summary") or {})
     design_readiness = (
         "ready"
         if (current_handoff.get("status") in {"ready", "approved"} and int(design_summary.get("critical_action_count") or 0) > 0)
@@ -8085,6 +8097,7 @@ def _dashboard_plan_panel_payload(workspace: str | Path, summary: dict[str, Any]
             _dashboard_metric("Stages", len(stage_cards)),
             _dashboard_metric("Planned", _dashboard_stage_summary(stages)["planned"], tone="warn"),
             _dashboard_metric("Surfaces", int(design_summary.get("affected_surface_count") or 0)),
+            _dashboard_metric("Semantic units", int(semantic_summary.get("unit_count") or 0)),
             _dashboard_metric(
                 "Design readiness",
                 design_readiness.replace("_", " "),
@@ -8106,6 +8119,7 @@ def _dashboard_plan_panel_payload(workspace: str | Path, summary: dict[str, Any]
             "design_readiness": design_readiness,
             "design_summary": design_summary,
             "testability_summary": testability_summary,
+            "semantic_summary": semantic_summary,
         },
     }
 
@@ -8123,6 +8137,7 @@ def _dashboard_quality_panel_payload(workspace: str | Path, summary: dict[str, A
     helper_materialization = (((verification_selection or {}).get("helper_guidance") or {}).get("materialization") or {})
     current_log_run = verification_runs.get("active_run") or verification_runs.get("latest_run")
     testability_summary = copy.deepcopy(summary.get("testability_summary") or {})
+    semantic_summary = copy.deepcopy(summary.get("semantic_summary") or {})
     verification_auth_resolution = _verification_auth_resolution_summary(
         workspace,
         verification_selection,
@@ -8141,6 +8156,7 @@ def _dashboard_quality_panel_payload(workspace: str | Path, summary: dict[str, A
             ),
             _dashboard_metric("Helpers", helper_materialization.get("status") or "unknown", tone=_dashboard_tone(helper_materialization.get("status"))),
             _dashboard_metric("Paths", int(testability_summary.get("authored_path_count") or 0)),
+            _dashboard_metric("Semantic", semantic_summary.get("backend_status") or "unknown", tone=_dashboard_tone(semantic_summary.get("backend_status"))),
             _dashboard_metric(
                 "Limitations",
                 int(testability_summary.get("limitation_count") or 0),
@@ -8156,6 +8172,7 @@ def _dashboard_quality_panel_payload(workspace: str | Path, summary: dict[str, A
         "latest_run": _dashboard_compact_run(verification_runs.get("latest_run")),
         "latest_completed_run": _dashboard_compact_run(verification_runs.get("latest_completed_run")),
         "testability_summary": testability_summary,
+        "semantic_summary": semantic_summary,
         "selection": {
             "selection_status": verification_selection.get("selection_status") if verification_selection else None,
             "requested_mode": verification_selection.get("requested_mode") if verification_selection else None,

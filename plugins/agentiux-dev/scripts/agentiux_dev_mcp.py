@@ -116,6 +116,7 @@ from agentiux_dev_lib import (
 )
 from agentiux_dev_context import (
     refresh_context_index,
+    run_analysis_audit,
     search_context_index,
     show_capability_catalog,
     show_context_structure,
@@ -940,12 +941,14 @@ TOOLS = {
             route_id=args.get("routeId"),
             limit=args.get("limit"),
             force_refresh=args.get("forceRefresh", False),
+            semantic_mode=args.get("semanticMode"),
         ),
         {
             "requestText": {"type": "string"},
             "routeId": {"type": "string"},
             "limit": {"type": "integer"},
             "forceRefresh": {"type": "boolean"},
+            "semanticMode": {"type": "string", "enum": ["disabled", "auto", "enabled"]},
         },
     ),
     "search_context_index": _read_tool(
@@ -956,11 +959,13 @@ TOOLS = {
             args["queryText"],
             route_id=args.get("routeId"),
             limit=args.get("limit"),
+            semantic_mode=args.get("semanticMode"),
         ),
         {
             "queryText": {"type": "string"},
             "routeId": {"type": "string"},
             "limit": {"type": "integer"},
+            "semanticMode": {"type": "string", "enum": ["disabled", "auto", "enabled"]},
         },
         ["workspacePath", "queryText"],
     ),
@@ -973,13 +978,35 @@ TOOLS = {
             route_id=args.get("routeId"),
             module_path=args.get("modulePath"),
             limit=args.get("limit"),
+            semantic_mode=args.get("semanticMode"),
         ),
         {
             "queryText": {"type": "string"},
             "routeId": {"type": "string"},
             "modulePath": {"type": "string"},
             "limit": {"type": "integer"},
+            "semanticMode": {"type": "string", "enum": ["disabled", "auto", "enabled"]},
         },
+    ),
+    "run_analysis_audit": _read_tool(
+        "run_analysis_audit",
+        "Run a read-only architecture, performance, or docs-style audit with optional semantic shortlist expansion.",
+        lambda args: run_analysis_audit(
+            args["workspacePath"],
+            args["mode"],
+            query_text=args.get("queryText"),
+            module_path=args.get("modulePath"),
+            limit=args.get("limit"),
+            semantic_mode=args.get("semanticMode", "auto"),
+        ),
+        {
+            "mode": {"type": "string", "enum": ["architecture", "performance", "docs_style"]},
+            "queryText": {"type": "string"},
+            "modulePath": {"type": "string"},
+            "limit": {"type": "integer"},
+            "semanticMode": {"type": "string", "enum": ["disabled", "auto", "enabled"]},
+        },
+        ["workspacePath", "mode"],
     ),
     "refresh_context_index": _read_tool(
         "refresh_context_index",

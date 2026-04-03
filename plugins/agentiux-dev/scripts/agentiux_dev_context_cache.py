@@ -43,15 +43,20 @@ from agentiux_dev_context_structure import (
     summarize_chunk_counts,
     top_hotspots,
 )
+from agentiux_dev_context_semantic import (
+    load_semantic_manifest,
+    refresh_semantic_index,
+    semantic_summary_from_manifest,
+)
 from agentiux_dev_retrieval import infer_retrieval_mode, retrieval_mode_profile, retrieval_policy_payload
 from agentiux_dev_text import normalize_command_phrase, score_token_match, short_hash, tokenize_text
 from agentiux_dev_verification import read_verification_recipes
 
 
 CATALOG_FILENAMES = ("skills", "mcp_tools", "scripts", "references", "intent_routes")
-CONTEXT_CACHE_SCHEMA_VERSION = 4
-CONTEXT_INDEX_MANIFEST_SCHEMA_VERSION = 4
-SEMANTIC_CACHE_ENTRY_SCHEMA_VERSION = 3
+CONTEXT_CACHE_SCHEMA_VERSION = 5
+CONTEXT_INDEX_MANIFEST_SCHEMA_VERSION = 5
+SEMANTIC_CACHE_ENTRY_SCHEMA_VERSION = 5
 CONTEXT_INDEX_EXCLUDED_DIRS = {
     ".agentiux",
     ".git",
@@ -275,6 +280,9 @@ def context_cache_paths(workspace: str | Path) -> dict[str, Path]:
         "structure_index": root / "structure_index.json",
         "chunk_summaries": root / "chunk_summaries.jsonl",
         "semantic_cache": root / "semantic_cache.jsonl",
+        "semantic_units": root / "semantic_units.jsonl",
+        "semantic_index": root / "semantic_index.sqlite",
+        "semantic_manifest": root / "semantic_manifest.json",
         "usage": root / "usage.json",
     }
 
@@ -954,6 +962,7 @@ def _workspace_context_payload(
     structure_index: dict[str, Any],
     usage: dict[str, Any],
     catalog_digest: str,
+    semantic_summary: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     state, workstream, task = _safe_workspace_state(workspace)
     verification = _safe_verification_context(workspace, state=state, workstream=workstream)
@@ -1030,6 +1039,7 @@ def _workspace_context_payload(
         "testability_summary": design_testability["testability_summary"],
         "structure_summary": structure_summary(structure_index),
         "hotspot_summary": hotspot_summary(structure_index),
+        "semantic_summary": copy.deepcopy(semantic_summary or {}),
         "project_memory": {
             "note_count": len(project_memory_chunks),
             "pinned_note_count": len(pinned_project_memory_chunks),
@@ -1076,6 +1086,9 @@ def _required_cache_files(cache_paths: dict[str, Path]) -> list[Path]:
         cache_paths["structure_index"],
         cache_paths["chunk_summaries"],
         cache_paths["semantic_cache"],
+        cache_paths["semantic_units"],
+        cache_paths["semantic_index"],
+        cache_paths["semantic_manifest"],
     ]
 
 
@@ -1141,10 +1154,10 @@ def _prune_semantic_cache_entries(
             pruned += 1
             continue
         source_hashes = entry.get("source_hashes")
-        if not isinstance(source_hashes, dict) or not source_hashes:
+        if not isinstance(source_hashes, dict):
             pruned += 1
             continue
-        if any(chunk_hashes.get(path) != expected_hash for path, expected_hash in source_hashes.items()):
+        if source_hashes and any(chunk_hashes.get(path) != expected_hash for path, expected_hash in source_hashes.items()):
             pruned += 1
             continue
         kept.append(entry)
@@ -1328,6 +1341,7 @@ def compact_workspace_context(workspace_context: dict[str, Any]) -> dict[str, An
         "testability_summary": workspace_context.get("testability_summary") or {},
         "structure_summary": workspace_context.get("structure_summary") or {},
         "hotspot_summary": workspace_context.get("hotspot_summary") or {},
+        "semantic_summary": workspace_context.get("semantic_summary") or {},
         "project_memory": workspace_context.get("project_memory") or {},
         "last_used_routes": (workspace_context.get("last_used_routes") or [])[:4],
         "last_used_tools": (workspace_context.get("last_used_tools") or [])[:8],
@@ -1416,6 +1430,30 @@ def _incremental_indexing_payload(
     }
 
 
+def _refresh_semantic_context(
+    workspace: Path,
+    *,
+    cache_paths: dict[str, Path],
+    modules: list[dict[str, Any]],
+    chunks: list[dict[str, Any]],
+    structure_index: dict[str, Any],
+    force: bool = False,
+) -> dict[str, Any]:
+    result = refresh_semantic_index(
+        workspace,
+        cache_paths=cache_paths,
+        modules=modules,
+        chunks=chunks,
+        structure_index=structure_index,
+        force=force,
+    )
+    manifest = load_semantic_manifest(cache_paths)
+    return {
+        **result,
+        "semantic_summary": semantic_summary_from_manifest(manifest),
+    }
+
+
 def refresh_context_index(
     workspace: str | Path,
     force: bool = False,
@@ -1463,6 +1501,16 @@ def refresh_context_index(
         module_map = load_json(cache_paths["module_map"], default={"modules": []})
         structure_index = existing_structure_index
         chunks = existing_chunk_records
+        semantic_result = _refresh_semantic_context(
+            resolved_workspace,
+            cache_paths=cache_paths,
+            modules=module_map.get("modules", []),
+            chunks=chunks,
+            structure_index=structure_index,
+            force=False,
+        )
+        workspace_context["semantic_summary"] = semantic_result["semantic_summary"]
+        write_json(cache_paths["workspace_context"], workspace_context)
         duration_ms = int((perf_counter() - started_at) * 1000)
         parser_status = _parser_backend_status_payload(structure_index.get("parser_backends") or {})
         _record_refresh_stats(
@@ -1492,6 +1540,9 @@ def refresh_context_index(
             "structure_index_path": str(cache_paths["structure_index"]),
             "chunk_summaries_path": str(cache_paths["chunk_summaries"]),
             "semantic_cache_path": str(cache_paths["semantic_cache"]),
+            "semantic_units_path": str(cache_paths["semantic_units"]),
+            "semantic_index_path": str(cache_paths["semantic_index"]),
+            "semantic_manifest_path": str(cache_paths["semantic_manifest"]),
             "workspace_fingerprint": workspace_context.get("workspace_fingerprint"),
             "catalog_digest": catalog_digest,
             "candidate_file_count": candidate_count,
@@ -1499,6 +1550,7 @@ def refresh_context_index(
             "chunk_count": len(chunks),
             "structure_summary": structure_summary(structure_index),
             "hotspot_summary": hotspot_summary(structure_index),
+            "semantic_summary": semantic_result["semantic_summary"],
             "rebuilt_file_count": 0,
             "reused_file_count": int((structure_index.get("summary") or {}).get("file_count") or 0),
             "removed_file_count": 0,
@@ -1508,6 +1560,11 @@ def refresh_context_index(
             "full_read_count": 0,
             "large_file_count": int((structure_index.get("summary") or {}).get("large_file_count") or 0),
             "parser_backend_status": parser_status,
+            "semantic_backend_status": semantic_result.get("backend_status"),
+            "semantic_refresh_status": semantic_result.get("status"),
+            "semantic_rebuilt_unit_count": semantic_result.get("rebuilt_unit_count", 0),
+            "semantic_reused_unit_count": semantic_result.get("reused_unit_count", 0),
+            "semantic_removed_unit_count": semantic_result.get("removed_unit_count", 0),
             "pruned_semantic_cache_entries": 0,
             "pruned_semantic_cache_reason": None,
             "refresh_reason": "manifest-match",
@@ -1550,6 +1607,15 @@ def refresh_context_index(
             usage,
             catalog_digest,
         )
+        semantic_result = _refresh_semantic_context(
+            resolved_workspace,
+            cache_paths=cache_paths,
+            modules=modules,
+            chunks=existing_chunk_records,
+            structure_index=structure_index,
+            force=False,
+        )
+        workspace_context["semantic_summary"] = semantic_result["semantic_summary"]
         previous_context = load_json(cache_paths["workspace_context"], default={})
         previous_catalog_digest = previous_context.get("catalog_digest")
         semantic_cache_entries = load_jsonl(cache_paths["semantic_cache"])
@@ -1609,6 +1675,9 @@ def refresh_context_index(
             "structure_index_path": str(cache_paths["structure_index"]),
             "chunk_summaries_path": str(cache_paths["chunk_summaries"]),
             "semantic_cache_path": str(cache_paths["semantic_cache"]),
+            "semantic_units_path": str(cache_paths["semantic_units"]),
+            "semantic_index_path": str(cache_paths["semantic_index"]),
+            "semantic_manifest_path": str(cache_paths["semantic_manifest"]),
             "workspace_fingerprint": workspace_context["workspace_fingerprint"],
             "catalog_digest": catalog_digest,
             "candidate_file_count": candidate_count,
@@ -1616,6 +1685,7 @@ def refresh_context_index(
             "chunk_count": len(existing_chunk_records),
             "structure_summary": structure_summary(structure_index),
             "hotspot_summary": hotspot_summary(structure_index),
+            "semantic_summary": semantic_result["semantic_summary"],
             "rebuilt_file_count": 0,
             "reused_file_count": int((structure_index.get("summary") or {}).get("file_count") or 0),
             "removed_file_count": 0,
@@ -1625,6 +1695,11 @@ def refresh_context_index(
             "full_read_count": 0,
             "large_file_count": int((structure_index.get("summary") or {}).get("large_file_count") or 0),
             "parser_backend_status": parser_status,
+            "semantic_backend_status": semantic_result.get("backend_status"),
+            "semantic_refresh_status": semantic_result.get("status"),
+            "semantic_rebuilt_unit_count": semantic_result.get("rebuilt_unit_count", 0),
+            "semantic_reused_unit_count": semantic_result.get("reused_unit_count", 0),
+            "semantic_removed_unit_count": semantic_result.get("removed_unit_count", 0),
             "pruned_semantic_cache_entries": pruned,
             "pruned_semantic_cache_reason": pruned_reason,
             "refresh_reason": refresh_reason,
@@ -1745,6 +1820,15 @@ def refresh_context_index(
         usage,
         catalog_digest,
     )
+    semantic_result = _refresh_semantic_context(
+        resolved_workspace,
+        cache_paths=cache_paths,
+        modules=modules,
+        chunks=chunk_records,
+        structure_index=structure_index,
+        force=force,
+    )
+    workspace_context["semantic_summary"] = semantic_result["semantic_summary"]
 
     previous_context = load_json(cache_paths["workspace_context"], default={})
     previous_catalog_digest = previous_context.get("catalog_digest")
@@ -1818,6 +1902,9 @@ def refresh_context_index(
         "structure_index_path": str(cache_paths["structure_index"]),
         "chunk_summaries_path": str(cache_paths["chunk_summaries"]),
         "semantic_cache_path": str(cache_paths["semantic_cache"]),
+        "semantic_units_path": str(cache_paths["semantic_units"]),
+        "semantic_index_path": str(cache_paths["semantic_index"]),
+        "semantic_manifest_path": str(cache_paths["semantic_manifest"]),
         "workspace_fingerprint": workspace_context["workspace_fingerprint"],
         "catalog_digest": catalog_digest,
         "candidate_file_count": candidate_count,
@@ -1825,6 +1912,7 @@ def refresh_context_index(
         "chunk_count": len(chunk_records),
         "structure_summary": structure_summary(structure_index),
         "hotspot_summary": hotspot_summary(structure_index),
+        "semantic_summary": semantic_result["semantic_summary"],
         "rebuilt_file_count": len(rebuilt_file_paths),
         "reused_file_count": len(reused_file_paths),
         "removed_file_count": len(removed_file_paths),
@@ -1834,6 +1922,11 @@ def refresh_context_index(
         "full_read_count": full_read_count,
         "large_file_count": large_file_count,
         "parser_backend_status": parser_status,
+        "semantic_backend_status": semantic_result.get("backend_status"),
+        "semantic_refresh_status": semantic_result.get("status"),
+        "semantic_rebuilt_unit_count": semantic_result.get("rebuilt_unit_count", 0),
+        "semantic_reused_unit_count": semantic_result.get("reused_unit_count", 0),
+        "semantic_removed_unit_count": semantic_result.get("removed_unit_count", 0),
         "pruned_semantic_cache_entries": pruned,
         "pruned_semantic_cache_reason": pruned_reason,
         "refresh_reason": refresh_reason,

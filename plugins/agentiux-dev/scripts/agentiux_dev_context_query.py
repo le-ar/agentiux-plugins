@@ -24,6 +24,7 @@ from agentiux_dev_context_cache import (
     ROUTE_PROFILES,
     all_capability_entries,
     compact_workspace_context,
+    context_cache_paths,
     intent_routes,
     load_jsonl,
     load_workspace_context_bundle,
@@ -34,6 +35,13 @@ from agentiux_dev_context_cache import (
     refresh_context_index,
     route_index,
     write_jsonl,
+)
+from agentiux_dev_context_semantic import (
+    ANALYSIS_AUDIT_MODES,
+    load_semantic_manifest,
+    search_semantic_units,
+    semantic_mode_enabled,
+    semantic_summary_from_manifest,
 )
 
 
@@ -121,12 +129,18 @@ RETRIEVAL_LADDER = [
     },
     {
         "step": 7,
+        "surface": "run_analysis_audit",
+        "description": "Run a read-only architecture, performance, or docs-style audit with optional semantic shortlist expansion.",
+        "tools": ["run_analysis_audit"],
+    },
+    {
+        "step": 8,
         "surface": "targeted_file_reads",
         "description": "Open only the specific files referenced by the selected route and search hits.",
         "tools": [],
     },
     {
-        "step": 8,
+        "step": 9,
         "surface": "manual_exploration",
         "description": "Use broad rg/manual exploration only if the earlier layers are insufficient.",
         "tools": [],
@@ -187,6 +201,19 @@ def _trim_structure_payload(payload: dict[str, Any]) -> dict[str, Any]:
     return payload
 
 
+def _trim_analysis_audit_payload(payload: dict[str, Any]) -> dict[str, Any]:
+    ceiling = SURFACE_PAYLOAD_CEILINGS["run_analysis_audit"]
+    while payload_size_bytes(payload) > ceiling and payload.get("recommended_follow_ups"):
+        payload["recommended_follow_ups"] = payload["recommended_follow_ups"][:-1]
+    while payload_size_bytes(payload) > ceiling and payload.get("semantic_matches"):
+        payload["semantic_matches"] = payload["semantic_matches"][:-1]
+    while payload_size_bytes(payload) > ceiling and payload.get("evidence"):
+        payload["evidence"] = payload["evidence"][:-1]
+    while payload_size_bytes(payload) > ceiling and payload.get("findings"):
+        payload["findings"] = payload["findings"][:-1]
+    return payload
+
+
 def _serialize_module(module: dict[str, Any]) -> dict[str, Any]:
     return {
         "module_id": module.get("module_id"),
@@ -236,11 +263,106 @@ def _serialize_match(match: dict[str, Any]) -> dict[str, Any]:
         "hotspot_labels": match.get("hotspot_labels", []),
         "dependency_targets": match.get("dependency_targets", []),
         "score": match.get("score"),
+        "match_source": match.get("match_source", "symbolic"),
         "why": match.get("why", {}),
     }
     if match.get("note_id"):
         payload["note_id"] = match.get("note_id")
+    if match.get("snapshot_id"):
+        payload["snapshot_id"] = match.get("snapshot_id")
     return payload
+
+
+def _semantic_match_kind(match: dict[str, Any]) -> str:
+    source_kind = str(match.get("source_kind") or "")
+    if source_kind == "module_summary":
+        return "module"
+    if source_kind == "hotspot_cluster":
+        return "hotspot"
+    if source_kind == "project_note":
+        return "project_memory"
+    if source_kind == "generated_snapshot":
+        return "project_memory"
+    if source_kind.startswith("symbol"):
+        return "symbol"
+    if source_kind.startswith("doc_section"):
+        return "doc_section"
+    return "semantic_unit"
+
+
+def _semantic_match_record(match: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "chunk_id": match.get("unit_id"),
+        "chunk_kind": _semantic_match_kind(match),
+        "path": match.get("path"),
+        "module_id": match.get("module_id"),
+        "language": None,
+        "anchor_title": match.get("anchor_title"),
+        "anchor_kind": match.get("anchor_kind"),
+        "summary": match.get("summary_text"),
+        "line_start": match.get("line_start"),
+        "line_end": match.get("line_end"),
+        "section_level": None,
+        "hotspot_labels": match.get("hotspot_labels", []),
+        "dependency_targets": match.get("dependency_targets", []),
+        "score": match.get("score"),
+        "match_source": "semantic_assisted",
+        "why": match.get("why", {}),
+        "note_id": match.get("note_id"),
+        "snapshot_id": match.get("snapshot_id"),
+    }
+
+
+def _match_identity(match: dict[str, Any]) -> tuple[str | None, str | None, str | None, str | None]:
+    return (
+        match.get("path"),
+        match.get("anchor_title"),
+        match.get("chunk_kind"),
+        match.get("note_id") or match.get("snapshot_id"),
+    )
+
+
+def _merge_semantic_matches(
+    symbolic_matches: list[dict[str, Any]],
+    semantic_matches: list[dict[str, Any]],
+    *,
+    limit: int,
+) -> list[dict[str, Any]]:
+    merged: list[dict[str, Any]] = []
+    seen = set()
+    semantic_quota = 0
+    if semantic_matches and limit > 4:
+        semantic_quota = min(len(semantic_matches), max(1, min(2, limit // 3)))
+    symbolic_budget = limit if not semantic_quota else max(limit - semantic_quota, min(4, limit))
+    for match in symbolic_matches:
+        candidate = {**match, "match_source": match.get("match_source", "symbolic")}
+        identity = _match_identity(candidate)
+        if identity in seen:
+            continue
+        seen.add(identity)
+        merged.append(candidate)
+        if len(merged) >= symbolic_budget:
+            break
+    for match in semantic_matches:
+        candidate = _semantic_match_record(match)
+        identity = _match_identity(candidate)
+        if identity in seen:
+            continue
+        seen.add(identity)
+        merged.append(candidate)
+        if len(merged) >= limit:
+            break
+    if len(merged) < limit:
+        for match in symbolic_matches:
+            candidate = {**match, "match_source": match.get("match_source", "symbolic")}
+            identity = _match_identity(candidate)
+            if identity in seen:
+                continue
+            seen.add(identity)
+            merged.append(candidate)
+            if len(merged) >= limit:
+                break
+    return merged[:limit]
 
 
 def _normalize_module_path(workspace_path: Path, module_path: str | None) -> str | None:
@@ -257,6 +379,61 @@ def _normalize_module_path(workspace_path: Path, module_path: str | None) -> str
             return normalized
         return "." if str(relative) == "." else relative.as_posix()
     return "." if normalized == "." else Path(normalized).as_posix()
+
+
+def _analysis_explicit(route_id: str | None, route: dict[str, Any] | None) -> bool:
+    del route
+    return route_id == "analysis"
+
+
+def _semantic_support(
+    cache_paths: dict[str, Path],
+    *,
+    semantic_mode: str | None,
+    analysis_explicit: bool,
+    query_text: str | None = None,
+    limit: int = 8,
+    module_path: str | None = None,
+) -> dict[str, Any]:
+    normalized_mode, enabled = semantic_mode_enabled(semantic_mode, analysis_explicit=analysis_explicit)
+    manifest = load_semantic_manifest(cache_paths)
+    summary = semantic_summary_from_manifest(manifest)
+    if not enabled or not query_text:
+        return {
+            "semantic_mode": normalized_mode,
+            "enabled": False,
+            "backend_status": summary.get("backend_status"),
+            "semantic_summary": summary,
+            "matches": [],
+        }
+    semantic_payload = search_semantic_units(
+        cache_paths,
+        query_text=query_text,
+        limit=limit,
+        module_path=module_path,
+    )
+    return {
+        "semantic_mode": normalized_mode,
+        "enabled": True,
+        "backend_status": semantic_payload.get("backend_status"),
+        "semantic_summary": semantic_payload.get("semantic_summary") or summary,
+        "matches": semantic_payload.get("matches") or [],
+    }
+
+
+def _semantic_manifest_fingerprint(cache_paths: dict[str, Path]) -> str:
+    manifest = load_semantic_manifest(cache_paths)
+    return short_hash(
+        "|".join(
+            [
+                str(manifest.get("embedder_version") or ""),
+                str(manifest.get("structure_fingerprint") or ""),
+                str(manifest.get("note_fingerprint") or ""),
+                str(manifest.get("snapshot_fingerprint") or ""),
+            ]
+        ),
+        length=16,
+    )
 
 
 def _path_within_module(path_value: str | None, module_path: str | None) -> bool:
@@ -640,6 +817,7 @@ def search_context_index(
     query_text: str,
     route_id: str | None = None,
     limit: int | None = 8,
+    semantic_mode: str | None = "disabled",
 ) -> dict[str, Any]:
     if not tokenize_text(query_text):
         raise ValueError("query_text is required")
@@ -662,6 +840,18 @@ def search_context_index(
         match_limit=match_limit,
         capability_limit=profile["max_selected_tool_limit"],
     )
+    semantic_support = _semantic_support(
+        cache_paths,
+        semantic_mode=semantic_mode,
+        analysis_explicit=_analysis_explicit(route_id, search_bundle["route"]),
+        query_text=query_text,
+        limit=match_limit,
+    )
+    merged_matches = _merge_semantic_matches(
+        search_bundle["matches"],
+        semantic_support["matches"],
+        limit=match_limit,
+    )
     record_search_stats(
         cache_paths,
         query_text=query_text,
@@ -679,10 +869,12 @@ def search_context_index(
         "route_resolution_status": search_bundle["route_status"],
         "requires_route_confirmation": search_bundle["route_status"] == "ambiguous",
         "retrieval": retrieval_policy_payload("search_context_index", retrieval_mode),
+        "semantic_mode": semantic_support["semantic_mode"],
+        "semantic_backend_status": semantic_support["backend_status"],
         "route_candidates": search_bundle["route_candidates"],
         "workspace_context": compact_workspace_context(workspace_context),
         "modules": [_serialize_module(module) for module in search_bundle["modules"]],
-        "matches": [_serialize_match(match) for match in search_bundle["matches"]],
+        "matches": [_serialize_match(match) for match in merged_matches],
         "recommended_capabilities": search_bundle["recommended_capabilities"],
     }
     _trim_search_payload(payload)
@@ -690,8 +882,18 @@ def search_context_index(
     return payload
 
 
-def _semantic_cache_key(query_text: str, catalog_digest: str, route_id: str | None) -> str:
-    return short_hash(f"{catalog_digest}:{route_id or 'none'}:{' '.join(tokenize_text(query_text))}", length=16)
+def _semantic_cache_key(
+    query_text: str,
+    catalog_digest: str,
+    route_id: str | None,
+    semantic_mode: str,
+    *,
+    semantic_enabled: bool,
+) -> str:
+    return short_hash(
+        f"{catalog_digest}:{route_id or 'none'}:{semantic_mode}:{int(semantic_enabled)}:{' '.join(tokenize_text(query_text))}",
+        length=16,
+    )
 
 
 def _pinned_project_memory_selected_chunks(chunks: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -712,6 +914,7 @@ def show_workspace_context_pack(
     route_id: str | None = None,
     limit: int | None = 6,
     force_refresh: bool = False,
+    semantic_mode: str | None = "disabled",
 ) -> dict[str, Any]:
     resolved_workspace = Path(workspace).expanduser().resolve()
     retrieval_mode = infer_retrieval_mode(request_text)
@@ -733,9 +936,25 @@ def show_workspace_context_pack(
     )
     route, route_candidates, route_status = _resolve_intent_candidates(request_text, route_id, usage=usage)
     compact_context = compact_workspace_context(workspace_context)
+    semantic_support = _semantic_support(
+        cache_paths,
+        semantic_mode=semantic_mode,
+        analysis_explicit=_analysis_explicit(route_id, route),
+        query_text=request_text,
+        limit=chunk_limit,
+    )
 
     if request_text:
-        cache_key = _semantic_cache_key(request_text, workspace_context.get("catalog_digest", ""), route["route_id"] if route else None)
+        semantic_fingerprint = (
+            _semantic_manifest_fingerprint(cache_paths) if semantic_support["enabled"] else None
+        )
+        cache_key = _semantic_cache_key(
+            request_text,
+            workspace_context.get("catalog_digest", ""),
+            route["route_id"] if route else None,
+            semantic_support["semantic_mode"],
+            semantic_enabled=bool(semantic_support["enabled"]),
+        )
         semantic_cache = load_jsonl(cache_paths["semantic_cache"])
         chunk_hashes = {chunk["path"]: chunk["hash"] for chunk in chunks}
         cached = next(
@@ -743,11 +962,19 @@ def show_workspace_context_pack(
                 entry
                 for entry in semantic_cache
                 if entry.get("query_fingerprint") == cache_key
-                and entry.get("schema_version", 1) == 3
+                and entry.get("schema_version", 1) == 5
                 and entry.get("catalog_digest") == workspace_context.get("catalog_digest")
+                and entry.get("semantic_mode") == semantic_support["semantic_mode"]
+                and bool(entry.get("semantic_enabled")) == bool(semantic_support["enabled"])
+                and (
+                    semantic_fingerprint is None
+                    or entry.get("semantic_fingerprint") == semantic_fingerprint
+                )
                 and isinstance(entry.get("source_hashes"), dict)
-                and entry.get("source_hashes")
-                and all(chunk_hashes.get(path) == expected_hash for path, expected_hash in entry["source_hashes"].items())
+                and (
+                    not entry.get("source_hashes")
+                    or all(chunk_hashes.get(path) == expected_hash for path, expected_hash in entry["source_hashes"].items())
+                )
             ),
             None,
         )
@@ -766,6 +993,8 @@ def show_workspace_context_pack(
                 "index_status": refresh_result["status"],
                 "index_refresh_reason": refresh_result.get("refresh_reason"),
                 "retrieval": retrieval_policy_payload("show_workspace_context_pack", retrieval_mode),
+                "semantic_mode": semantic_support["semantic_mode"],
+                "semantic_backend_status": semantic_support["backend_status"],
                 "workspace_context": compact_context,
                 "resolved_route": route,
                 "route_resolution_status": route_status,
@@ -786,6 +1015,13 @@ def show_workspace_context_pack(
             match_limit=chunk_limit,
             capability_limit=profile["max_selected_tool_limit"],
         )
+        semantic_support = _semantic_support(
+            cache_paths,
+            semantic_mode=semantic_mode,
+            analysis_explicit=_analysis_explicit(route_id, search_bundle["route"]),
+            query_text=request_text,
+            limit=chunk_limit,
+        )
         record_search_stats(
             cache_paths,
             query_text=request_text,
@@ -796,8 +1032,27 @@ def show_workspace_context_pack(
         selected_chunks = _pinned_project_memory_selected_chunks(chunks)
         selected_chunks.extend(
             [
-                {"chunk_id": match["chunk_id"], "path": match["path"], "summary": match["summary"], "score": match["score"]}
+                {
+                    "chunk_id": match["chunk_id"],
+                    "path": match["path"],
+                    "summary": match["summary"],
+                    "score": match["score"],
+                    "match_source": "symbolic",
+                }
                 for match in search_bundle["matches"]
+            ]
+        )
+        selected_chunks.extend(
+            [
+                {
+                    "chunk_id": match.get("unit_id"),
+                    "path": match.get("path"),
+                    "summary": match.get("summary_text"),
+                    "score": match.get("score"),
+                    "match_source": "semantic_assisted",
+                }
+                for match in semantic_support["matches"]
+                if match.get("path") and match.get("summary_text")
             ]
         )
         deduped_chunks: list[dict[str, Any]] = []
@@ -820,14 +1075,18 @@ def show_workspace_context_pack(
         source_hashes = {
             match["path"]: next(chunk["hash"] for chunk in chunks if chunk["path"] == match["path"])
             for match in selected_chunks
+            if any(chunk["path"] == match["path"] for chunk in chunks)
         }
         confidence = round(min(sum(match["score"] for match in selected_chunks[:3]) / 36, 1.0), 2)
         context_pack = {
-            "schema_version": 3,
+            "schema_version": 5,
             "query_fingerprint": cache_key,
             "workspace_fingerprint": workspace_context.get("workspace_fingerprint"),
             "catalog_digest": workspace_context.get("catalog_digest"),
             "route_id": route["route_id"] if route else None,
+            "semantic_mode": semantic_support["semantic_mode"],
+            "semantic_enabled": bool(semantic_support["enabled"]),
+            "semantic_fingerprint": semantic_fingerprint,
             "selected_chunks": selected_chunks,
             "selected_tools": selected_tools,
             "confidence": confidence,
@@ -853,6 +1112,8 @@ def show_workspace_context_pack(
             "index_status": refresh_result["status"],
             "index_refresh_reason": refresh_result.get("refresh_reason"),
             "retrieval": retrieval_policy_payload("show_workspace_context_pack", retrieval_mode),
+            "semantic_mode": semantic_support["semantic_mode"],
+            "semantic_backend_status": semantic_support["backend_status"],
             "workspace_context": compact_context,
             "resolved_route": route,
             "route_resolution_status": route_status,
@@ -877,6 +1138,8 @@ def show_workspace_context_pack(
         "index_status": refresh_result["status"],
         "index_refresh_reason": refresh_result.get("refresh_reason"),
         "retrieval": retrieval_policy_payload("show_workspace_context_pack", retrieval_mode),
+        "semantic_mode": semantic_support["semantic_mode"],
+        "semantic_backend_status": semantic_support["backend_status"],
         "workspace_context": compact_context,
         "resolved_route": route,
         "route_resolution_status": route_status,
@@ -896,6 +1159,7 @@ def show_context_structure(
     route_id: str | None = None,
     module_path: str | None = None,
     limit: int | None = 8,
+    semantic_mode: str | None = "disabled",
 ) -> dict[str, Any]:
     resolved_workspace = Path(workspace).expanduser().resolve()
     retrieval_mode = infer_retrieval_mode(query_text or "show context structure")
@@ -921,6 +1185,14 @@ def show_context_structure(
 
     matches: list[dict[str, Any]] = []
     route, route_candidates, route_status = _resolve_intent_candidates(None, route_id or "analysis", usage=usage)
+    semantic_support = _semantic_support(
+        cache_paths,
+        semantic_mode=semantic_mode,
+        analysis_explicit=True,
+        query_text=query_text,
+        limit=match_limit,
+        module_path=normalized_module_path,
+    )
     if query_text:
         search_bundle = _search_bundle_matches(
             query_text=query_text,
@@ -935,7 +1207,19 @@ def show_context_structure(
         route = search_bundle["route"]
         route_candidates = search_bundle["route_candidates"]
         route_status = search_bundle["route_status"]
-        matches = list(search_bundle["matches"])
+        semantic_support = _semantic_support(
+            cache_paths,
+            semantic_mode=semantic_mode,
+            analysis_explicit=True,
+            query_text=query_text,
+            limit=match_limit,
+            module_path=normalized_module_path,
+        )
+        matches = _merge_semantic_matches(
+            list(search_bundle["matches"]),
+            semantic_support["matches"],
+            limit=match_limit,
+        )
         if normalized_module_path:
             matches = [match for match in matches if _path_within_module(match.get("path"), normalized_module_path)]
         matches = matches[:match_limit]
@@ -976,6 +1260,9 @@ def show_context_structure(
         "route_resolution_status": route_status,
         "route_candidates": route_candidates[:3],
         "retrieval": retrieval_policy_payload("show_context_structure", retrieval_mode),
+        "semantic_mode": semantic_support["semantic_mode"],
+        "semantic_backend_status": semantic_support["backend_status"],
+        "semantic_summary": semantic_support["semantic_summary"],
         "summary": structure_index.get("summary") or {},
         "parser_backends": structure_index.get("parser_backends") or {},
         "incremental_indexing": structure_index.get("incremental_indexing") or {},
@@ -985,4 +1272,301 @@ def show_context_structure(
     }
     _trim_structure_payload(payload)
     _surface_payload_stats("show_context_structure", payload)
+    return payload
+
+
+def _evidence_payload(match: dict[str, Any], evidence_id: str) -> dict[str, Any]:
+    return {
+        "evidence_id": evidence_id,
+        "path": match.get("path"),
+        "match_kind": match.get("chunk_kind"),
+        "anchor_title": match.get("anchor_title"),
+        "line_start": match.get("line_start"),
+        "line_end": match.get("line_end"),
+        "match_source": match.get("match_source", "symbolic"),
+        "summary": match.get("summary"),
+    }
+
+
+def _audit_finding(
+    finding_id: str,
+    *,
+    title: str,
+    severity: str,
+    summary: str,
+    evidence_refs: list[str],
+) -> dict[str, Any]:
+    return {
+        "finding_id": finding_id,
+        "title": title,
+        "severity": severity,
+        "summary": summary,
+        "evidence_refs": evidence_refs[:4],
+    }
+
+
+def _docs_file_truth(path: Path, patterns: list[str]) -> bool:
+    if not path.exists():
+        return False
+    contents = path.read_text(encoding="utf-8", errors="ignore").lower()
+    return all(pattern.lower() in contents for pattern in patterns)
+
+
+def run_analysis_audit(
+    workspace: str | Path,
+    mode: str,
+    query_text: str | None = None,
+    module_path: str | None = None,
+    limit: int | None = 8,
+    semantic_mode: str | None = "auto",
+) -> dict[str, Any]:
+    normalized_mode = str(mode or "").strip().lower()
+    if normalized_mode not in ANALYSIS_AUDIT_MODES:
+        raise ValueError(f"Unsupported analysis audit mode: {mode}")
+    resolved_workspace = Path(workspace).expanduser().resolve()
+    retrieval_mode = infer_retrieval_mode(query_text or f"{normalized_mode} analysis audit")
+    profile = retrieval_mode_profile(retrieval_mode)
+    match_limit = _limit(limit, 8, profile["max_match_limit"])
+    normalized_module_path = _normalize_module_path(resolved_workspace, module_path)
+    refresh_result, cache_paths, workspace_context, modules, chunks, usage, structure_index = load_workspace_context_bundle(
+        resolved_workspace,
+        query_text=query_text or normalized_mode,
+        route_id="analysis",
+        retrieval_mode=retrieval_mode,
+    )
+    route, route_candidates, route_status = _resolve_intent_candidates(query_text, "analysis", usage=usage)
+    search_bundle = _search_bundle_matches(
+        query_text=query_text or normalized_mode,
+        route_id="analysis",
+        workspace_context=workspace_context,
+        modules=modules,
+        chunks=chunks,
+        usage=usage,
+        match_limit=match_limit,
+        capability_limit=profile["max_selected_tool_limit"],
+    )
+    semantic_support = _semantic_support(
+        cache_paths,
+        semantic_mode=semantic_mode,
+        analysis_explicit=True,
+        query_text=query_text or normalized_mode,
+        limit=match_limit,
+        module_path=normalized_module_path,
+    )
+    merged_matches = _merge_semantic_matches(search_bundle["matches"], semantic_support["matches"], limit=match_limit)
+    if normalized_module_path:
+        merged_matches = [match for match in merged_matches if _path_within_module(match.get("path"), normalized_module_path)]
+    evidence: list[dict[str, Any]] = []
+    findings: list[dict[str, Any]] = []
+    for index, match in enumerate(merged_matches[:6], start=1):
+        evidence.append(_evidence_payload(match, f"ev-{index}"))
+
+    if normalized_mode == "architecture":
+        top_hotspots = list(structure_index.get("hotspots") or [])[:3]
+        if top_hotspots:
+            hotspot = top_hotspots[0]
+            findings.append(
+                _audit_finding(
+                    "architecture-hotspot-cluster",
+                    title="Cross-module hotspot cluster",
+                    severity="warning",
+                    summary=(
+                        f"Structural indexing highlights `{hotspot.get('path') or hotspot.get('module_id')}` "
+                        f"with score {int(hotspot.get('hotspot_score') or 0)} and labels "
+                        f"{', '.join(hotspot.get('hotspot_labels') or []) or 'none'}."
+                    ),
+                    evidence_refs=[item["evidence_id"] for item in evidence[:2]],
+                )
+            )
+        coupled_modules = [
+            module
+            for module in modules
+            if int(module.get("local_fan_in") or 0) >= 1 and int(module.get("local_fan_out") or 0) >= 1
+        ]
+        if coupled_modules:
+            module = coupled_modules[0]
+            findings.append(
+                _audit_finding(
+                    "architecture-coupling-zone",
+                    title="Coupling zone worth review",
+                    severity="warning",
+                    summary=(
+                        f"Module `{module.get('path') or '.'}` has local fan-in {int(module.get('local_fan_in') or 0)} "
+                        f"and fan-out {int(module.get('local_fan_out') or 0)}, which usually marks a boundary surface."
+                    ),
+                    evidence_refs=[item["evidence_id"] for item in evidence[1:3]],
+                )
+            )
+        semantic_memory_refs = [match for match in semantic_support["matches"] if match.get("source_kind") in {"project_note", "generated_snapshot"}]
+        if semantic_memory_refs:
+            findings.append(
+                _audit_finding(
+                    "architecture-memory-signal",
+                    title="Project memory points at a cross-cutting zone",
+                    severity="info",
+                    summary=(
+                        "Pinned notes or generated snapshots align with the current analysis query, "
+                        "so the architecture picture already has operator-facing memory attached to it."
+                    ),
+                    evidence_refs=[item["evidence_id"] for item in evidence[:1]],
+                )
+            )
+
+    elif normalized_mode == "performance":
+        incremental = structure_index.get("incremental_indexing") or {}
+        if int((structure_index.get("summary") or {}).get("large_file_count") or 0) > 0:
+            findings.append(
+                _audit_finding(
+                    "performance-large-files",
+                    title="Large-file pressure is present",
+                    severity="warning",
+                    summary=(
+                        f"The structural index is tracking {int((structure_index.get('summary') or {}).get('large_file_count') or 0)} "
+                        "large files in bounded-read mode. That is a good guardrail, but it also signals likely broad-read pressure."
+                    ),
+                    evidence_refs=[item["evidence_id"] for item in evidence[:2]],
+                )
+            )
+        if int(incremental.get("rebuilt_file_count") or 0) > 0 or int(incremental.get("bounded_read_count") or 0) > 0:
+            findings.append(
+                _audit_finding(
+                    "performance-incremental-cost",
+                    title="Incremental refresh cost is measurable",
+                    severity="info",
+                    summary=(
+                        f"Latest refresh rebuilt {int(incremental.get('rebuilt_file_count') or 0)} files, "
+                        f"reused {int(incremental.get('reused_file_count') or 0)} files, and bounded {int(incremental.get('bounded_read_count') or 0)} reads."
+                    ),
+                    evidence_refs=[item["evidence_id"] for item in evidence[1:3]],
+                )
+            )
+        top_hotspot = next((item for item in (structure_index.get("hotspots") or []) if item.get("target_kind") == "file"), None)
+        if top_hotspot:
+            findings.append(
+                _audit_finding(
+                    "performance-hotspot-file",
+                    title="One file dominates the hotspot ranking",
+                    severity="warning",
+                    summary=(
+                        f"`{top_hotspot.get('path')}` is the top file hotspot with score {int(top_hotspot.get('hotspot_score') or 0)}. "
+                        "That usually maps to broad-read cost, entrypoint pressure, or churn concentration."
+                    ),
+                    evidence_refs=[item["evidence_id"] for item in evidence[:1]],
+                )
+            )
+
+    else:
+        docs_candidates = [
+            resolved_workspace / "README.md",
+            resolved_workspace / "plugins" / "agentiux-dev" / "README.md",
+        ]
+        command_surface_candidates = [
+            resolved_workspace / "plugins" / "agentiux-dev" / "references" / "command-surface.md",
+            resolved_workspace / "references" / "command-surface.md",
+        ]
+        dashboard_candidates = [
+            resolved_workspace / "plugins" / "agentiux-dev" / "references" / "dashboard.md",
+            resolved_workspace / "references" / "dashboard.md",
+        ]
+        has_readme_truth = any(_docs_file_truth(path, ["analysis"]) for path in docs_candidates if path.exists())
+        has_command_truth = any(
+            _docs_file_truth(path, ["run analysis audit", "show context structure"]) for path in command_surface_candidates if path.exists()
+        )
+        has_dashboard_truth = any(_docs_file_truth(path, ["semantic_summary"]) for path in dashboard_candidates if path.exists())
+        if not has_command_truth:
+            findings.append(
+                _audit_finding(
+                    "docs-style-command-drift",
+                    title="Command surface docs look stale",
+                    severity="warning",
+                    summary="The operator-facing command surface docs do not mention both `run_analysis_audit` and `show_context_structure`.",
+                    evidence_refs=[item["evidence_id"] for item in evidence[:1]],
+                )
+            )
+        if not has_dashboard_truth:
+            findings.append(
+                _audit_finding(
+                    "docs-style-dashboard-drift",
+                    title="Dashboard docs miss semantic summary truth",
+                    severity="warning",
+                    summary="Dashboard-facing documentation does not clearly mention compact semantic summary surfaces.",
+                    evidence_refs=[item["evidence_id"] for item in evidence[1:2]],
+                )
+            )
+        if not has_readme_truth:
+            findings.append(
+                _audit_finding(
+                    "docs-style-readme-gap",
+                    title="Top-level docs are sparse for analysis flows",
+                    severity="info",
+                    summary="The nearest README files do not clearly describe the analysis route or semantic audit behavior.",
+                    evidence_refs=[item["evidence_id"] for item in evidence[:1]],
+                )
+            )
+
+    if not findings:
+        findings.append(
+            _audit_finding(
+                f"{normalized_mode}-no-gaps",
+                title="No major issues detected",
+                severity="info",
+                summary="This audit mode did not find a deterministic warning from the current structural and semantic signals.",
+                evidence_refs=[item["evidence_id"] for item in evidence[:2]],
+            )
+        )
+
+    memory_snapshot_draft = {
+        "schema_version": 1,
+        "snapshot_id": short_hash(
+            f"{resolved_workspace}:{normalized_mode}:{normalized_module_path or 'workspace'}:{query_text or ''}",
+            length=16,
+        ),
+        "title": f"{normalized_mode.replace('_', ' ').title()} audit snapshot",
+        "status": "draft",
+        "source_audit_mode": normalized_mode,
+        "source_query_text": query_text,
+        "source_module_path": normalized_module_path,
+        "confidence": round(min(0.45 + (0.1 * len(findings)) + (0.05 * len(semantic_support['matches'])), 0.95), 2),
+        "expires_in_days": 14,
+        "body_markdown": "\n".join(
+            [
+                f"# {normalized_mode.replace('_', ' ').title()} audit",
+                "",
+                *(f"- {finding['title']}: {finding['summary']}" for finding in findings[:6]),
+            ]
+        ),
+        "provenance": {
+            "workspace_path": str(resolved_workspace),
+            "route_id": "analysis",
+            "index_refresh_reason": refresh_result.get("refresh_reason"),
+            "evidence_count": len(evidence),
+            "semantic_match_count": len(semantic_support["matches"]),
+        },
+    }
+    payload = {
+        "workspace_path": str(resolved_workspace),
+        "mode": normalized_mode,
+        "query_text": query_text,
+        "module_path": normalized_module_path,
+        "resolved_route": route or search_bundle["route"],
+        "route_resolution_status": route_status,
+        "route_candidates": route_candidates[:3],
+        "retrieval": retrieval_policy_payload("run_analysis_audit", retrieval_mode),
+        "index_status": refresh_result["status"],
+        "index_refresh_reason": refresh_result.get("refresh_reason"),
+        "semantic_mode": semantic_support["semantic_mode"],
+        "semantic_backend_status": semantic_support["backend_status"],
+        "semantic_summary": semantic_support["semantic_summary"],
+        "findings": findings,
+        "evidence": evidence,
+        "semantic_matches": [_serialize_match(_semantic_match_record(match)) for match in semantic_support["matches"]],
+        "memory_snapshot_draft": memory_snapshot_draft,
+        "recommended_follow_ups": [
+            "Use `show_context_structure` to inspect the highlighted module or hotspot in compact form.",
+            "Use `search_context_index` with `semanticMode=enabled` only if you want semantic shortlist expansion on the analysis route.",
+            "Persist the draft snapshot only through workflow execution or closeout code paths after review.",
+        ],
+    }
+    _trim_analysis_audit_payload(payload)
+    _surface_payload_stats("run_analysis_audit", payload)
     return payload

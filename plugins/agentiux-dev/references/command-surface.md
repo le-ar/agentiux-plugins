@@ -24,6 +24,7 @@ AgentiUX Dev exposes a small chat-first command surface.
 - `show workspace context pack`
 - `search context index`
 - `show context structure`
+- `run analysis audit`
 - `refresh context index`
 - `show verification helper catalog`
 - `audit verification coverage`
@@ -99,12 +100,15 @@ AgentiUX Dev exposes a small chat-first command surface.
 - `show verification log` reads stdout, stderr, or Android logcat from the active or selected verification run in external state.
 - `show capability catalog` returns the compact repo-tracked catalog for skills, MCP tools, scripts, and references.
 - `show intent route` resolves the low-token route family that should be used before reading large docs or Python entrypoints.
-- `show workspace context pack` returns the current global workspace context pack and optional semantic retrieval pack for a request.
-- `search context index` searches the global project context index for relevant chunks and recommended capabilities.
-- `show context structure` returns compact structural summaries for modules, symbols, doc sections, hotspots, parser backends, and incremental indexing without hydrating the full cache.
-- `refresh context index` rebuilds the global project context index outside the repository.
-- The low-token `analysis` route is the structural drill-down path for module, symbol, section, hotspot, large-file, and incremental-index requests.
+- `show workspace context pack` returns the current global workspace context pack. It keeps full semantic units out of the payload, accepts additive `semanticMode`, and only uses semantic shortlist expansion on explicit `analysis` requests.
+- `search context index` searches the global project context index for relevant chunks and recommended capabilities. It accepts additive `semanticMode`, keeps symbolic hits first, and tags explicit semantic shortlist expansions with `match_source`.
+- `show context structure` returns compact structural summaries for modules, symbols, doc sections, hotspots, parser backends, incremental indexing, and compact `semantic_summary` without hydrating the full cache.
+- `run analysis audit` is the read-only advanced analysis surface for `architecture`, `performance`, and `docs_style` modes. It may use `semanticMode=auto` by default, returns compact findings and evidence, and emits a non-persisted `memory_snapshot_draft`.
+- `refresh context index` rebuilds the global project context index outside the repository and also refreshes the optional semantic tier incrementally.
+- The low-token `analysis` route is the structural drill-down path for module, symbol, section, hotspot, large-file, incremental-index, and explicit semantic-audit requests.
 - Structural chunk storage stays bounded: file, symbol, doc-section, and project-memory chunks share one normalized schema with anchors and line ranges.
+- `semantic_cache.jsonl` remains the query-pack cache only. The optional semantic tier persists separate home-local artifacts: `semantic_units.jsonl`, `semantic_index.sqlite`, and `semantic_manifest.json`.
+- Generated project-memory snapshots live outside the manual note store, are not created by public audit commands, expire from semantic recall automatically, and surface only through compact summary counts on cheap payloads.
 - Python and Markdown are parser-backed by default. JS/TS parser depth is optional and activates only when a local TypeScript backend is resolvable; otherwise the command surface must degrade to heuristic extraction without failing.
 - Large files switch to bounded structural extraction and hotspot labeling instead of full-body summary synthesis.
 - `show verification helper catalog` returns the versioned plugin-owned helper bundle catalog plus sync status for the current workspace.

@@ -75,7 +75,8 @@ The source repo remains the place where you edit and verify the plugin. The inst
 - repo-aware Git workflow advice plus safe local branch, staging, and commit actions
 - workspace-scoped YouTrack integration with permanent-token connections, persisted search sessions, richer issue context plus linked-issue analysis for planning, idempotent plan apply, and issue-ledger aggregation
 - repo-tracked low-token catalogs for skills, MCP tools, scripts, references, and intent routes
-- global project context indexing and semantic cache under `~/.agentiux/agentiux-dev/cache/context/`
+- global project context indexing under `~/.agentiux/agentiux-dev/cache/context/`, with structural artifacts plus a separate optional semantic tier (`semantic_units.jsonl`, `semantic_index.sqlite`, `semantic_manifest.json`) and query-pack cache packets in `semantic_cache.jsonl`
+- project memory notes plus generated audit snapshots stored outside repositories, with generated snapshots capped and expiring from semantic recall automatically
 - a cockpit-first local-only dashboard launched from chat, with dashboard writes for YouTrack integration management, universal E2E auth profiles and sessions, project memory notes, and learning entries
 
 ## Dashboard Model
@@ -104,8 +105,9 @@ Codex should prefer the low-token retrieval ladder before reading large docs or 
 4. `show workspace context pack`
 5. `search context index`
 6. `show context structure`
-7. targeted file reads
-8. broad manual exploration only when the earlier layers are insufficient
+7. `run analysis audit`
+8. targeted file reads
+9. broad manual exploration only when the earlier layers are insufficient
 
 Cheap retrieval surfaces now expose explicit retrieval-mode metadata and payload ceilings:
 
@@ -116,11 +118,11 @@ Cheap retrieval surfaces now expose explicit retrieval-mode metadata and payload
 
 `show intent route`, `workflow-advice`, `show workspace context pack`, and `search context index` stay Unicode-safe for mixed-script and non-ASCII requests when canonical tool names, paths, and schema fields remain in English.
 
-Cheap retrieval surfaces also keep Stage 1 payload discipline. They project compact `design_summary`, `testability_summary`, `structure_summary`, and `hotspot_summary` counts instead of embedding full design briefs, handoffs, verification recipes, or structural artifacts.
+Cheap retrieval surfaces also keep Stage 1 payload discipline. They project compact `design_summary`, `testability_summary`, `structure_summary`, `hotspot_summary`, and `semantic_summary` counts instead of embedding full design briefs, handoffs, verification recipes, structural artifacts, semantic units, or generated snapshot bodies.
 
 The plugin keeps canonical versioned catalogs in `catalogs/` and stores project-derived context indexes globally under `~/.agentiux/agentiux-dev/cache/context/<workspace-fingerprint>/`. No project-derived context cache is written into repositories.
 
-Context indexing is structural in Stage 4. Python and Markdown always use parser-backed extraction, JS/TS can opt into a local TypeScript-compiler backend when `node` plus a resolvable `typescript` package are available, and Kotlin/Rust/other supported source types keep heuristic extraction with the same normalized chunk schema. Large files above `64_000` bytes switch into bounded structural mode instead of full-body summary synthesis, and all structural artifacts remain home-local under the context cache root.
+Context indexing stays symbolic-first by default. Python and Markdown always use parser-backed extraction, JS/TS can opt into a local TypeScript-compiler backend when `node` plus a resolvable `typescript` package are available, and Kotlin/Rust/other supported source types keep heuristic extraction with the same normalized chunk schema. Large files above `64_000` bytes switch into bounded structural mode instead of full-body summary synthesis, and all structural artifacts remain home-local under the context cache root. Stage 5 adds an optional semantic layer on top of those structural records, but semantic recall stays disabled unless the caller explicitly enables it on the `analysis` path or uses `run analysis audit`.
 
 ## Public Command Surface
 
@@ -148,6 +150,7 @@ Context indexing is structural in Stage 4. Python and Markdown always use parser
 - `show workspace context pack`
 - `search context index`
 - `show context structure`
+- `run analysis audit`
 - `refresh context index`
 - `show auth profiles`
 - `write auth profile`

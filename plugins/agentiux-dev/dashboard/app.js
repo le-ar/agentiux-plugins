@@ -859,6 +859,7 @@ function renderPlanPanel(cockpit) {
   const designState = plan.design_state || {};
   const designSummary = designState.design_summary || {};
   const testabilitySummary = designState.testability_summary || {};
+  const semanticSummary = designState.semantic_summary || cockpit.semantic_summary || {};
   return `
     <div class="content-grid" data-screen-id="cockpit-plan-panel" data-panel="plan" data-testid="cockpit-plan-panel">
       <section class="surface-card">
@@ -954,11 +955,16 @@ function renderPlanPanel(cockpit) {
           { label: "Critical actions", value: designSummary.critical_action_count || 0, tone: "neutral" },
           { label: "Covered actions", value: testabilitySummary.covered_action_count || 0, tone: "ok" },
           { label: "Limitations", value: testabilitySummary.limitation_count || 0, tone: testabilitySummary.limitation_count ? "warn" : "ok" },
+          { label: "Semantic units", value: semanticSummary.unit_count || 0, tone: "neutral" },
           { label: "Hooks", value: designState.verification_hooks || 0, tone: "neutral" },
         ])}
         <div class="chip-row">
           <span class="pill-chip">${escapeHtml(`board candidates: ${designState.current_board_candidates || 0}`)}</span>
           <span class="pill-chip">${escapeHtml(`verified states: ${designSummary.verified_state_count || 0}`)}</span>
+          <span class="pill-chip ${toneClass(semanticSummary.backend_status === "active" ? "ok" : "neutral")}">${escapeHtml(
+            `semantic: ${semanticSummary.backend_status || "unknown"}`,
+          )}</span>
+          <span class="pill-chip">${escapeHtml(`snapshots: ${semanticSummary.snapshot_count || 0}`)}</span>
           <span class="pill-chip ${toneClass(testabilitySummary.unresolved_action_count ? "warn" : "ok")}">${escapeHtml(
             `unresolved actions: ${testabilitySummary.unresolved_action_count || 0}`,
           )}</span>
@@ -1004,6 +1010,7 @@ function renderQualityPanel(cockpit) {
   const logs = quality.logs || {};
   const coverage = quality.coverage || {};
   const testabilitySummary = quality.testability_summary || {};
+  const semanticSummary = quality.semantic_summary || cockpit.semantic_summary || {};
   return `
     <div class="content-grid" data-screen-id="cockpit-quality-panel" data-panel="quality" data-testid="cockpit-quality-panel">
       <section class="surface-card emphasis-card">
@@ -1046,6 +1053,10 @@ function renderQualityPanel(cockpit) {
               <span class="pill-chip ${toneClass(testabilitySummary.limitation_count ? "warn" : "ok")}">${escapeHtml(
                 `limitations: ${testabilitySummary.limitation_count || 0}`,
               )}</span>
+              <span class="pill-chip ${toneClass(semanticSummary.backend_status === "active" ? "ok" : "neutral")}">${escapeHtml(
+                `semantic: ${semanticSummary.backend_status || "unknown"}`,
+              )}</span>
+              <span class="pill-chip">${escapeHtml(`semantic units: ${semanticSummary.unit_count || 0}`)}</span>
               <span class="pill-chip ${toneClass(testabilitySummary.unresolved_action_count ? "warn" : "ok")}">${escapeHtml(
                 `unresolved actions: ${testabilitySummary.unresolved_action_count || 0}`,
               )}</span>
