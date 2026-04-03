@@ -24,6 +24,8 @@ function parseArgs(argv) {
     containerSelector: [],
     textSelector: [],
     allowSelector: [],
+    interactionScript: "",
+    interactionSettleMs: 250,
   };
   for (let index = 0; index < argv.length; index += 1) {
     const token = argv[index];
@@ -79,6 +81,14 @@ function parseArgs(argv) {
         break;
       case "--allow-selector":
         config.allowSelector.push(String(next || ""));
+        index += 1;
+        break;
+      case "--interaction-script":
+        config.interactionScript = String(next || "");
+        index += 1;
+        break;
+      case "--interaction-settle-ms":
+        config.interactionSettleMs = Number(next || 0) || config.interactionSettleMs;
         index += 1;
         break;
       default:
@@ -729,6 +739,29 @@ function auditExpression(config, ruleCatalog) {
       return rect.right > viewport.width + EPSILON || rect.left < 0 - EPSILON;
     }
 
+    function insideIntentionalHorizontalScrollArea(element) {
+      let current = element.parentElement;
+      while (current instanceof Element) {
+        if (!isVisible(current)) {
+          current = current.parentElement;
+          continue;
+        }
+        const style = window.getComputedStyle(current);
+        const hasHorizontalScroll =
+          ["auto", "scroll"].includes(style.overflowX) ||
+          current.scrollWidth > current.clientWidth + EPSILON;
+        if (hasHorizontalScroll) {
+          const rect = toRect(current);
+          const containerFitsViewport = rect.left >= 0 - EPSILON && rect.right <= viewport.width + EPSILON;
+          if (containerFitsViewport) {
+            return true;
+          }
+        }
+        current = current.parentElement;
+      }
+      return false;
+    }
+
     function intersectsViewport(rect) {
       return rect.bottom > 0 && rect.top < viewport.height && rect.right > 0 && rect.left < viewport.width;
     }
@@ -763,7 +796,11 @@ function auditExpression(config, ruleCatalog) {
 
     for (const element of auditElements) {
       const rect = toRect(element);
-      if (overlapsViewport(rect) && issues.filter((item) => item.type === "viewport-overflow").length < MAX_OVERFLOW_ISSUES) {
+      if (
+        overlapsViewport(rect) &&
+        !insideIntentionalHorizontalScrollArea(element) &&
+        issues.filter((item) => item.type === "viewport-overflow").length < MAX_OVERFLOW_ISSUES
+      ) {
         issues.push({
           type: "viewport-overflow",
           label: label(element),
@@ -939,6 +976,29 @@ function auditExpression(config, ruleCatalog) {
       });
     }
 
+    const navigationEntry = performance.getEntriesByType("navigation")[0] || null;
+    const paintEntries = Object.fromEntries(
+      performance
+        .getEntriesByType("paint")
+        .map((entry) => [entry.name, Math.round(entry.startTime)]),
+    );
+    let dashboardDebug = null;
+    try {
+      dashboardDebug = window.__agentiux?.debugSnapshot?.() || null;
+    } catch (error) {
+      dashboardDebug = null;
+    }
+    const activeScreenIds = Array.from(document.querySelectorAll("[data-screen-id]"))
+      .filter(isVisible)
+      .map((element) => element.getAttribute("data-screen-id"))
+      .filter(Boolean);
+    const activePanelIds = Array.from(document.querySelectorAll("[data-panel]"))
+      .filter(isVisible)
+      .map((element) => element.getAttribute("data-panel"))
+      .filter(Boolean);
+    const selectedWorkspace =
+      document.querySelector("[data-selected-workspace]")?.getAttribute("data-selected-workspace") || null;
+    const selectedPanel = document.querySelector("[data-selected-panel]")?.getAttribute("data-selected-panel") || null;
     const status = issues.length ? "failed" : warnings.length ? "warning" : "passed";
     return {
       viewport,
@@ -949,6 +1009,26 @@ function auditExpression(config, ruleCatalog) {
       warnings,
       responsive,
       title: document.title,
+      location: {
+        href: window.location.href,
+        pathname: window.location.pathname,
+        search: window.location.search,
+        hash: window.location.hash,
+      },
+      active_screen_ids: activeScreenIds,
+      active_panel_ids: activePanelIds,
+      selected_workspace_path: selectedWorkspace,
+      selected_panel: selectedPanel,
+      dashboard_debug: dashboardDebug,
+      timings: {
+        response_end_ms: navigationEntry ? Math.round(navigationEntry.responseEnd) : null,
+        dom_content_loaded_ms: navigationEntry ? Math.round(navigationEntry.domContentLoadedEventEnd) : null,
+        load_event_ms: navigationEntry ? Math.round(navigationEntry.loadEventEnd) : null,
+        first_paint_ms: paintEntries["first-paint"] ?? null,
+        first_contentful_paint_ms: paintEntries["first-contentful-paint"] ?? null,
+        first_usable_render_ms: dashboardDebug?.timings?.firstUsableRenderMs ?? null,
+        audit_ready_ms: Math.round(performance.now()),
+      },
       rule_catalog_id: ruleCatalog.catalog_id || null,
       rule_catalog_version: ruleCatalog.schema_version || null,
     };
@@ -998,6 +1078,19 @@ async function captureScreenshot(cdp, sessionId, screenshotPath) {
   await fs.mkdir(path.dirname(screenshotPath), { recursive: true });
   await fs.writeFile(screenshotPath, Buffer.from(payload.data, "base64"));
   return screenshotPath;
+}
+
+async function evaluateRuntimeExpression(cdp, sessionId, expression) {
+  const result = await cdp.send(
+    "Runtime.evaluate",
+    {
+      expression,
+      awaitPromise: true,
+      returnByValue: true,
+    },
+    sessionId,
+  );
+  return result.result?.value ?? null;
 }
 
 async function runAudit(config) {
@@ -1065,17 +1158,15 @@ async function runAudit(config) {
       if (config.settleMs > 0) {
         await delay(config.settleMs);
       }
-      const evaluated = await cdp.send(
-        "Runtime.evaluate",
-        {
-          expression: auditExpression(config, ruleCatalog),
-          returnByValue: true,
-          awaitPromise: true,
-        },
-        sessionId,
-      );
+      let interactionResult = null;
+      if (config.interactionScript) {
+        interactionResult = await evaluateRuntimeExpression(cdp, sessionId, config.interactionScript);
+        if (config.interactionSettleMs > 0) {
+          await delay(config.interactionSettleMs);
+        }
+      }
+      const evaluationValue = await evaluateRuntimeExpression(cdp, sessionId, auditExpression(config, ruleCatalog));
       const screenshotPath = await captureScreenshot(cdp, sessionId, config.screenshotPath);
-      const evaluationValue = evaluated.result?.value || {};
       const payload = {
         ok: String(evaluationValue.status || "passed") === "passed",
         label: config.label || config.url,
@@ -1084,6 +1175,7 @@ async function runAudit(config) {
         screenshot_path: screenshotPath,
         chrome_path: chromePath,
         stderr_tail: stderr.split(/\n/).filter(Boolean).slice(-12),
+        interaction_result: interactionResult,
         ...(evaluationValue || {}),
       };
       await cdp.send("Target.closeTarget", { targetId });

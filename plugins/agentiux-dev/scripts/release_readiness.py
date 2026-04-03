@@ -8,6 +8,7 @@ import os
 import subprocess
 import sys
 import tempfile
+import time
 import urllib.parse
 import urllib.request
 from pathlib import Path
@@ -136,6 +137,14 @@ def _temporary_env(overrides: dict[str, str]) -> Any:
                 os.environ.pop(key, None)
             else:
                 os.environ[key] = value
+
+
+def _read_json_url(url: str, *, timeout: int = 5) -> tuple[dict[str, Any], int, float]:
+    started_at = time.monotonic()
+    with urllib.request.urlopen(url, timeout=timeout) as response_handle:
+        raw = response_handle.read()
+    elapsed_ms = round((time.monotonic() - started_at) * 1000, 2)
+    return json.loads(raw.decode("utf-8")), len(raw), elapsed_ms
 
 
 def _assert_clean_repo_text(repo_root: Path, plugin_root: Path) -> None:
@@ -373,6 +382,7 @@ def dashboard_check(repo_root: Path, plugin_root: Path) -> dict[str, Any]:
                 scope_summary="Exercise cockpit-first dashboard cards and stage state for browser layout auditing.",
             )
             fixture_snapshot = dashboard_snapshot(repo_root)
+        launch_started_at = time.monotonic()
         launch_output = _completed_process(
             python_script_command(
                 plugin_root / "scripts" / "agentiux_dev_gui.py",
@@ -381,52 +391,141 @@ def dashboard_check(repo_root: Path, plugin_root: Path) -> dict[str, Any]:
             cwd=repo_root,
             env=env,
         )
+        cold_start_ms = round((time.monotonic() - launch_started_at) * 1000, 2)
         payload = json.loads(launch_output.stdout)
         url = payload["url"]
         audit_results: list[dict[str, Any]] = []
+        deep_link_results: list[dict[str, Any]] = []
+        history_navigation_audit: dict[str, Any] | None = None
         try:
-            with urllib.request.urlopen(f"{url}/health", timeout=5) as response_handle:
-                health = json.loads(response_handle.read().decode("utf-8"))
-            with urllib.request.urlopen(f"{url}/api/dashboard", timeout=5) as response_handle:
-                snapshot = json.loads(response_handle.read().decode("utf-8"))
+            health, _health_bytes, _health_ms = _read_json_url(f"{url}/health")
+            snapshot, overview_bytes, overview_fetch_ms = _read_json_url(f"{url}/api/dashboard")
             encoded_workspace = urllib.parse.quote(str(repo_root), safe="")
-            with urllib.request.urlopen(f"{url}/api/workspace-cockpit?workspace={encoded_workspace}", timeout=5) as response_handle:
-                cockpit_snapshot = json.loads(response_handle.read().decode("utf-8"))
-            with urllib.request.urlopen(f"{url}/api/auth/profiles?workspace={encoded_workspace}", timeout=5) as response_handle:
-                auth_payload = json.loads(response_handle.read().decode("utf-8"))
-            with urllib.request.urlopen(f"{url}/api/auth/sessions?workspace={encoded_workspace}", timeout=5) as response_handle:
-                auth_sessions_payload = json.loads(response_handle.read().decode("utf-8"))
-            with urllib.request.urlopen(f"{url}/api/project-notes?workspace={encoded_workspace}", timeout=5) as response_handle:
-                notes_payload = json.loads(response_handle.read().decode("utf-8"))
-            with urllib.request.urlopen(f"{url}/api/analytics?workspace={encoded_workspace}", timeout=5) as response_handle:
-                analytics_payload = json.loads(response_handle.read().decode("utf-8"))
-            with urllib.request.urlopen(f"{url}/api/learnings?workspace={encoded_workspace}", timeout=5) as response_handle:
-                learnings_payload = json.loads(response_handle.read().decode("utf-8"))
+            cockpit_snapshot, cockpit_bytes, cockpit_fetch_ms = _read_json_url(
+                f"{url}/api/workspace-cockpit?workspace={encoded_workspace}"
+            )
+            bootstrap_snapshot, bootstrap_bytes, bootstrap_fetch_ms = _read_json_url(
+                f"{url}/api/dashboard-bootstrap?workspace={encoded_workspace}&panel=now"
+            )
+            plan_panel_snapshot, plan_panel_bytes, plan_panel_fetch_ms = _read_json_url(
+                f"{url}/api/workspace-panel?workspace={encoded_workspace}&panel=plan"
+            )
+            auth_payload, _auth_bytes, _auth_ms = _read_json_url(f"{url}/api/auth/profiles?workspace={encoded_workspace}")
+            auth_sessions_payload, _auth_sessions_bytes, _auth_sessions_ms = _read_json_url(
+                f"{url}/api/auth/sessions?workspace={encoded_workspace}"
+            )
+            notes_payload, _notes_bytes, _notes_ms = _read_json_url(f"{url}/api/project-notes?workspace={encoded_workspace}")
+            analytics_payload, _analytics_bytes, _analytics_ms = _read_json_url(f"{url}/api/analytics?workspace={encoded_workspace}")
+            learnings_payload, _learnings_bytes, _learnings_ms = _read_json_url(f"{url}/api/learnings?workspace={encoded_workspace}")
             cockpit_url = f"{url}/workspaces/{urllib.parse.quote(str(repo_root), safe='')}?panel=now"
-            for label, width, height in (
-                ("cockpit-now-desktop", 1440, 1800),
-                ("cockpit-now-mobile", 390, 2200),
-            ):
+            audit_container_selectors = [
+                "body",
+                ".main",
+                ".page-shell",
+                ".content-grid",
+                ".metric-grid",
+                ".attention-strip",
+                ".workspace-nav",
+                ".portfolio-grid",
+            ]
+            history_interaction_script = """
+(async () => {
+  const waitFor = async (predicate, timeoutMs = 8000) => {
+    const deadline = Date.now() + timeoutMs;
+    while (Date.now() < deadline) {
+      if (predicate()) {
+        return true;
+      }
+      await new Promise((resolve) => setTimeout(resolve, 80));
+    }
+    return false;
+  };
+  const snapshot = () => window.__agentiux?.debugSnapshot?.() || null;
+  const selectedPanel = () => document.querySelector("[data-selected-panel]")?.getAttribute("data-selected-panel");
+  const selectedWorkspace = () => document.querySelector("[data-selected-workspace]")?.getAttribute("data-selected-workspace");
+  const initial = snapshot();
+  await window.__agentiux.setPanel("plan");
+  await waitFor(() => selectedPanel() === "plan" && (snapshot()?.panelCache || []).includes("plan"));
+  const after_plan = snapshot();
+  await window.__agentiux.setPanel("plan");
+  const after_cached_plan = snapshot();
+  window.history.back();
+  await waitFor(() => selectedPanel() === "now");
+  const after_back = snapshot();
+  window.history.forward();
+  await waitFor(() => selectedPanel() === "plan");
+  const after_forward = snapshot();
+  return {
+    initial,
+    after_plan,
+    after_cached_plan,
+    after_back,
+    after_forward,
+    selected_workspace_path: selectedWorkspace(),
+    selected_panel: selectedPanel(),
+    location: {
+      href: window.location.href,
+      pathname: window.location.pathname,
+      search: window.location.search,
+      hash: window.location.hash,
+    },
+  };
+})()
+""".strip()
+
+            def run_browser_audit(
+                target_url: str,
+                label: str,
+                width: int,
+                height: int,
+                *,
+                screenshot: bool = True,
+                interaction_script: str | None = None,
+            ) -> dict[str, Any]:
                 screenshot_path = temp_root / f"{label}.png"
-                audit_output = _completed_process(
-                    [
-                        "node",
-                        str(plugin_root / "scripts" / "browser_layout_audit.mjs"),
-                        "--url",
-                        cockpit_url,
-                        "--width",
-                        str(width),
-                        "--height",
-                        str(height),
-                        "--screenshot-path",
-                        str(screenshot_path),
-                        "--label",
-                        label,
-                    ],
-                    cwd=repo_root,
-                    env=env,
-                )
-                audit_results.append(json.loads(audit_output.stdout))
+                audit_command = [
+                    "node",
+                    str(plugin_root / "scripts" / "browser_layout_audit.mjs"),
+                    "--url",
+                    target_url,
+                    "--width",
+                    str(width),
+                    "--height",
+                    str(height),
+                    "--label",
+                    label,
+                ]
+                if screenshot:
+                    audit_command.extend(["--screenshot-path", str(screenshot_path)])
+                if interaction_script:
+                    audit_command.extend(["--interaction-script", interaction_script])
+                for selector in audit_container_selectors:
+                    audit_command.extend(["--container-selector", selector])
+                audit_output = _completed_process(audit_command, cwd=repo_root, env=env)
+                return json.loads(audit_output.stdout)
+
+            for label, width, height in (("cockpit-now-desktop", 1440, 1800), ("cockpit-now-mobile", 390, 2200)):
+                audit_results.append(run_browser_audit(cockpit_url, label, width, height))
+            history_navigation_audit = run_browser_audit(
+                cockpit_url,
+                "cockpit-history-navigation",
+                1280,
+                1600,
+                screenshot=False,
+                interaction_script=history_interaction_script,
+            )
+            deep_link_results.extend(
+                [
+                    run_browser_audit(f"{url}/#overview", "overview-deep-link", 1280, 1400, screenshot=False),
+                    run_browser_audit(
+                        f"{url}/workspaces/{urllib.parse.quote(str(repo_root), safe='')}?panel=plan",
+                        "cockpit-plan-deep-link",
+                        1280,
+                        1600,
+                        screenshot=False,
+                    ),
+                ]
+            )
         finally:
             _completed_process(
                 python_script_command(plugin_root / "scripts" / "agentiux_dev_gui.py", ["stop"]),
@@ -445,6 +544,12 @@ def dashboard_check(repo_root: Path, plugin_root: Path) -> dict[str, Any]:
         raise AssertionError("Dashboard cockpit is missing auth integration payload")
     if "memory" not in cockpit_snapshot:
         raise AssertionError("Dashboard cockpit is missing memory payload")
+    if not bootstrap_snapshot.get("workspace_shell") or not bootstrap_snapshot.get("panel_payload"):
+        raise AssertionError("Dashboard bootstrap payload is incomplete")
+    if bootstrap_snapshot.get("selected_workspace_path") != str(repo_root):
+        raise AssertionError("Dashboard bootstrap did not resolve the requested workspace")
+    if plan_panel_snapshot.get("active_panel") != "plan":
+        raise AssertionError("Workspace panel endpoint did not resolve the requested panel")
     if auth_payload.get("counts") is None or auth_sessions_payload.get("counts") is None or notes_payload.get("counts") is None:
         raise AssertionError("Dashboard auth or note APIs returned incomplete payloads")
     if auth_sessions_payload.get("counts", {}).get("total") is None:
@@ -455,10 +560,23 @@ def dashboard_check(repo_root: Path, plugin_root: Path) -> dict[str, Any]:
             raise AssertionError(f"Dashboard auth payload leaked raw secret material: {disallowed}")
     if analytics_payload.get("learning_counts") is None or learnings_payload.get("counts") is None:
         raise AssertionError("Dashboard analytics or learnings APIs returned incomplete payloads")
+    sequential_fetch_ms = round(overview_fetch_ms + cockpit_fetch_ms, 2)
+    sequential_payload_bytes = overview_bytes + cockpit_bytes
+    if bootstrap_fetch_ms >= sequential_fetch_ms:
+        raise AssertionError(
+            f"Bootstrap request did not improve fetch latency: bootstrap {bootstrap_fetch_ms} ms vs legacy {sequential_fetch_ms} ms."
+        )
+    if bootstrap_bytes >= sequential_payload_bytes:
+        raise AssertionError(
+            f"Bootstrap payload did not improve payload size: bootstrap {bootstrap_bytes} B vs legacy {sequential_payload_bytes} B."
+        )
+    all_audits = [*audit_results, *deep_link_results]
+    if history_navigation_audit:
+        all_audits.append(history_navigation_audit)
     failing_audits = [
         item
-        for item in audit_results
-        if int(item.get("issue_count") or 0) > 0 or str(item.get("status") or "").lower() == "failed"
+        for item in all_audits
+        if item and (int(item.get("issue_count") or 0) > 0 or str(item.get("status") or "").lower() == "failed")
     ]
     if failing_audits:
         raise AssertionError(
@@ -468,12 +586,123 @@ def dashboard_check(repo_root: Path, plugin_root: Path) -> dict[str, Any]:
                 for item in failing_audits
             )
         )
+    blocking_warning_types = {
+        "contrast-warning",
+        "container-padding-imbalance",
+        "ragged-grid-warning",
+        "touch-target-too-small",
+    }
+    blocking_warnings = [
+        {
+            "label": audit.get("label"),
+            "type": warning.get("type"),
+            "warning_label": warning.get("label"),
+            "text": warning.get("text"),
+        }
+        for audit in all_audits
+        for warning in (audit.get("warnings") or [])
+        if warning.get("type") in blocking_warning_types
+    ]
+    if blocking_warnings:
+        raise AssertionError(
+            "Dashboard layout audit produced blocking warnings: "
+            + "; ".join(
+                f"{item['label']}: {item['type']} ({item.get('warning_label') or item.get('text') or 'unlabeled'})"
+                for item in blocking_warnings[:8]
+            )
+        )
+    overview_deep_link = next(item for item in deep_link_results if item.get("label") == "overview-deep-link")
+    if overview_deep_link.get("location", {}).get("hash") != "#overview":
+        raise AssertionError("Overview deep link did not preserve the overview hash route.")
+    if "dashboard-overview" not in (overview_deep_link.get("active_screen_ids") or []):
+        raise AssertionError(
+            "Overview deep link did not render the overview screen. "
+            f"active_screen_ids={overview_deep_link.get('active_screen_ids')} "
+            f"dashboard_debug={overview_deep_link.get('dashboard_debug')}"
+        )
+    plan_deep_link = next(item for item in deep_link_results if item.get("label") == "cockpit-plan-deep-link")
+    if plan_deep_link.get("location", {}).get("search") != "?panel=plan":
+        raise AssertionError("Plan deep link did not preserve the panel query parameter.")
+    if "plan" not in (plan_deep_link.get("active_panel_ids") or []):
+        raise AssertionError("Plan deep link did not render the requested panel.")
+    if plan_deep_link.get("selected_workspace_path") != str(repo_root):
+        raise AssertionError("Plan deep link did not keep the requested workspace selected.")
+    history_result = (history_navigation_audit or {}).get("interaction_result") or {}
+    if (history_result.get("after_back") or {}).get("panel") != "now":
+        raise AssertionError("History back navigation did not restore the previous panel.")
+    if (history_result.get("after_forward") or {}).get("panel") != "plan":
+        raise AssertionError("History forward navigation did not restore the requested panel.")
+    if history_result.get("selected_workspace_path") != str(repo_root):
+        raise AssertionError("History navigation lost the selected workspace.")
+    for audit in all_audits:
+        debug = audit.get("dashboard_debug") or {}
+        request_counts = debug.get("requestCounts") or {}
+        if int(request_counts.get("bootstrap") or 0) < 1:
+            raise AssertionError(f"Dashboard audit `{audit.get('label')}` did not use the bootstrap request path.")
+        if int(request_counts.get("overview") or 0) > 0 or int(request_counts.get("cockpit") or 0) > 0:
+            raise AssertionError(
+                f"Dashboard audit `{audit.get('label')}` fell back to legacy overview/cockpit requests."
+            )
+        if (audit.get("timings") or {}).get("first_usable_render_ms") is None:
+            raise AssertionError(f"Dashboard audit `{audit.get('label')}` did not expose first usable render timing.")
+    if history_navigation_audit:
+        history_counts = (((history_navigation_audit.get("interaction_result") or {}).get("after_forward") or {}).get("requestCounts") or {})
+        if int(history_counts.get("bootstrap") or 0) != 1:
+            raise AssertionError("History navigation triggered an extra bootstrap request instead of reusing the shell state.")
+        if int(history_counts.get("panel") or 0) != 1:
+            raise AssertionError("History navigation did not preserve the cached panel payload.")
+    render_timings_ms = {
+        item.get("label"): {
+            "first_usable_render": (item.get("timings") or {}).get("first_usable_render_ms"),
+            "dom_content_loaded": (item.get("timings") or {}).get("dom_content_loaded_ms"),
+            "first_contentful_paint": (item.get("timings") or {}).get("first_contentful_paint_ms"),
+            "audit_ready": (item.get("timings") or {}).get("audit_ready_ms"),
+        }
+        for item in all_audits
+        if item
+    }
+    deep_link_assertions = {
+        "overview": {
+            "route_hash_preserved": overview_deep_link.get("location", {}).get("hash") == "#overview",
+            "overview_screen_rendered": "dashboard-overview" in (overview_deep_link.get("active_screen_ids") or []),
+        },
+        "workspace_plan": {
+            "panel_query_preserved": plan_deep_link.get("location", {}).get("search") == "?panel=plan",
+            "requested_panel_rendered": "plan" in (plan_deep_link.get("active_panel_ids") or []),
+            "workspace_preserved": plan_deep_link.get("selected_workspace_path") == str(repo_root),
+        },
+        "history_navigation": {
+            "back_restored_previous_panel": (history_result.get("after_back") or {}).get("panel") == "now",
+            "forward_restored_requested_panel": (history_result.get("after_forward") or {}).get("panel") == "plan",
+            "workspace_preserved": history_result.get("selected_workspace_path") == str(repo_root),
+        },
+    }
     return {
         "check": "dashboard-check",
         "url": url,
         "schema_version": snapshot["schema_version"],
         "workspace_count": snapshot["overview"]["workspace_count"],
+        "cold_start_ms": cold_start_ms,
+        "render_timings_ms": render_timings_ms,
+        "payload_bytes": {
+            "overview": overview_bytes,
+            "legacy_cockpit": cockpit_bytes,
+            "legacy_combined": sequential_payload_bytes,
+            "bootstrap": bootstrap_bytes,
+            "plan_panel": plan_panel_bytes,
+        },
+        "request_timings_ms": {
+            "overview": overview_fetch_ms,
+            "legacy_cockpit": cockpit_fetch_ms,
+            "legacy_combined": sequential_fetch_ms,
+            "bootstrap": bootstrap_fetch_ms,
+            "plan_panel": plan_panel_fetch_ms,
+        },
         "audits": audit_results,
+        "deep_link_audits": deep_link_results,
+        "history_navigation_audit": history_navigation_audit,
+        "deep_link_assertions": deep_link_assertions,
+        "blocking_warning_count": len(blocking_warnings),
         "warning_audits": [
             {
                 "label": item.get("label"),

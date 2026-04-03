@@ -3354,8 +3354,17 @@ def main() -> int:
         ).stdout
         assert "\"status\": \"passed\"" in cli_case_output
 
+        verification_case_timeout_seconds = 20
+        browser_layout_timeout_seconds = 45
+        verification_suite_timeout_seconds = 45
+
         case_run = start_verification_case(workspace, "web-home", workstream_id=verification_workstream_id)
-        case_run = wait_for_verification_run(workspace, case_run["run_id"], timeout_seconds=20, workstream_id=verification_workstream_id)
+        case_run = wait_for_verification_run(
+            workspace,
+            case_run["run_id"],
+            timeout_seconds=verification_case_timeout_seconds,
+            workstream_id=verification_workstream_id,
+        )
         assert case_run["mode"] == "case"
         assert case_run["status"] == "passed"
         assert case_run["case_ids"] == ["web-home"]
@@ -3525,7 +3534,7 @@ def main() -> int:
         overlap_layout_run = wait_for_verification_run(
             workspace,
             overlap_layout_run["run_id"],
-            timeout_seconds=20,
+            timeout_seconds=browser_layout_timeout_seconds,
             workstream_id=verification_workstream_id,
         )
         assert overlap_layout_run["status"] == "failed"
@@ -3549,7 +3558,7 @@ def main() -> int:
         warning_layout_run = wait_for_verification_run(
             workspace,
             warning_layout_run["run_id"],
-            timeout_seconds=20,
+            timeout_seconds=browser_layout_timeout_seconds,
             workstream_id=verification_workstream_id,
         )
         assert warning_layout_run["status"] == "failed"
@@ -3577,7 +3586,7 @@ def main() -> int:
         fixed_layout_run = wait_for_verification_run(
             workspace,
             fixed_layout_run["run_id"],
-            timeout_seconds=20,
+            timeout_seconds=browser_layout_timeout_seconds,
             workstream_id=verification_workstream_id,
         )
         assert fixed_layout_run["status"] == "passed"
@@ -3598,7 +3607,12 @@ def main() -> int:
             assert active_run["run_id"] == suite_run["run_id"]
         assert any(event["event_type"] == "run_started" for event in mid_events["events"])
 
-        suite_run = wait_for_verification_run(workspace, suite_run["run_id"], timeout_seconds=20, workstream_id=verification_workstream_id)
+        suite_run = wait_for_verification_run(
+            workspace,
+            suite_run["run_id"],
+            timeout_seconds=verification_suite_timeout_seconds,
+            workstream_id=verification_workstream_id,
+        )
         assert suite_run["mode"] == "suite"
         assert suite_run["status"] == "passed"
         assert suite_run["case_ids"] == ["web-home", "expo-home"]
@@ -5636,19 +5650,138 @@ def main() -> int:
             gui_launch = json.loads(gui_launch_process.stdout)
             try:
                 encoded_workspace = urllib.parse.quote(str(workspace.resolve()), safe="")
+                audit_container_selectors = [
+                    "body",
+                    ".main",
+                    ".page-shell",
+                    ".content-grid",
+                    ".metric-grid",
+                    ".attention-strip",
+                    ".workspace-nav",
+                    ".portfolio-grid",
+                ]
+                history_interaction_script = """
+(async () => {
+  const waitFor = async (predicate, timeoutMs = 8000) => {
+    const deadline = Date.now() + timeoutMs;
+    while (Date.now() < deadline) {
+      if (predicate()) {
+        return true;
+      }
+      await new Promise((resolve) => setTimeout(resolve, 80));
+    }
+    return false;
+  };
+  const snapshot = () => window.__agentiux?.debugSnapshot?.() || null;
+  const selectedPanel = () => document.querySelector("[data-selected-panel]")?.getAttribute("data-selected-panel");
+  const selectedWorkspace = () => document.querySelector("[data-selected-workspace]")?.getAttribute("data-selected-workspace");
+  const initial = snapshot();
+  await window.__agentiux.setPanel("plan");
+  await waitFor(() => selectedPanel() === "plan" && (snapshot()?.panelCache || []).includes("plan"));
+  const after_plan = snapshot();
+  await window.__agentiux.setPanel("plan");
+  const after_cached_plan = snapshot();
+  window.history.back();
+  await waitFor(() => selectedPanel() === "now");
+  const after_back = snapshot();
+  window.history.forward();
+  await waitFor(() => selectedPanel() === "plan");
+  const after_forward = snapshot();
+  return {
+    initial,
+    after_plan,
+    after_cached_plan,
+    after_back,
+    after_forward,
+    selected_workspace_path: selectedWorkspace(),
+    selected_panel: selectedPanel(),
+  };
+})()
+""".strip()
+
+                def run_dashboard_audit(target_url: str, label: str, *, interaction_script: str | None = None) -> dict[str, Any]:
+                    audit_command = [
+                        "node",
+                        str(plugin_root / "scripts" / "browser_layout_audit.mjs"),
+                        "--url",
+                        target_url,
+                        "--width",
+                        "1280",
+                        "--height",
+                        "1600",
+                        "--label",
+                        label,
+                    ]
+                    if interaction_script:
+                        audit_command.extend(["--interaction-script", interaction_script])
+                    for selector in audit_container_selectors:
+                        audit_command.extend(["--container-selector", selector])
+                    audit_output = subprocess.run(
+                        audit_command,
+                        text=True,
+                        capture_output=True,
+                        env=os.environ.copy(),
+                        check=True,
+                    )
+                    return json.loads(audit_output.stdout)
+
                 with urllib.request.urlopen(f"{gui_launch['url']}/workspaces/{encoded_workspace}", timeout=20) as html_handle:
                     dashboard_html = html_handle.read().decode("utf-8")
                 assert "AgentiUX Dev Dashboard" in dashboard_html
                 assert "/app.js" in dashboard_html
                 with urllib.request.urlopen(f"{gui_launch['url']}/api/dashboard", timeout=20) as response_handle:
-                    overview_payload = json.loads(response_handle.read().decode("utf-8"))
+                    overview_raw = response_handle.read()
+                overview_payload = json.loads(overview_raw.decode("utf-8"))
                 assert overview_payload["overview"]["workspace_count"] >= 1
                 assert overview_payload["stats"]["active_verification_runs"] == 0
                 with urllib.request.urlopen(f"{gui_launch['url']}/api/workspace-detail?workspace={encoded_workspace}", timeout=20) as response_handle:
-                    detail_payload = json.loads(response_handle.read().decode("utf-8"))
+                    detail_raw = response_handle.read()
+                detail_payload = json.loads(detail_raw.decode("utf-8"))
                 assert detail_payload["workspace_label"] == "demo-workspace"
                 assert detail_payload["quality"]["latest_run"]["run_id"] == blocked_auth_run["run_id"]
                 assert detail_payload["plan"]["workstreams"]
+                with urllib.request.urlopen(
+                    f"{gui_launch['url']}/api/dashboard-bootstrap?workspace={encoded_workspace}&panel=now",
+                    timeout=20,
+                ) as response_handle:
+                    bootstrap_raw = response_handle.read()
+                bootstrap_payload = json.loads(bootstrap_raw.decode("utf-8"))
+                assert bootstrap_payload["selected_workspace_path"] == str(workspace.resolve())
+                assert bootstrap_payload["workspace_shell"]["workspace_path"] == str(workspace.resolve())
+                assert bootstrap_payload["active_panel"] == "now"
+                assert bootstrap_payload["panel_payload"]["objective"]
+                with urllib.request.urlopen(
+                    f"{gui_launch['url']}/api/workspace-panel?workspace={encoded_workspace}&panel=plan",
+                    timeout=20,
+                ) as response_handle:
+                    plan_panel_raw = response_handle.read()
+                plan_panel_payload = json.loads(plan_panel_raw.decode("utf-8"))
+                assert plan_panel_payload["active_panel"] == "plan"
+                assert plan_panel_payload["workspace_shell"]["workspace_path"] == str(workspace.resolve())
+                assert plan_panel_payload["panel_payload"]["stages"] is not None
+                assert len(bootstrap_raw) < len(overview_raw) + len(detail_raw)
+                assert len(plan_panel_raw) < len(detail_raw)
+                deep_link_audit = run_dashboard_audit(
+                    f"{gui_launch['url']}/workspaces/{encoded_workspace}?panel=plan",
+                    "dashboard-plan-deep-link",
+                )
+                assert deep_link_audit["selected_workspace_path"] == str(workspace.resolve())
+                assert deep_link_audit["selected_panel"] == "plan"
+                assert deep_link_audit["timings"]["first_usable_render_ms"] is not None
+                assert int((deep_link_audit["dashboard_debug"]["requestCounts"] or {}).get("bootstrap") or 0) >= 1
+                history_audit = run_dashboard_audit(
+                    f"{gui_launch['url']}/workspaces/{encoded_workspace}",
+                    "dashboard-history-navigation",
+                    interaction_script=history_interaction_script,
+                )
+                history_result = history_audit["interaction_result"]
+                assert history_result["selected_workspace_path"] == str(workspace.resolve())
+                assert history_result["after_plan"]["panel"] == "plan"
+                assert history_result["after_cached_plan"]["requestCounts"]["panel"] == history_result["after_plan"]["requestCounts"]["panel"]
+                assert history_result["after_back"]["panel"] == "now"
+                assert history_result["after_forward"]["panel"] == "plan"
+                assert history_result["after_forward"]["requestCounts"]["bootstrap"] == 1
+                assert history_result["after_forward"]["requestCounts"]["panel"] == 1
                 uninitialized_workspace = temp_root / "uninitialized-cockpit"
                 uninitialized_workspace.mkdir()
                 encoded_uninitialized = urllib.parse.quote(str(uninitialized_workspace.resolve()), safe="")

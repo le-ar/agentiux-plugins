@@ -34,6 +34,7 @@ from agentiux_dev_auth import (
     write_auth_session,
 )
 from agentiux_dev_lib import (
+    dashboard_bootstrap_snapshot,
     dashboard_overview_snapshot,
     get_state_paths,
     gui_runtime_path,
@@ -41,6 +42,7 @@ from agentiux_dev_lib import (
     plugin_info,
     process_status,
     read_workspace_dashboard_detail,
+    read_workspace_dashboard_panel_snapshot,
     read_gui_runtime,
     state_root,
     start_logged_python_process,
@@ -365,6 +367,8 @@ class DashboardHandler(BaseHTTPRequestHandler):
             parsed = urllib.parse.urlparse(self.path)
             query = urllib.parse.parse_qs(parsed.query)
             workspace = query.get("workspace", [None])[0] or self._runtime_default_workspace()
+            panel = query.get("panel", ["now"])[0]
+            force_overview = query.get("forceOverview", ["0"])[0] in {"1", "true", "yes"}
 
             if parsed.path == "/health":
                 self._send_json({"ok": True, "generated_at": now_iso()})
@@ -372,8 +376,23 @@ class DashboardHandler(BaseHTTPRequestHandler):
             if parsed.path == "/api/dashboard":
                 self._send_json(dashboard_overview_snapshot())
                 return
+            if parsed.path == "/api/dashboard-bootstrap":
+                self._send_json(
+                    dashboard_bootstrap_snapshot(
+                        workspace,
+                        panel=panel,
+                        force_overview=force_overview,
+                    )
+                )
+                return
             if parsed.path in {"/api/workspace-cockpit", "/api/workspace-detail"}:
                 self._send_json(read_workspace_dashboard_detail(workspace))
+                return
+            if parsed.path == "/api/workspace-panel":
+                if not workspace:
+                    self._send_json({"error": "workspace query parameter is required"}, status=400)
+                    return
+                self._send_json(read_workspace_dashboard_panel_snapshot(workspace, panel=panel))
                 return
             if parsed.path == "/api/verification-coverage":
                 if not workspace:

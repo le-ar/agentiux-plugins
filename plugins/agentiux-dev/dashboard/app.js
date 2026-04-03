@@ -2,14 +2,35 @@ const appRoot = document.getElementById("app");
 
 const WORKSPACE_PANELS = ["now", "plan", "quality", "integrations", "memory", "diagnostics"];
 
+function createTelemetry() {
+  return {
+    requestCounts: {
+      bootstrap: 0,
+      panel: 0,
+      overview: 0,
+      cockpit: 0,
+      other: 0,
+    },
+    requestLog: [],
+    firstUsableRenderMs: null,
+    lastLoadMode: null,
+    lastBootstrapAt: null,
+    activePanelLoadedAt: null,
+  };
+}
+
 const state = {
   overviewPayload: null,
-  cockpitModel: null,
+  cockpitShell: null,
+  panelPayloads: {},
   selectedWorkspace: null,
   panel: "now",
   forceOverview: false,
   loading: true,
+  refreshing: false,
+  panelLoading: false,
   error: null,
+  panelError: null,
   editingConnection: null,
   editingAuthProfile: null,
   editingAuthSession: null,
@@ -17,6 +38,8 @@ const state = {
   editingNote: null,
   editingLearning: null,
   bootstrapped: false,
+  requestToken: 0,
+  telemetry: createTelemetry(),
 };
 
 function workspaceRoute(workspacePath, panel = "now") {
@@ -173,6 +196,21 @@ function renderIssueHoverSummary(item) {
 }
 
 async function apiJson(url, options = {}) {
+  const path = new URL(url, window.location.origin).pathname;
+  let requestKind = "other";
+  if (path === "/api/dashboard-bootstrap") requestKind = "bootstrap";
+  else if (path === "/api/workspace-panel") requestKind = "panel";
+  else if (path === "/api/dashboard") requestKind = "overview";
+  else if (path === "/api/workspace-cockpit" || path === "/api/workspace-detail") requestKind = "cockpit";
+  state.telemetry.requestCounts[requestKind] = (state.telemetry.requestCounts[requestKind] || 0) + 1;
+  state.telemetry.requestLog = [
+    {
+      kind: requestKind,
+      path,
+      at: new Date().toISOString(),
+    },
+    ...state.telemetry.requestLog,
+  ].slice(0, 12);
   const response = await fetch(url, {
     cache: "no-store",
     headers: {
@@ -188,37 +226,50 @@ async function apiJson(url, options = {}) {
   return payload;
 }
 
-async function fetchDashboard(workspacePath, options = {}) {
-  const requestedWorkspace = workspacePath || null;
-  const historyMode = options.historyMode || "skip";
-  const requestedPanel = normalizePanel(options.panel || state.panel || "now");
-  const forceOverview = Boolean(options.forceOverview);
-  state.loading = true;
-  render();
-  try {
-    const overviewPayload = await apiJson("/api/dashboard");
-    const preferredWorkspace = overviewPayload.overview?.preferred_workspace_path || null;
-    if (!requestedWorkspace && !forceOverview && !state.bootstrapped && preferredWorkspace) {
-      state.bootstrapped = true;
-      await fetchDashboard(preferredWorkspace, { historyMode: "replace", panel: "now", forceOverview: false });
-      return;
-    }
-    let cockpitModel = null;
-    let resolvedWorkspace = requestedWorkspace;
-    if (requestedWorkspace) {
-      cockpitModel = await apiJson(`/api/workspace-cockpit?workspace=${encodeURIComponent(requestedWorkspace)}`);
-      resolvedWorkspace = cockpitModel.workspace_path || requestedWorkspace;
-    }
-    state.overviewPayload = overviewPayload;
-    state.cockpitModel = cockpitModel;
-    state.selectedWorkspace = resolvedWorkspace;
-    state.panel = resolvedWorkspace ? requestedPanel : "now";
-    state.forceOverview = !resolvedWorkspace && forceOverview;
-    const connections = cockpitModel?.integrations?.youtrack?.connections?.items || [];
-    const authProfiles = cockpitModel?.integrations?.auth?.items || [];
-    const authSessions = cockpitModel?.integrations?.auth?.sessions?.items || [];
-    const notes = cockpitModel?.memory?.project_notes?.items || [];
-    const learningEntries = cockpitModel?.memory?.learnings?.items || [];
+function currentPanelPayload() {
+  return state.panelPayloads[state.panel] || null;
+}
+
+function composeCockpitModel() {
+  if (!state.cockpitShell) {
+    return null;
+  }
+  return {
+    ...state.cockpitShell,
+    [state.panel]: currentPanelPayload() || {},
+  };
+}
+
+function setOverviewPayload(payload) {
+  if (!payload) {
+    state.overviewPayload = null;
+    return;
+  }
+  state.overviewPayload = {
+    schema_version: payload.schema_version,
+    generated_at: payload.generated_at,
+    plugin: payload.plugin,
+    stats: payload.stats,
+    gui: payload.gui,
+    overview: payload.overview,
+    starter_runs: payload.starter_runs,
+  };
+}
+
+function clearWorkspaceEditingState() {
+  state.editingConnection = null;
+  state.editingAuthProfile = null;
+  state.editingAuthSession = null;
+  state.authResolvePreview = null;
+  state.editingNote = null;
+  state.editingLearning = null;
+}
+
+function syncEditingState(panelId, panelPayload) {
+  if (panelId === "integrations") {
+    const connections = panelPayload?.youtrack?.connections?.items || [];
+    const authProfiles = panelPayload?.auth?.items || [];
+    const authSessions = panelPayload?.auth?.sessions?.items || [];
     if (state.editingConnection) {
       state.editingConnection =
         connections.find((item) => item.connection_id === state.editingConnection.connection_id) || null;
@@ -231,6 +282,10 @@ async function fetchDashboard(workspacePath, options = {}) {
       state.editingAuthSession =
         authSessions.find((item) => item.session_id === state.editingAuthSession.session_id) || null;
     }
+  }
+  if (panelId === "memory") {
+    const notes = panelPayload?.project_notes?.items || [];
+    const learningEntries = panelPayload?.learnings?.items || [];
     if (state.editingNote) {
       state.editingNote = notes.find((item) => item.note_id === state.editingNote.note_id) || null;
     }
@@ -238,16 +293,73 @@ async function fetchDashboard(workspacePath, options = {}) {
       state.editingLearning =
         learningEntries.find((item) => item.entry_id === state.editingLearning.entry_id) || null;
     }
-    if (!resolvedWorkspace) {
-      state.editingConnection = null;
-      state.editingAuthProfile = null;
-      state.editingAuthSession = null;
-      state.authResolvePreview = null;
-      state.editingNote = null;
-      state.editingLearning = null;
+  }
+}
+
+function applyBootstrapPayload(payload, options = {}) {
+  setOverviewPayload(payload);
+  const resolvedWorkspace = payload.selected_workspace_path || payload.workspace_shell?.workspace_path || null;
+  state.selectedWorkspace = resolvedWorkspace;
+  state.cockpitShell = payload.workspace_shell || null;
+  state.panel = resolvedWorkspace ? normalizePanel(payload.active_panel || options.panel || state.panel || "now") : "now";
+  state.forceOverview = !resolvedWorkspace && Boolean(payload.force_overview ?? options.forceOverview);
+  state.panelPayloads = resolvedWorkspace && payload.panel_payload ? { [state.panel]: payload.panel_payload } : {};
+  state.panelError = null;
+  if (resolvedWorkspace) {
+    syncEditingState(state.panel, payload.panel_payload || {});
+  } else {
+    clearWorkspaceEditingState();
+  }
+  state.telemetry.lastLoadMode = "bootstrap";
+  state.telemetry.lastBootstrapAt = new Date().toISOString();
+}
+
+function applyPanelPayload(payload, panelId) {
+  const normalizedPanel = normalizePanel(payload.active_panel || panelId || state.panel);
+  state.selectedWorkspace = payload.selected_workspace_path || state.selectedWorkspace;
+  state.cockpitShell = payload.workspace_shell || state.cockpitShell;
+  state.panel = normalizedPanel;
+  state.panelPayloads = {
+    ...state.panelPayloads,
+    [normalizedPanel]: payload.panel_payload || {},
+  };
+  state.panelError = null;
+  syncEditingState(normalizedPanel, payload.panel_payload || {});
+  state.telemetry.lastLoadMode = "panel";
+  state.telemetry.activePanelLoadedAt = new Date().toISOString();
+}
+
+async function loadDashboardBootstrap(workspacePath, options = {}) {
+  const requestedWorkspace = workspacePath || null;
+  const historyMode = options.historyMode || "skip";
+  const requestedPanel = normalizePanel(options.panel || state.panel || "now");
+  const forceOverview = Boolean(options.forceOverview);
+  const requestToken = state.requestToken + 1;
+  state.requestToken = requestToken;
+  state.panelError = null;
+  state.panelLoading = false;
+  if (!state.overviewPayload) {
+    state.loading = true;
+  } else {
+    state.refreshing = true;
+  }
+  render();
+  try {
+    const query = new URLSearchParams();
+    if (requestedWorkspace) {
+      query.set("workspace", requestedWorkspace);
     }
+    query.set("panel", requestedPanel);
+    if (forceOverview) {
+      query.set("forceOverview", "1");
+    }
+    const payload = await apiJson(`/api/dashboard-bootstrap?${query.toString()}`);
+    if (requestToken !== state.requestToken) {
+      return;
+    }
+    applyBootstrapPayload(payload, { panel: requestedPanel, forceOverview });
     if (historyMode !== "skip") {
-      updateRoute(resolvedWorkspace, {
+      updateRoute(state.selectedWorkspace, {
         panel: state.panel,
         forceOverview: state.forceOverview,
         mode: historyMode,
@@ -256,22 +368,73 @@ async function fetchDashboard(workspacePath, options = {}) {
     state.error = null;
     state.bootstrapped = true;
   } catch (error) {
+    if (requestToken !== state.requestToken) {
+      return;
+    }
     state.error = error.message;
   } finally {
+    if (requestToken !== state.requestToken) {
+      return;
+    }
     state.loading = false;
+    state.refreshing = false;
+    render();
+  }
+}
+
+async function loadWorkspacePanel(panel, options = {}) {
+  if (!state.selectedWorkspace) return;
+  const normalizedPanel = normalizePanel(panel);
+  const historyMode = options.historyMode || "push";
+  state.panel = normalizedPanel;
+  if (historyMode !== "skip") {
+    updateRoute(state.selectedWorkspace, { panel: normalizedPanel, mode: historyMode });
+  }
+  if (state.panelPayloads[normalizedPanel] && !options.force) {
+    state.panelError = null;
+    render();
+    return;
+  }
+  const requestToken = state.requestToken + 1;
+  state.requestToken = requestToken;
+  state.panelLoading = true;
+  state.panelError = null;
+  render();
+  try {
+    const payload = await apiJson(
+      `/api/workspace-panel?workspace=${encodeURIComponent(state.selectedWorkspace)}&panel=${encodeURIComponent(normalizedPanel)}`,
+    );
+    if (requestToken !== state.requestToken) {
+      return;
+    }
+    applyPanelPayload(payload, normalizedPanel);
+    state.error = null;
+  } catch (error) {
+    if (requestToken !== state.requestToken) {
+      return;
+    }
+    state.panelError = error.message;
+  } finally {
+    if (requestToken !== state.requestToken) {
+      return;
+    }
+    state.panelLoading = false;
     render();
   }
 }
 
 function setPanel(panel) {
   if (!state.selectedWorkspace) return;
-  state.panel = normalizePanel(panel);
-  updateRoute(state.selectedWorkspace, { panel: state.panel, mode: "push" });
-  render();
+  return loadWorkspacePanel(panel, { historyMode: "push" });
+}
+
+function reloadActiveWorkspacePanel(panel) {
+  if (!state.selectedWorkspace) return;
+  return loadWorkspacePanel(panel, { historyMode: "replace", force: true });
 }
 
 function refresh() {
-  return fetchDashboard(state.selectedWorkspace, {
+  return loadDashboardBootstrap(state.selectedWorkspace, {
     historyMode: "replace",
     panel: state.panel,
     forceOverview: !state.selectedWorkspace && state.forceOverview,
@@ -279,11 +442,49 @@ function refresh() {
 }
 
 function clearSelection() {
-  return fetchDashboard(null, { historyMode: "push", forceOverview: true });
+  return loadDashboardBootstrap(null, { historyMode: "push", forceOverview: true, panel: "now" });
 }
 
 function selectWorkspace(workspacePath) {
-  return fetchDashboard(workspacePath, { historyMode: "push", panel: "now" });
+  return loadDashboardBootstrap(workspacePath, { historyMode: "push", panel: "now" });
+}
+
+function debugSnapshot() {
+  return {
+    selectedWorkspace: state.selectedWorkspace,
+    panel: state.panel,
+    forceOverview: state.forceOverview,
+    requestCounts: state.telemetry.requestCounts,
+    requestLog: state.telemetry.requestLog,
+    panelCache: Object.keys(state.panelPayloads),
+    timings: {
+      firstUsableRenderMs: state.telemetry.firstUsableRenderMs,
+    },
+    loading: state.loading,
+    refreshing: state.refreshing,
+    panelLoading: state.panelLoading,
+    lastLoadMode: state.telemetry.lastLoadMode,
+  };
+}
+
+function fallbackPortfolioCardFromShell() {
+  if (!state.selectedWorkspace || !state.cockpitShell) {
+    return null;
+  }
+  return {
+    workspace_path: state.selectedWorkspace,
+    workspace_label: state.cockpitShell.workspace_label || "Pending workspace",
+    workspace_slug: null,
+    status_badge: state.cockpitShell.hero?.status_badge || { label: state.cockpitShell.state_kind, tone: "warn" },
+    next_action: state.cockpitShell.hero?.headline || "Open workspace cockpit.",
+    verification_status: state.cockpitShell.verification_status || { label: "Not indexed", tone: "warn" },
+    youtrack_status: state.cockpitShell.youtrack_status || { label: "Unavailable", tone: "warn" },
+    metrics: state.cockpitShell.portfolio_card?.metrics || [],
+  };
+}
+
+function currentWorkspaceNavCard() {
+  return state.cockpitShell?.portfolio_card || fallbackPortfolioCardFromShell();
 }
 
 function renderMetric(metric) {
@@ -298,7 +499,15 @@ function renderMetric(metric) {
 
 function renderMetricGrid(metrics) {
   if (!metrics?.length) return "";
-  return `<div class="metric-grid">${metrics.map(renderMetric).join("")}</div>`;
+  const classNames = ["metric-grid"];
+  const useBalancedGrid = metrics.length === 4 || (metrics.length > 4 && metrics.length % 3 !== 0);
+  if (useBalancedGrid) {
+    classNames.push("metric-grid-balanced");
+  }
+  if (useBalancedGrid && metrics.length % 2 === 1) {
+    classNames.push("metric-grid-last-span");
+  }
+  return `<div class="${classNames.join(" ")}">${metrics.map(renderMetric).join("")}</div>`;
 }
 
 function renderAttentionList(items) {
@@ -329,35 +538,34 @@ function renderSidebar(overviewPayload) {
   const plugin = overviewPayload?.plugin || {};
   const gui = overviewPayload?.gui || {};
   const cards = overview.workspaces || [];
-  const selectedInList = cards.some((item) => item.workspace_path === state.selectedWorkspace);
-  const syntheticCard =
-    state.selectedWorkspace && state.cockpitModel && !selectedInList
-      ? {
-          workspace_path: state.selectedWorkspace,
-          workspace_label: state.cockpitModel.workspace_label || "Pending workspace",
-          workspace_slug: null,
-          status_badge: state.cockpitModel.hero?.status_badge || { label: state.cockpitModel.state_kind, tone: "warn" },
-          next_action: state.cockpitModel.hero?.headline,
-          verification_status: { label: "Not indexed", tone: "warn" },
-          youtrack_status: { label: "Unavailable", tone: "warn" },
-          metrics: [],
-        }
-      : null;
+  const selectedCard = currentWorkspaceNavCard();
+  const mergedCards = cards.map((item) => {
+    if (!selectedCard || item.workspace_path !== state.selectedWorkspace) {
+      return item;
+    }
+    return {
+      ...item,
+      ...selectedCard,
+      workspace_path: item.workspace_path,
+    };
+  });
+  const hasSelectedCard = mergedCards.some((item) => item.workspace_path === state.selectedWorkspace);
+  const visibleCards = !hasSelectedCard && selectedCard ? [selectedCard, ...mergedCards] : mergedCards;
   return `
     <aside class="sidebar">
-      <div class="brand-block">
-        <p class="brand-kicker">AgentiUX Dev</p>
-        <h1>Dashboard</h1>
-        <p class="brand-path">${escapeHtml(plugin.current_root || "plugin root unavailable")}</p>
-      </div>
-      <div class="sidebar-actions">
-        <button onclick="window.__agentiux.refresh()">Refresh</button>
-        <button class="secondary" onclick="window.__agentiux.clearSelection()">Overview</button>
-      </div>
-      <div class="sidebar-meta">
-        ${renderMetricGrid((overview.stat_cards || []).slice(0, 4))}
-      </div>
-      <div class="sidebar-section">
+      <section class="sidebar-section sidebar-intro">
+        <div class="brand-block">
+          <p class="brand-kicker">AgentiUX Dev</p>
+          <h1>Dashboard</h1>
+          <p class="brand-path">${escapeHtml(plugin.current_root || "plugin root unavailable")}</p>
+        </div>
+        <div class="sidebar-actions">
+          <button ${state.refreshing ? "disabled" : ""} onclick="window.__agentiux.refresh()">${state.refreshing ? "Refreshing..." : "Refresh"}</button>
+          <button class="secondary" onclick="window.__agentiux.clearSelection()">Overview</button>
+        </div>
+        ${renderMetricGrid((overview.stat_cards || []).slice(0, 3))}
+      </section>
+      <section class="sidebar-section">
         <div class="section-heading">
           <h2>Portfolio</h2>
           <span class="pill-chip ${toneClass(overviewPayload?.stats?.gui_status === "running" ? "ok" : "warn")}">${escapeHtml(
@@ -365,11 +573,10 @@ function renderSidebar(overviewPayload) {
           )}</span>
         </div>
         <div class="workspace-nav">
-          ${syntheticCard ? renderWorkspaceNavCard(syntheticCard, true) : ""}
-          ${cards.map((item) => renderWorkspaceNavCard(item, item.workspace_path === state.selectedWorkspace)).join("")}
-          ${!cards.length && !syntheticCard ? `<div class="empty-note">${escapeHtml(overview.empty_message || "No initialized workspaces yet.")}</div>` : ""}
+          ${visibleCards.map((item) => renderWorkspaceNavCard(item, item.workspace_path === state.selectedWorkspace)).join("")}
+          ${!visibleCards.length ? `<div class="empty-note">${escapeHtml(overview.empty_message || "No initialized workspaces yet.")}</div>` : ""}
         </div>
-      </div>
+      </section>
     </aside>
   `;
 }
@@ -529,14 +736,7 @@ function renderHero(cockpit) {
 }
 
 function renderTabs(cockpit) {
-  const panelCounts = {
-    now: (cockpit.attention?.items || []).filter((item) => item.section === "now").length + (cockpit.now?.blockers || []).length,
-    plan: cockpit.plan?.stages?.length || 0,
-    quality: cockpit.quality?.coverage?.warning_count || cockpit.quality?.recent_runs?.length || 0,
-    integrations: (cockpit.integrations?.youtrack?.connections?.items?.length || 0) + (cockpit.integrations?.auth?.items?.length || 0),
-    memory: (cockpit.memory?.project_notes?.counts?.pinned || 0) + (cockpit.memory?.learnings?.counts?.open || 0),
-    diagnostics: cockpit.diagnostics?.paths?.length || 0,
-  };
+  const panelCounts = cockpit.panel_counts || {};
   const labels = {
     now: "Now",
     plan: "Plan",
@@ -546,7 +746,7 @@ function renderTabs(cockpit) {
     diagnostics: "Diagnostics",
   };
   return `
-    <nav class="panel-tabs" aria-label="Workspace cockpit panels" data-testid="cockpit-tabs">
+    <nav class="panel-tabs" aria-label="Workspace cockpit panels" data-active-panel="${escapeHtml(state.panel)}">
       ${WORKSPACE_PANELS.map(
         (panelId) => `
           <button class="tab-button ${state.panel === panelId ? "active" : ""}" data-panel-id="${escapeHtml(panelId)}" aria-pressed="${state.panel === panelId ? "true" : "false"}" onclick='window.__agentiux.setPanel(${JSON.stringify(
@@ -1737,6 +1937,12 @@ function renderDiagnosticsPanel(cockpit) {
 }
 
 function renderActivePanel(cockpit) {
+  if (state.panelError && !currentPanelPayload()) {
+    return `<section class="surface-card"><div class="error-state compact-error">${escapeHtml(state.panelError)}</div></section>`;
+  }
+  if (state.panelLoading && !currentPanelPayload()) {
+    return `<section class="surface-card"><div class="empty-note panel-loading">Loading ${escapeHtml(state.panel)} panel...</div></section>`;
+  }
   switch (state.panel) {
     case "plan":
       return renderPlanPanel(cockpit);
@@ -1756,7 +1962,9 @@ function renderActivePanel(cockpit) {
 
 function renderCockpit(cockpit) {
   return `
-    <section class="page-shell" data-screen-id="workspace-cockpit" data-testid="workspace-cockpit">
+    <section class="page-shell" data-screen-id="workspace-cockpit" data-testid="workspace-cockpit" data-selected-workspace="${escapeHtml(
+      cockpit.workspace_path || "",
+    )}" data-selected-panel="${escapeHtml(state.panel)}">
       ${renderHero(cockpit)}
       ${renderTabs(cockpit)}
       ${renderActivePanel(cockpit)}
@@ -1766,7 +1974,7 @@ function renderCockpit(cockpit) {
 
 async function submitYouTrackConnection() {
   const workspacePath = state.selectedWorkspace;
-  if (!workspacePath || state.cockpitModel?.state_kind !== "initialized") return;
+  if (!workspacePath || state.cockpitShell?.state_kind !== "initialized") return;
   const connectionId = document.getElementById("yt-connection-id")?.value || "";
   const label = document.getElementById("yt-label")?.value || "";
   const baseUrl = document.getElementById("yt-base-url")?.value || "";
@@ -1791,7 +1999,7 @@ async function submitYouTrackConnection() {
     await apiJson("/api/youtrack/connections", { method: "POST", body: JSON.stringify(body) });
   }
   state.editingConnection = null;
-  await fetchDashboard(workspacePath, { historyMode: "replace", panel: "integrations" });
+  await reloadActiveWorkspacePanel("integrations");
 }
 
 function clearYouTrackForm() {
@@ -1800,16 +2008,16 @@ function clearYouTrackForm() {
 }
 
 async function testYouTrackConnection(connectionId) {
-  if (!state.selectedWorkspace || state.cockpitModel?.state_kind !== "initialized") return;
+  if (!state.selectedWorkspace || state.cockpitShell?.state_kind !== "initialized") return;
   await apiJson(`/api/youtrack/connections/${encodeURIComponent(connectionId)}/test`, {
     method: "POST",
     body: JSON.stringify({ workspacePath: state.selectedWorkspace }),
   });
-  await fetchDashboard(state.selectedWorkspace, { historyMode: "replace", panel: "integrations" });
+  await reloadActiveWorkspacePanel("integrations");
 }
 
 async function removeYouTrackConnection(connectionId) {
-  if (!state.selectedWorkspace || state.cockpitModel?.state_kind !== "initialized") return;
+  if (!state.selectedWorkspace || state.cockpitShell?.state_kind !== "initialized") return;
   await apiJson("/api/youtrack/connections", {
     method: "DELETE",
     body: JSON.stringify({ workspacePath: state.selectedWorkspace, connectionId }),
@@ -1817,20 +2025,21 @@ async function removeYouTrackConnection(connectionId) {
   if (state.editingConnection?.connection_id === connectionId) {
     state.editingConnection = null;
   }
-  await fetchDashboard(state.selectedWorkspace, { historyMode: "replace", panel: "integrations" });
+  await reloadActiveWorkspacePanel("integrations");
 }
 
 async function setDefaultYouTrackConnection(connectionId) {
-  if (!state.selectedWorkspace || state.cockpitModel?.state_kind !== "initialized") return;
+  if (!state.selectedWorkspace || state.cockpitShell?.state_kind !== "initialized") return;
   await apiJson("/api/youtrack/connections", {
     method: "PATCH",
     body: JSON.stringify({ workspacePath: state.selectedWorkspace, connectionId, default: true, testConnection: false }),
   });
-  await fetchDashboard(state.selectedWorkspace, { historyMode: "replace", panel: "integrations" });
+  await reloadActiveWorkspacePanel("integrations");
 }
 
 function editYouTrackConnection(connectionId) {
-  const connections = state.cockpitModel?.integrations?.youtrack?.connections?.items || [];
+  const integrationsPanel = state.panelPayloads.integrations || currentPanelPayload() || {};
+  const connections = integrationsPanel?.youtrack?.connections?.items || [];
   state.editingConnection = connections.find((item) => item.connection_id === connectionId) || null;
   state.panel = "integrations";
   render();
@@ -1845,7 +2054,7 @@ function parseJsonTextarea(elementId, fallback = null) {
 }
 
 async function submitAuthProfile() {
-  if (!state.selectedWorkspace || state.cockpitModel?.state_kind !== "initialized") return;
+  if (!state.selectedWorkspace || state.cockpitShell?.state_kind !== "initialized") return;
   const profile = parseJsonTextarea("auth-profile-json", {});
   const secretPayload = parseJsonTextarea("auth-secret-json", null);
   await apiJson("/api/auth/profiles", {
@@ -1858,7 +2067,7 @@ async function submitAuthProfile() {
   });
   state.editingAuthProfile = null;
   state.authResolvePreview = null;
-  await fetchDashboard(state.selectedWorkspace, { historyMode: "replace", panel: "integrations" });
+  await reloadActiveWorkspacePanel("integrations");
 }
 
 function clearAuthProfileForm() {
@@ -1868,7 +2077,8 @@ function clearAuthProfileForm() {
 }
 
 function editAuthProfile(profileId) {
-  const authProfiles = state.cockpitModel?.integrations?.auth?.items || [];
+  const integrationsPanel = state.panelPayloads.integrations || currentPanelPayload() || {};
+  const authProfiles = integrationsPanel?.auth?.items || [];
   state.editingAuthProfile = authProfiles.find((item) => item.profile_id === profileId) || null;
   state.authResolvePreview = null;
   state.panel = "integrations";
@@ -1876,7 +2086,7 @@ function editAuthProfile(profileId) {
 }
 
 async function resolveAuthProfilePreview(profileId) {
-  if (!state.selectedWorkspace || state.cockpitModel?.state_kind !== "initialized") return;
+  if (!state.selectedWorkspace || state.cockpitShell?.state_kind !== "initialized") return;
   const requestMode = document.getElementById("auth-resolve-request-mode")?.value || "read_only";
   const actionTags = parseCommaList(document.getElementById("auth-resolve-action-tags")?.value || "");
   const sessionBinding = parseJsonTextarea("auth-resolve-binding-json", null);
@@ -1901,7 +2111,7 @@ async function resolveAuthProfilePreview(profileId) {
 }
 
 async function removeAuthProfile(profileId) {
-  if (!state.selectedWorkspace || state.cockpitModel?.state_kind !== "initialized") return;
+  if (!state.selectedWorkspace || state.cockpitShell?.state_kind !== "initialized") return;
   await apiJson("/api/auth/profiles", {
     method: "DELETE",
     body: JSON.stringify({ workspacePath: state.selectedWorkspace, profileId }),
@@ -1910,11 +2120,11 @@ async function removeAuthProfile(profileId) {
     state.editingAuthProfile = null;
   }
   state.authResolvePreview = null;
-  await fetchDashboard(state.selectedWorkspace, { historyMode: "replace", panel: "integrations" });
+  await reloadActiveWorkspacePanel("integrations");
 }
 
 async function submitAuthSession() {
-  if (!state.selectedWorkspace || state.cockpitModel?.state_kind !== "initialized") return;
+  if (!state.selectedWorkspace || state.cockpitShell?.state_kind !== "initialized") return;
   const session = parseJsonTextarea("auth-session-json", {});
   const secretPayload = parseJsonTextarea("auth-session-secret-json", null);
   await apiJson("/api/auth/sessions", {
@@ -1926,7 +2136,7 @@ async function submitAuthSession() {
     }),
   });
   state.editingAuthSession = null;
-  await fetchDashboard(state.selectedWorkspace, { historyMode: "replace", panel: "integrations" });
+  await reloadActiveWorkspacePanel("integrations");
 }
 
 function clearAuthSessionForm() {
@@ -1935,14 +2145,15 @@ function clearAuthSessionForm() {
 }
 
 function editAuthSession(sessionId) {
-  const authSessions = state.cockpitModel?.integrations?.auth?.sessions?.items || [];
+  const integrationsPanel = state.panelPayloads.integrations || currentPanelPayload() || {};
+  const authSessions = integrationsPanel?.auth?.sessions?.items || [];
   state.editingAuthSession = authSessions.find((item) => item.session_id === sessionId) || null;
   state.panel = "integrations";
   render();
 }
 
 async function invalidateAuthSession(sessionId) {
-  if (!state.selectedWorkspace || state.cockpitModel?.state_kind !== "initialized") return;
+  if (!state.selectedWorkspace || state.cockpitShell?.state_kind !== "initialized") return;
   await apiJson(`/api/auth/sessions/${encodeURIComponent(sessionId)}/invalidate`, {
     method: "POST",
     body: JSON.stringify({ workspacePath: state.selectedWorkspace }),
@@ -1950,11 +2161,11 @@ async function invalidateAuthSession(sessionId) {
   if (state.editingAuthSession?.session_id === sessionId) {
     state.editingAuthSession = null;
   }
-  await fetchDashboard(state.selectedWorkspace, { historyMode: "replace", panel: "integrations" });
+  await reloadActiveWorkspacePanel("integrations");
 }
 
 async function removeAuthSession(sessionId) {
-  if (!state.selectedWorkspace || state.cockpitModel?.state_kind !== "initialized") return;
+  if (!state.selectedWorkspace || state.cockpitShell?.state_kind !== "initialized") return;
   await apiJson(`/api/auth/sessions/${encodeURIComponent(sessionId)}`, {
     method: "DELETE",
     body: JSON.stringify({ workspacePath: state.selectedWorkspace }),
@@ -1962,11 +2173,11 @@ async function removeAuthSession(sessionId) {
   if (state.editingAuthSession?.session_id === sessionId) {
     state.editingAuthSession = null;
   }
-  await fetchDashboard(state.selectedWorkspace, { historyMode: "replace", panel: "integrations" });
+  await reloadActiveWorkspacePanel("integrations");
 }
 
 async function submitProjectNote() {
-  if (!state.selectedWorkspace || state.cockpitModel?.state_kind !== "initialized") return;
+  if (!state.selectedWorkspace || state.cockpitShell?.state_kind !== "initialized") return;
   const noteId = document.getElementById("note-id")?.value || "";
   const note = {
     note_id: noteId || undefined,
@@ -1989,7 +2200,7 @@ async function submitProjectNote() {
     });
   }
   state.editingNote = null;
-  await fetchDashboard(state.selectedWorkspace, { historyMode: "replace", panel: "memory" });
+  await reloadActiveWorkspacePanel("memory");
 }
 
 function clearProjectNoteForm() {
@@ -1998,14 +2209,14 @@ function clearProjectNoteForm() {
 }
 
 async function editProjectNote(noteId) {
-  if (!state.selectedWorkspace || state.cockpitModel?.state_kind !== "initialized") return;
+  if (!state.selectedWorkspace || state.cockpitShell?.state_kind !== "initialized") return;
   state.editingNote = await apiJson(`/api/project-notes/${encodeURIComponent(noteId)}?workspace=${encodeURIComponent(state.selectedWorkspace)}`);
   state.panel = "memory";
   render();
 }
 
 async function archiveProjectNote(noteId) {
-  if (!state.selectedWorkspace || state.cockpitModel?.state_kind !== "initialized") return;
+  if (!state.selectedWorkspace || state.cockpitShell?.state_kind !== "initialized") return;
   await apiJson(`/api/project-notes/${encodeURIComponent(noteId)}/archive`, {
     method: "POST",
     body: JSON.stringify({ workspacePath: state.selectedWorkspace }),
@@ -2013,11 +2224,11 @@ async function archiveProjectNote(noteId) {
   if (state.editingNote?.note_id === noteId) {
     state.editingNote = null;
   }
-  await fetchDashboard(state.selectedWorkspace, { historyMode: "replace", panel: "memory" });
+  await reloadActiveWorkspacePanel("memory");
 }
 
 async function submitLearningEntry() {
-  if (!state.selectedWorkspace || state.cockpitModel?.state_kind !== "initialized") return;
+  if (!state.selectedWorkspace || state.cockpitShell?.state_kind !== "initialized") return;
   const entryId = document.getElementById("learning-entry-id")?.value || "";
   const entry = {
     entry_id: entryId || undefined,
@@ -2042,7 +2253,7 @@ async function submitLearningEntry() {
     });
   }
   state.editingLearning = null;
-  await fetchDashboard(state.selectedWorkspace, { historyMode: "replace", panel: "memory" });
+  await reloadActiveWorkspacePanel("memory");
 }
 
 function clearLearningEntryForm() {
@@ -2051,7 +2262,7 @@ function clearLearningEntryForm() {
 }
 
 async function editLearningEntry(entryId) {
-  if (!state.selectedWorkspace || state.cockpitModel?.state_kind !== "initialized") return;
+  if (!state.selectedWorkspace || state.cockpitShell?.state_kind !== "initialized") return;
   state.editingLearning = await apiJson(`/api/learnings/${encodeURIComponent(entryId)}?workspace=${encodeURIComponent(state.selectedWorkspace)}`);
   state.panel = "memory";
   render();
@@ -2062,7 +2273,7 @@ function render() {
     appRoot.innerHTML = `<div class="loading-shell">Loading AgentiUX Dev dashboard...</div>`;
     return;
   }
-  if (state.error) {
+  if (state.error && !state.overviewPayload) {
     appRoot.innerHTML = `<div class="error-state">${escapeHtml(state.error)}</div>`;
     return;
   }
@@ -2070,11 +2281,34 @@ function render() {
     appRoot.innerHTML = `<div class="empty-state">No dashboard snapshot available.</div>`;
     return;
   }
-  const mainContent = state.selectedWorkspace && state.cockpitModel ? renderCockpit(state.cockpitModel) : renderOverviewPage(state.overviewPayload);
+  const cockpitModel = composeCockpitModel();
+  const mainContent = state.selectedWorkspace && cockpitModel ? renderCockpit(cockpitModel) : renderOverviewPage(state.overviewPayload);
+  if (state.telemetry.firstUsableRenderMs == null) {
+    const readyForOverview = Boolean(state.overviewPayload) && !state.selectedWorkspace;
+    const readyForCockpit = Boolean(state.selectedWorkspace && state.cockpitShell && currentPanelPayload());
+    if (readyForOverview || readyForCockpit) {
+      state.telemetry.firstUsableRenderMs = Math.round(performance.now());
+    }
+  }
   appRoot.innerHTML = `
-    <div class="shell" data-screen-id="dashboard-shell" data-testid="dashboard-shell">
+    <div class="shell" data-screen-id="dashboard-shell" data-testid="dashboard-shell" data-selected-workspace="${escapeHtml(
+      state.selectedWorkspace || "",
+    )}" data-selected-panel="${escapeHtml(state.panel)}">
       ${renderSidebar(state.overviewPayload)}
-      <main class="main" role="main">${mainContent}</main>
+      <main class="main" role="main">
+        ${
+          state.error
+            ? `<div class="error-banner">${escapeHtml(state.error)}</div>`
+            : state.panelError && currentPanelPayload()
+              ? `<div class="error-banner">${escapeHtml(state.panelError)}</div>`
+              : state.refreshing
+                ? `<div class="status-banner">Refreshing dashboard snapshot...</div>`
+                : state.panelLoading && currentPanelPayload()
+                  ? `<div class="status-banner">Loading ${escapeHtml(state.panel)} panel...</div>`
+                  : ""
+        }
+        ${mainContent}
+      </main>
     </div>
   `;
 }
@@ -2107,19 +2341,28 @@ window.__agentiux = {
   submitLearningEntry,
   clearLearningEntryForm,
   editLearningEntry,
+  debugSnapshot,
 };
 
-window.addEventListener("popstate", () => {
-  const route = parseRoute();
-  fetchDashboard(route.workspacePath, {
+function loadRoute(route) {
+  const normalizedPanel = normalizePanel(route.panel || "now");
+  const sameWorkspace = Boolean(route.workspacePath) && route.workspacePath === state.selectedWorkspace;
+  if (sameWorkspace && !route.forceOverview && state.bootstrapped) {
+    return loadWorkspacePanel(normalizedPanel, { historyMode: "skip" });
+  }
+  return loadDashboardBootstrap(route.workspacePath, {
     historyMode: "skip",
-    panel: route.panel,
+    panel: normalizedPanel,
     forceOverview: route.forceOverview,
   });
+}
+
+window.addEventListener("popstate", () => {
+  loadRoute(parseRoute());
 });
 
 const initialRoute = parseRoute();
-fetchDashboard(initialRoute.workspacePath, {
+loadDashboardBootstrap(initialRoute.workspacePath, {
   historyMode: initialRoute.source === "legacy-query" ? "replace" : "skip",
   panel: initialRoute.panel,
   forceOverview: initialRoute.forceOverview,

@@ -62,6 +62,8 @@ The source repo remains the place where you edit and verify the plugin. The inst
 - native layout audits that can raise non-green warning states for suspicious mobile geometry such as asymmetric gutters, inconsistent gaps, vertical-rhythm drift, unexpected flex distribution, or undersized tap targets, even when there is no hard overlap or style mismatch yet
 - browser layout audits that can raise non-green warning states for suspicious web geometry or computed-style regressions such as container-padding imbalance, ragged grids, low-contrast text, spacing drift, and undersized controls
 - release-readiness dashboard checks that seed a real cockpit fixture and run live headless browser layout audits at desktop and mobile widths
+- dashboard bootstrap and lazy-panel endpoints that split the local dashboard into overview snapshot, workspace shell, and per-panel payload layers without changing the public command surface
+- shell-first dashboard refresh behavior where the sidebar, hero, and tabs stay mounted while panel loads, deep links, and workspace-local CRUD flows refresh only the affected shell or panel state
 - curated greenfield starters as thin wrappers around official CLIs
 - repository audits and upgrade plans for existing repos
 - state repair for stale or profile-inaccurate workspace state
@@ -71,6 +73,22 @@ The source repo remains the place where you edit and verify the plugin. The inst
 - repo-tracked low-token catalogs for skills, MCP tools, scripts, references, and intent routes
 - global project context indexing and semantic cache under `~/.agentiux/agentiux-dev/cache/context/`
 - a cockpit-first local-only dashboard launched from chat, with dashboard writes for YouTrack integration management, universal E2E auth profiles and sessions, project memory notes, and learning entries
+
+## Dashboard Model
+
+The local dashboard keeps the legacy JSON endpoints for compatibility, but the first render and panel navigation now use a staged payload model:
+
+- `GET /api/dashboard` returns the portfolio overview snapshot used by the sidebar and overview screen.
+- `GET /api/dashboard-bootstrap?workspace=<path>&panel=<id>` returns the overview snapshot plus the selected workspace shell and one active panel payload for the first usable cockpit render.
+- `GET /api/workspace-panel?workspace=<path>&panel=<id>` returns refreshed shell metadata plus one panel payload for lazy panel loads, panel cache refreshes, and browser history restores.
+
+Deep links remain local-only and deterministic:
+
+- `/#overview`
+- `/workspaces/<url-encoded-workspace-path>`
+- `/workspaces/<url-encoded-workspace-path>?panel=<panel-id>`
+
+`release_readiness.py dashboard-check` is the canonical evidence surface for cockpit hardening. It captures cold-start timing, first-usable render timing, payload byte sizes, live browser audit results, and deep-link or history assertions from the rendered dashboard.
 
 ## Low-Token Retrieval
 
