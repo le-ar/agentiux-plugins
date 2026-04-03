@@ -23,6 +23,7 @@ AgentiUX Dev exposes a small chat-first command surface.
 - `show intent route`
 - `show workspace context pack`
 - `search context index`
+- `show context structure`
 - `refresh context index`
 - `show verification helper catalog`
 - `audit verification coverage`
@@ -100,7 +101,12 @@ AgentiUX Dev exposes a small chat-first command surface.
 - `show intent route` resolves the low-token route family that should be used before reading large docs or Python entrypoints.
 - `show workspace context pack` returns the current global workspace context pack and optional semantic retrieval pack for a request.
 - `search context index` searches the global project context index for relevant chunks and recommended capabilities.
+- `show context structure` returns compact structural summaries for modules, symbols, doc sections, hotspots, parser backends, and incremental indexing without hydrating the full cache.
 - `refresh context index` rebuilds the global project context index outside the repository.
+- The low-token `analysis` route is the structural drill-down path for module, symbol, section, hotspot, large-file, and incremental-index requests.
+- Structural chunk storage stays bounded: file, symbol, doc-section, and project-memory chunks share one normalized schema with anchors and line ranges.
+- Python and Markdown are parser-backed by default. JS/TS parser depth is optional and activates only when a local TypeScript backend is resolvable; otherwise the command surface must degrade to heuristic extraction without failing.
+- Large files switch to bounded structural extraction and hotspot labeling instead of full-body summary synthesis.
 - `show verification helper catalog` returns the versioned plugin-owned helper bundle catalog plus sync status for the current workspace.
 - `audit verification coverage` reports warning-level QA coverage gaps without mutating workspace state.
 - `sync verification helpers` materializes the generated helper bundle into `.verification/helpers/` for local imports.

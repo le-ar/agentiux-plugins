@@ -118,6 +118,7 @@ from agentiux_dev_context import (
     refresh_context_index,
     search_context_index,
     show_capability_catalog,
+    show_context_structure,
     show_intent_route,
     show_workspace_context_pack,
 )
@@ -962,6 +963,23 @@ TOOLS = {
             "limit": {"type": "integer"},
         },
         ["workspacePath", "queryText"],
+    ),
+    "show_context_structure": _read_tool(
+        "show_context_structure",
+        "Inspect compact structural module, symbol, doc-section, hotspot, and incremental index summaries for a workspace.",
+        lambda args: show_context_structure(
+            args["workspacePath"],
+            query_text=args.get("queryText"),
+            route_id=args.get("routeId"),
+            module_path=args.get("modulePath"),
+            limit=args.get("limit"),
+        ),
+        {
+            "queryText": {"type": "string"},
+            "routeId": {"type": "string"},
+            "modulePath": {"type": "string"},
+            "limit": {"type": "integer"},
+        },
     ),
     "refresh_context_index": _read_tool(
         "refresh_context_index",

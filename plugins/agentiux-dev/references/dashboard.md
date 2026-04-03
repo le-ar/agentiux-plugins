@@ -13,6 +13,7 @@ AgentiUX Dev includes a local-only dashboard launched through `scripts/agentiux_
 - first-class empty state for uninitialized workspace paths, including detection signals and external state paths
 - action-oriented summaries for current stage, current task, blockers, verification health, and YouTrack status
 - compact design and testability summaries on cheap surfaces instead of full artifact hydration
+- compact structural indexing summaries on cheap surfaces, including module, chunk, hotspot, and large-file counts without exposing full structural artifacts
 - first-class workspace memory summaries for pinned project notes, learning-entry status, and auth coverage attention items
 - low-priority diagnostics such as host support, plugin-platform detection, audits, upgrade data, and absolute external state paths
 
@@ -24,6 +25,7 @@ AgentiUX Dev includes a local-only dashboard launched through `scripts/agentiux_
 - `Plan` should show design readiness, active surfaces, flow or state coverage, critical-action counts, and brief generation state from compact summaries.
 - `Quality` should show authored path counts, limitation counts, unresolved critical actions, and warning-level coverage gaps from compact summaries.
 - `Diagnostics` remains the place for raw artifact and detail views such as the full design brief, current handoff, and audit payloads.
+- `workspace_summary`, dashboard overview snapshots, and cockpit shell payloads should carry only compact `structure_summary` and `hotspot_summary` projections from the context cache, not the full structural index.
 - Release-readiness must verify the cockpit with a live browser layout audit, not only health and JSON payload checks.
 - The dashboard browser audit should exercise at least one initialized cockpit state and fail on overlap, clipping, viewport overflow, or occlusion regressions.
 - The operator shell stays visible after the first workspace bootstrap. Refreshes or workspace-local CRUD flows should invalidate only the affected panel or workspace shell data instead of dropping back to a full-page loading state.

@@ -121,6 +121,7 @@ from agentiux_dev_context import (
     refresh_context_index,
     search_context_index,
     show_capability_catalog,
+    show_context_structure,
     show_intent_route,
     show_workspace_context_pack,
 )
@@ -393,6 +394,13 @@ def parse_args() -> argparse.Namespace:
     add_workspace_arg(cmd)
     cmd.add_argument("--query-text", required=True)
     cmd.add_argument("--route-id")
+    cmd.add_argument("--limit", type=int)
+
+    cmd = subparsers.add_parser("show-context-structure")
+    add_workspace_arg(cmd)
+    cmd.add_argument("--query-text")
+    cmd.add_argument("--route-id")
+    cmd.add_argument("--module-path")
     cmd.add_argument("--limit", type=int)
 
     cmd = subparsers.add_parser("refresh-context-index")
@@ -860,6 +868,14 @@ def main() -> int:
             )
         elif args.command == "search-context-index":
             payload = search_context_index(args.workspace, args.query_text, route_id=args.route_id, limit=args.limit)
+        elif args.command == "show-context-structure":
+            payload = show_context_structure(
+                args.workspace,
+                query_text=args.query_text,
+                route_id=args.route_id,
+                module_path=args.module_path,
+                limit=args.limit,
+            )
         elif args.command == "refresh-context-index":
             payload = refresh_context_index(args.workspace, force=args.force)
         elif args.command == "show-youtrack-connections":

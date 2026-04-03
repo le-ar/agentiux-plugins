@@ -5,6 +5,7 @@ import hashlib
 import json
 import os
 import re
+from collections import defaultdict
 from pathlib import Path
 from time import perf_counter, time_ns
 from typing import Any
@@ -26,14 +27,30 @@ from agentiux_dev_lib import (
     workspace_paths,
     workspace_hash,
 )
+from agentiux_dev_context_structure import (
+    MAX_DEPENDENCY_TARGETS,
+    MAX_DOC_SECTION_CHUNKS_PER_FILE,
+    MAX_SYMBOL_CHUNKS_PER_FILE,
+    STRUCTURE_INDEX_SCHEMA_VERSION,
+    aggregate_modules,
+    apply_file_metadata_to_chunks,
+    build_file_structure,
+    default_parser_backends,
+    hotspot_summary,
+    resolve_local_dependency_targets,
+    structure_index_payload,
+    structure_summary,
+    summarize_chunk_counts,
+    top_hotspots,
+)
 from agentiux_dev_retrieval import infer_retrieval_mode, retrieval_mode_profile, retrieval_policy_payload
 from agentiux_dev_text import normalize_command_phrase, score_token_match, short_hash, tokenize_text
 from agentiux_dev_verification import read_verification_recipes
 
 
 CATALOG_FILENAMES = ("skills", "mcp_tools", "scripts", "references", "intent_routes")
-CONTEXT_CACHE_SCHEMA_VERSION = 3
-CONTEXT_INDEX_MANIFEST_SCHEMA_VERSION = 3
+CONTEXT_CACHE_SCHEMA_VERSION = 4
+CONTEXT_INDEX_MANIFEST_SCHEMA_VERSION = 4
 SEMANTIC_CACHE_ENTRY_SCHEMA_VERSION = 3
 CONTEXT_INDEX_EXCLUDED_DIRS = {
     ".agentiux",
@@ -114,6 +131,7 @@ CONTEXT_INDEX_PRIORITY_DIRS = {
     "src",
 }
 CONTEXT_INDEX_MAX_FILE_BYTES = 160_000
+CONTEXT_INDEX_LARGE_FILE_BYTES = 64_000
 CONTEXT_INDEX_MAX_FILES = 240
 MODULE_PARENT_DIRS = ("apps", "packages", "libs", "services", "plugins", "crates")
 PACKAGE_MANAGER_FILES = {
@@ -127,6 +145,11 @@ PACKAGE_MANAGER_FILES = {
     "requirements.txt": "pip",
 }
 ROUTE_PROFILES: dict[str, dict[str, Any]] = {
+    "analysis": {
+        "priority_dirs": {"catalogs", "references", "scripts", "skills"},
+        "priority_files": {"README.md", "plugin.json", "pyproject.toml"},
+        "path_tokens": {"analysis", "chunk", "hotspot", "index", "incremental", "module", "section", "structural", "symbol"},
+    },
     "design": {
         "priority_dirs": {"design", "references", "src"},
         "priority_files": {"README.md"},
@@ -249,9 +272,38 @@ def context_cache_paths(workspace: str | Path) -> dict[str, Path]:
         "manifest": root / "index_manifest.json",
         "workspace_context": root / "workspace_context.json",
         "module_map": root / "module_map.json",
+        "structure_index": root / "structure_index.json",
         "chunk_summaries": root / "chunk_summaries.jsonl",
         "semantic_cache": root / "semantic_cache.jsonl",
         "usage": root / "usage.json",
+    }
+
+
+def load_structure_index(paths: dict[str, Path]) -> dict[str, Any]:
+    payload = load_json(paths["structure_index"], default={})
+    return payload if isinstance(payload, dict) else {}
+
+
+def _empty_structure_index(workspace: Path) -> dict[str, Any]:
+    return {
+        "schema_version": STRUCTURE_INDEX_SCHEMA_VERSION,
+        "workspace_path": str(workspace),
+        "workspace_fingerprint": None,
+        "generated_at": None,
+        "parser_backends": {},
+        "summary": {
+            "module_count": 0,
+            "file_count": 0,
+            "indexed_file_count": 0,
+            "chunk_counts": {},
+            "large_file_count": 0,
+            "file_hotspot_count": 0,
+            "module_hotspot_count": 0,
+        },
+        "incremental_indexing": {},
+        "modules": [],
+        "files": [],
+        "hotspots": [],
     }
 
 
@@ -335,13 +387,23 @@ def _build_project_note_chunk_record(candidate: dict[str, Any]) -> dict[str, Any
     )
     return {
         "chunk_id": short_hash(f"{candidate['path']}:{file_hash}", length=16),
+        "chunk_kind": "project_memory",
         "path": str(candidate["path"]),
+        "module_id": None,
+        "language": "markdown",
         "symbols": [note.get("title") or note.get("note_id")],
         "tags": tags,
         "summary": summary,
         "hash": file_hash,
         "dependencies": [],
+        "dependency_targets": [],
         "route_hints": _infer_route_hints(str(candidate["path"]), tags, summary),
+        "anchor_title": note.get("title") or note.get("note_id"),
+        "anchor_kind": "project_note",
+        "line_start": 1,
+        "line_end": max(text.count("\n") + 1, 1),
+        "section_level": None,
+        "hotspot_labels": [],
         "source_kind": "project_memory",
         "note_id": note.get("note_id"),
         "note_status": note.get("status"),
@@ -889,6 +951,7 @@ def _workspace_context_payload(
     git_state: dict[str, Any],
     modules: list[dict[str, Any]],
     chunks: list[dict[str, Any]],
+    structure_index: dict[str, Any],
     usage: dict[str, Any],
     catalog_digest: str,
 ) -> dict[str, Any]:
@@ -965,6 +1028,8 @@ def _workspace_context_payload(
         "known_verification_surfaces": verification,
         "design_summary": design_testability["design_summary"],
         "testability_summary": design_testability["testability_summary"],
+        "structure_summary": structure_summary(structure_index),
+        "hotspot_summary": hotspot_summary(structure_index),
         "project_memory": {
             "note_count": len(project_memory_chunks),
             "pinned_note_count": len(pinned_project_memory_chunks),
@@ -1008,6 +1073,7 @@ def _required_cache_files(cache_paths: dict[str, Path]) -> list[Path]:
     return [
         cache_paths["workspace_context"],
         cache_paths["module_map"],
+        cache_paths["structure_index"],
         cache_paths["chunk_summaries"],
         cache_paths["semantic_cache"],
     ]
@@ -1094,8 +1160,15 @@ def _usage_stats_payload() -> dict[str, Any]:
         "context_pack_hit_count": 0,
         "context_pack_miss_count": 0,
         "last_refresh_candidate_file_count": 0,
+        "last_refresh_rebuilt_file_count": 0,
+        "last_refresh_reused_file_count": 0,
+        "last_refresh_removed_file_count": 0,
         "last_refresh_rebuilt_chunk_count": 0,
         "last_refresh_reused_chunk_count": 0,
+        "last_refresh_bounded_read_count": 0,
+        "last_refresh_full_read_count": 0,
+        "last_refresh_large_file_count": 0,
+        "last_refresh_parser_backend_status": {},
         "last_refresh_duration_ms": 0,
         "last_refresh_status": None,
         "last_refresh_reason": None,
@@ -1131,6 +1204,8 @@ def load_usage(paths: dict[str, Path]) -> dict[str, Any]:
     for field in ("refresh_reason_counts", "route_resolution_counts"):
         if not isinstance(merged.get(field), dict):
             merged[field] = {}
+    if not isinstance(merged.get("last_refresh_parser_backend_status"), dict):
+        merged["last_refresh_parser_backend_status"] = {}
     for field in ("recent_route_ids", "recent_tool_ids", "last_refresh_stale_reasons"):
         if not isinstance(merged.get(field), list):
             merged[field] = []
@@ -1165,8 +1240,15 @@ def _record_refresh_stats(
     reason: str,
     stale_reasons: list[str],
     candidate_file_count: int,
+    rebuilt_file_count: int,
+    reused_file_count: int,
+    removed_file_count: int,
     rebuilt_chunk_count: int,
     reused_chunk_count: int,
+    bounded_read_count: int,
+    full_read_count: int,
+    large_file_count: int,
+    parser_backend_status: dict[str, Any],
 ) -> dict[str, Any]:
     usage = load_usage(paths)
     usage["refresh_count"] = int(usage.get("refresh_count", 0)) + 1
@@ -1176,8 +1258,15 @@ def _record_refresh_stats(
     usage["last_refresh_reason"] = reason
     usage["last_refresh_stale_reasons"] = stale_reasons[:8]
     usage["last_refresh_candidate_file_count"] = candidate_file_count
+    usage["last_refresh_rebuilt_file_count"] = rebuilt_file_count
+    usage["last_refresh_reused_file_count"] = reused_file_count
+    usage["last_refresh_removed_file_count"] = removed_file_count
     usage["last_refresh_rebuilt_chunk_count"] = rebuilt_chunk_count
     usage["last_refresh_reused_chunk_count"] = reused_chunk_count
+    usage["last_refresh_bounded_read_count"] = bounded_read_count
+    usage["last_refresh_full_read_count"] = full_read_count
+    usage["last_refresh_large_file_count"] = large_file_count
+    usage["last_refresh_parser_backend_status"] = parser_backend_status
     usage["last_refresh_duration_ms"] = duration_ms
     _bump_usage_counter(usage, "refresh_reason_counts", reason)
     return _write_usage_payload(paths, usage)
@@ -1237,12 +1326,93 @@ def compact_workspace_context(workspace_context: dict[str, Any]) -> dict[str, An
         "known_test_surfaces": (workspace_context.get("known_test_surfaces") or [])[:6],
         "design_summary": workspace_context.get("design_summary") or {},
         "testability_summary": workspace_context.get("testability_summary") or {},
+        "structure_summary": workspace_context.get("structure_summary") or {},
+        "hotspot_summary": workspace_context.get("hotspot_summary") or {},
         "project_memory": workspace_context.get("project_memory") or {},
         "last_used_routes": (workspace_context.get("last_used_routes") or [])[:4],
         "last_used_tools": (workspace_context.get("last_used_tools") or [])[:8],
         "usage_stats": workspace_context.get("usage_stats") or {},
         "module_count": workspace_context.get("module_count"),
         "chunk_count": workspace_context.get("chunk_count"),
+    }
+
+
+def _chunk_records_by_path(records: list[dict[str, Any]]) -> dict[str, list[dict[str, Any]]]:
+    grouped: dict[str, list[dict[str, Any]]] = defaultdict(list)
+    for record in records:
+        grouped[str(record["path"])].append(record)
+    return grouped
+
+
+def _file_records_by_path(structure_index: dict[str, Any]) -> dict[str, dict[str, Any]]:
+    return {
+        str(record["path"]): record
+        for record in (structure_index.get("files") or [])
+        if isinstance(record, dict) and record.get("path")
+    }
+
+
+def _module_id_for_candidate(workspace: Path, candidate: Path, modules: list[dict[str, Any]]) -> str | None:
+    best_match: tuple[int, str] | None = None
+    relative = candidate.relative_to(workspace)
+    for module in modules:
+        module_path = Path(str(module.get("path") or "."))
+        if module_path == Path("."):
+            score = 0
+        elif relative == module_path or module_path in relative.parents:
+            score = len(module_path.parts)
+        else:
+            continue
+        module_id = module.get("module_id")
+        if not module_id:
+            continue
+        if best_match is None or score > best_match[0]:
+            best_match = (score, str(module_id))
+    return best_match[1] if best_match else None
+
+
+def _parser_backend_status_payload(parser_backends: dict[str, Any]) -> dict[str, Any]:
+    return {
+        name: {
+            "status": details.get("status"),
+            "available": details.get("available"),
+            "source": details.get("source"),
+            "reason": details.get("reason"),
+        }
+        for name, details in parser_backends.items()
+        if isinstance(details, dict)
+    }
+
+
+def _incremental_indexing_payload(
+    *,
+    candidate_file_count: int,
+    rebuilt_file_count: int,
+    reused_file_count: int,
+    removed_file_count: int,
+    rebuilt_chunk_count: int,
+    reused_chunk_count: int,
+    bounded_read_count: int,
+    full_read_count: int,
+    large_file_count: int,
+    refresh_reason: str,
+    stale_reasons: list[str],
+    parser_backend_status: dict[str, Any],
+) -> dict[str, Any]:
+    return {
+        "generated_at": now_iso(),
+        "candidate_file_count": candidate_file_count,
+        "rebuilt_file_count": rebuilt_file_count,
+        "reused_file_count": reused_file_count,
+        "removed_file_count": removed_file_count,
+        "rebuilt_chunk_count": rebuilt_chunk_count,
+        "reused_chunk_count": reused_chunk_count,
+        "bounded_read_count": bounded_read_count,
+        "full_read_count": full_read_count,
+        "large_file_count": large_file_count,
+        "refresh_reason": refresh_reason,
+        "stale_reasons": stale_reasons[:8],
+        "parser_backend_status": parser_backend_status,
     }
 
 
@@ -1282,11 +1452,19 @@ def refresh_context_index(
     )
     if force:
         stale_reasons = ["force-refresh", *stale_reasons]
+
+    existing_structure_index = load_structure_index(cache_paths) or _empty_structure_index(resolved_workspace)
+    existing_chunk_records = load_jsonl(cache_paths["chunk_summaries"])
+    existing_chunk_groups = _chunk_records_by_path(existing_chunk_records)
+    existing_file_records = _file_records_by_path(existing_structure_index)
+
     if not stale_reasons:
         workspace_context = load_json(cache_paths["workspace_context"], default={})
         module_map = load_json(cache_paths["module_map"], default={"modules": []})
-        chunks = load_jsonl(cache_paths["chunk_summaries"])
+        structure_index = existing_structure_index
+        chunks = existing_chunk_records
         duration_ms = int((perf_counter() - started_at) * 1000)
+        parser_status = _parser_backend_status_payload(structure_index.get("parser_backends") or {})
         _record_refresh_stats(
             cache_paths,
             status="fresh",
@@ -1294,8 +1472,15 @@ def refresh_context_index(
             reason="manifest-match",
             stale_reasons=[],
             candidate_file_count=candidate_count,
+            rebuilt_file_count=0,
+            reused_file_count=int((structure_index.get("summary") or {}).get("file_count") or 0),
+            removed_file_count=0,
             rebuilt_chunk_count=0,
             reused_chunk_count=len(chunks),
+            bounded_read_count=0,
+            full_read_count=0,
+            large_file_count=int((structure_index.get("summary") or {}).get("large_file_count") or 0),
+            parser_backend_status=parser_status,
         )
         return {
             "status": "fresh",
@@ -1304,6 +1489,7 @@ def refresh_context_index(
             "cache_root": str(cache_paths["root"]),
             "workspace_context_path": str(cache_paths["workspace_context"]),
             "module_map_path": str(cache_paths["module_map"]),
+            "structure_index_path": str(cache_paths["structure_index"]),
             "chunk_summaries_path": str(cache_paths["chunk_summaries"]),
             "semantic_cache_path": str(cache_paths["semantic_cache"]),
             "workspace_fingerprint": workspace_context.get("workspace_fingerprint"),
@@ -1311,8 +1497,17 @@ def refresh_context_index(
             "candidate_file_count": candidate_count,
             "module_count": len(module_map.get("modules", [])),
             "chunk_count": len(chunks),
+            "structure_summary": structure_summary(structure_index),
+            "hotspot_summary": hotspot_summary(structure_index),
+            "rebuilt_file_count": 0,
+            "reused_file_count": int((structure_index.get("summary") or {}).get("file_count") or 0),
+            "removed_file_count": 0,
             "rebuilt_chunk_count": 0,
             "reused_chunk_count": len(chunks),
+            "bounded_read_count": 0,
+            "full_read_count": 0,
+            "large_file_count": int((structure_index.get("summary") or {}).get("large_file_count") or 0),
+            "parser_backend_status": parser_status,
             "pruned_semantic_cache_entries": 0,
             "pruned_semantic_cache_reason": None,
             "refresh_reason": "manifest-match",
@@ -1322,15 +1517,36 @@ def refresh_context_index(
 
     if not force and stale_reasons and not _requires_chunk_refresh(stale_reasons):
         detection = detect_workspace(resolved_workspace)
-        chunks = load_jsonl(cache_paths["chunk_summaries"])
         module_map = load_json(cache_paths["module_map"], default={"modules": []})
         modules = module_map.get("modules", [])
+        structure_index = existing_structure_index
+        parser_status = _parser_backend_status_payload(structure_index.get("parser_backends") or {})
+        incremental_indexing = _incremental_indexing_payload(
+            candidate_file_count=candidate_count,
+            rebuilt_file_count=0,
+            reused_file_count=int((structure_index.get("summary") or {}).get("file_count") or 0),
+            removed_file_count=0,
+            rebuilt_chunk_count=0,
+            reused_chunk_count=len(existing_chunk_records),
+            bounded_read_count=0,
+            full_read_count=0,
+            large_file_count=int((structure_index.get("summary") or {}).get("large_file_count") or 0),
+            refresh_reason=stale_reasons[0],
+            stale_reasons=stale_reasons,
+            parser_backend_status=parser_status,
+        )
+        structure_index = {
+            **structure_index,
+            "incremental_indexing": incremental_indexing,
+            "generated_at": incremental_indexing["generated_at"],
+        }
         workspace_context = _workspace_context_payload(
             resolved_workspace,
             detection,
             git_state,
             modules,
-            chunks,
+            existing_chunk_records,
+            structure_index,
             usage,
             catalog_digest,
         )
@@ -1339,11 +1555,12 @@ def refresh_context_index(
         semantic_cache_entries = load_jsonl(cache_paths["semantic_cache"])
         semantic_cache_entries, pruned, pruned_reason = _prune_semantic_cache_entries(
             semantic_cache_entries,
-            chunks,
+            existing_chunk_records,
             catalog_digest,
             full_reset_reason="catalog-digest" if previous_catalog_digest and previous_catalog_digest != catalog_digest else None,
         )
         write_json(cache_paths["workspace_context"], workspace_context)
+        write_json(cache_paths["structure_index"], structure_index)
         write_json(
             cache_paths["manifest"],
             {
@@ -1358,7 +1575,7 @@ def refresh_context_index(
                 "workspace_fingerprint": workspace_context["workspace_fingerprint"],
                 "candidate_file_count": candidate_count,
                 "module_count": len(modules),
-                "chunk_count": len(chunks),
+                "chunk_count": len(existing_chunk_records),
                 "generated_at": now_iso(),
             },
         )
@@ -1372,8 +1589,15 @@ def refresh_context_index(
             reason=refresh_reason,
             stale_reasons=stale_reasons,
             candidate_file_count=candidate_count,
+            rebuilt_file_count=0,
+            reused_file_count=int((structure_index.get("summary") or {}).get("file_count") or 0),
+            removed_file_count=0,
             rebuilt_chunk_count=0,
-            reused_chunk_count=len(chunks),
+            reused_chunk_count=len(existing_chunk_records),
+            bounded_read_count=0,
+            full_read_count=0,
+            large_file_count=int((structure_index.get("summary") or {}).get("large_file_count") or 0),
+            parser_backend_status=parser_status,
         )
         return {
             "status": "context-refreshed",
@@ -1382,15 +1606,25 @@ def refresh_context_index(
             "cache_root": str(cache_paths["root"]),
             "workspace_context_path": str(cache_paths["workspace_context"]),
             "module_map_path": str(cache_paths["module_map"]),
+            "structure_index_path": str(cache_paths["structure_index"]),
             "chunk_summaries_path": str(cache_paths["chunk_summaries"]),
             "semantic_cache_path": str(cache_paths["semantic_cache"]),
             "workspace_fingerprint": workspace_context["workspace_fingerprint"],
             "catalog_digest": catalog_digest,
             "candidate_file_count": candidate_count,
             "module_count": len(modules),
-            "chunk_count": len(chunks),
+            "chunk_count": len(existing_chunk_records),
+            "structure_summary": structure_summary(structure_index),
+            "hotspot_summary": hotspot_summary(structure_index),
+            "rebuilt_file_count": 0,
+            "reused_file_count": int((structure_index.get("summary") or {}).get("file_count") or 0),
+            "removed_file_count": 0,
             "rebuilt_chunk_count": 0,
-            "reused_chunk_count": len(chunks),
+            "reused_chunk_count": len(existing_chunk_records),
+            "bounded_read_count": 0,
+            "full_read_count": 0,
+            "large_file_count": int((structure_index.get("summary") or {}).get("large_file_count") or 0),
+            "parser_backend_status": parser_status,
             "pruned_semantic_cache_entries": pruned,
             "pruned_semantic_cache_reason": pruned_reason,
             "refresh_reason": refresh_reason,
@@ -1401,38 +1635,113 @@ def refresh_context_index(
     detection = detect_workspace(resolved_workspace)
     modules = _discover_modules(resolved_workspace, detection)
     modules = _annotate_modules(resolved_workspace, modules, candidate_files)
-    existing_chunks = {entry["path"]: entry for entry in load_jsonl(cache_paths["chunk_summaries"])}
     manifest_snapshot_map = {entry["path"]: (entry["size"], entry["mtime_ns"]) for entry in manifest.get("indexed_file_snapshot", [])}
     candidate_snapshot_map = {entry["path"]: (entry["size"], entry["mtime_ns"]) for entry in candidate_snapshot}
+    changed_path_set = {entry["path"] for entry in git_state.get("changed_files", [])}
     chunk_records: list[dict[str, Any]] = []
+    file_records: list[dict[str, Any]] = []
     rebuilt_paths: list[str] = []
     reused_paths: list[str] = []
+    rebuilt_file_paths: list[str] = []
+    reused_file_paths: list[str] = []
+    rebuilt_chunk_count = 0
+    reused_chunk_count = 0
+    bounded_read_count = 0
+    full_read_count = 0
+    large_file_count = 0
+    parser_backends = default_parser_backends(resolved_workspace, plugin_root())
     for candidate in candidate_files:
         relative = str(candidate.relative_to(resolved_workspace))
-        existing = existing_chunks.get(relative)
-        if not force and existing and manifest_snapshot_map.get(relative) == candidate_snapshot_map.get(relative):
-            chunk_records.append(existing)
+        existing = existing_chunk_groups.get(relative)
+        existing_file = existing_file_records.get(relative)
+        if not force and existing and existing_file and manifest_snapshot_map.get(relative) == candidate_snapshot_map.get(relative):
+            chunk_records.extend(copy.deepcopy(existing))
+            file_records.append(copy.deepcopy(existing_file))
             reused_paths.append(relative)
+            reused_file_paths.append(relative)
+            reused_chunk_count += len(existing)
             continue
-        chunk_records.append(_build_chunk_record(resolved_workspace, candidate))
+        file_hash = hashlib.sha1(candidate.read_bytes()).hexdigest()
+        structure = build_file_structure(
+            resolved_workspace,
+            candidate,
+            file_hash=file_hash,
+            module_id=_module_id_for_candidate(resolved_workspace, candidate, modules),
+            parser_backends=parser_backends,
+            large_file_threshold=CONTEXT_INDEX_LARGE_FILE_BYTES,
+            recent_churn=relative in changed_path_set,
+        )
+        chunk_records.extend(structure["chunks"])
+        file_records.append(structure["file_record"])
         rebuilt_paths.append(relative)
+        rebuilt_file_paths.append(relative)
+        rebuilt_chunk_count += len(structure["chunks"])
+        bounded_read_count += structure["bounded_read_count"]
+        full_read_count += structure["full_read_count"]
+        large_file_count += structure["large_file_count"]
     for candidate in project_note_candidates:
         relative = str(candidate["path"])
-        existing = existing_chunks.get(relative)
+        existing = existing_chunk_groups.get(relative)
         if not force and existing and manifest_snapshot_map.get(relative) == candidate_snapshot_map.get(relative):
-            chunk_records.append(existing)
+            chunk_records.extend(copy.deepcopy(existing))
             reused_paths.append(relative)
+            reused_chunk_count += len(existing)
             continue
         chunk_records.append(_build_project_note_chunk_record(candidate))
         rebuilt_paths.append(relative)
+        rebuilt_chunk_count += 1
 
-    chunk_records.sort(key=lambda item: item["path"])
+    file_records = resolve_local_dependency_targets(
+        resolved_workspace,
+        [record["path"] for record in file_records],
+        file_records,
+    )
+    modules = aggregate_modules(modules, file_records)
+    chunk_records = apply_file_metadata_to_chunks(chunk_records, file_records)
+    chunk_records.sort(
+        key=lambda item: (
+            item["path"],
+            item.get("chunk_kind") or "file",
+            str(item.get("anchor_title") or ""),
+            int(item.get("line_start") or 0),
+        )
+    )
+    chunk_counts = summarize_chunk_counts(chunk_records)
+    parser_status = _parser_backend_status_payload(parser_backends)
+    removed_file_paths = sorted(set(existing_file_records).difference({record["path"] for record in file_records}))
+    hotspots = top_hotspots(file_records, modules)
+    incremental_indexing = _incremental_indexing_payload(
+        candidate_file_count=candidate_count,
+        rebuilt_file_count=len(rebuilt_file_paths),
+        reused_file_count=len(reused_file_paths),
+        removed_file_count=len(removed_file_paths),
+        rebuilt_chunk_count=rebuilt_chunk_count,
+        reused_chunk_count=reused_chunk_count,
+        bounded_read_count=bounded_read_count,
+        full_read_count=full_read_count,
+        large_file_count=large_file_count,
+        refresh_reason=stale_reasons[0] if stale_reasons else "refresh",
+        stale_reasons=stale_reasons,
+        parser_backend_status=parser_status,
+    )
+    workspace_fingerprint = _workspace_fingerprint(resolved_workspace, chunk_records)
+    structure_index = structure_index_payload(
+        workspace=resolved_workspace,
+        workspace_fingerprint=workspace_fingerprint,
+        parser_backends=parser_backends,
+        modules=modules,
+        files=file_records,
+        chunk_counts=chunk_counts,
+        hotspots=hotspots,
+        incremental_indexing=incremental_indexing,
+    )
     workspace_context = _workspace_context_payload(
         resolved_workspace,
         detection,
         git_state,
         modules,
         chunk_records,
+        structure_index,
         usage,
         catalog_digest,
     )
@@ -1449,6 +1758,7 @@ def refresh_context_index(
             "modules": modules,
         },
     )
+    write_json(cache_paths["structure_index"], structure_index)
     write_jsonl(cache_paths["chunk_summaries"], chunk_records)
 
     semantic_cache_entries = load_jsonl(cache_paths["semantic_cache"])
@@ -1487,8 +1797,15 @@ def refresh_context_index(
         reason=refresh_reason,
         stale_reasons=stale_reasons,
         candidate_file_count=candidate_count,
-        rebuilt_chunk_count=len(rebuilt_paths),
-        reused_chunk_count=len(reused_paths),
+        rebuilt_file_count=len(rebuilt_file_paths),
+        reused_file_count=len(reused_file_paths),
+        removed_file_count=len(removed_file_paths),
+        rebuilt_chunk_count=rebuilt_chunk_count,
+        reused_chunk_count=reused_chunk_count,
+        bounded_read_count=bounded_read_count,
+        full_read_count=full_read_count,
+        large_file_count=large_file_count,
+        parser_backend_status=parser_status,
     )
 
     return {
@@ -1498,6 +1815,7 @@ def refresh_context_index(
         "cache_root": str(cache_paths["root"]),
         "workspace_context_path": str(cache_paths["workspace_context"]),
         "module_map_path": str(cache_paths["module_map"]),
+        "structure_index_path": str(cache_paths["structure_index"]),
         "chunk_summaries_path": str(cache_paths["chunk_summaries"]),
         "semantic_cache_path": str(cache_paths["semantic_cache"]),
         "workspace_fingerprint": workspace_context["workspace_fingerprint"],
@@ -1505,8 +1823,17 @@ def refresh_context_index(
         "candidate_file_count": candidate_count,
         "module_count": len(modules),
         "chunk_count": len(chunk_records),
-        "rebuilt_chunk_count": len(rebuilt_paths),
-        "reused_chunk_count": len(reused_paths),
+        "structure_summary": structure_summary(structure_index),
+        "hotspot_summary": hotspot_summary(structure_index),
+        "rebuilt_file_count": len(rebuilt_file_paths),
+        "reused_file_count": len(reused_file_paths),
+        "removed_file_count": len(removed_file_paths),
+        "rebuilt_chunk_count": rebuilt_chunk_count,
+        "reused_chunk_count": reused_chunk_count,
+        "bounded_read_count": bounded_read_count,
+        "full_read_count": full_read_count,
+        "large_file_count": large_file_count,
+        "parser_backend_status": parser_status,
         "pruned_semantic_cache_entries": pruned,
         "pruned_semantic_cache_reason": pruned_reason,
         "refresh_reason": refresh_reason,
@@ -1521,7 +1848,7 @@ def load_workspace_context_bundle(
     query_text: str | None = None,
     route_id: str | None = None,
     retrieval_mode: str | None = None,
-) -> tuple[dict[str, Any], dict[str, Path], dict[str, Any], list[dict[str, Any]], list[dict[str, Any]], dict[str, Any]]:
+) -> tuple[dict[str, Any], dict[str, Path], dict[str, Any], list[dict[str, Any]], list[dict[str, Any]], dict[str, Any], dict[str, Any]]:
     refresh_result = refresh_context_index(
         workspace,
         force=False,
@@ -1534,4 +1861,5 @@ def load_workspace_context_bundle(
     module_map = load_json(cache_paths["module_map"], default={"modules": []})
     chunks = load_jsonl(cache_paths["chunk_summaries"])
     usage = load_usage(cache_paths)
-    return refresh_result, cache_paths, workspace_context, module_map.get("modules", []), chunks, usage
+    structure_index = load_structure_index(cache_paths) or _empty_structure_index(Path(workspace).expanduser().resolve())
+    return refresh_result, cache_paths, workspace_context, module_map.get("modules", []), chunks, usage, structure_index

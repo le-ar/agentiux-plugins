@@ -103,8 +103,9 @@ Codex should prefer the low-token retrieval ladder before reading large docs or 
 3. `show capability catalog`
 4. `show workspace context pack`
 5. `search context index`
-6. targeted file reads
-7. broad manual exploration only when the earlier layers are insufficient
+6. `show context structure`
+7. targeted file reads
+8. broad manual exploration only when the earlier layers are insufficient
 
 Cheap retrieval surfaces now expose explicit retrieval-mode metadata and payload ceilings:
 
@@ -115,9 +116,11 @@ Cheap retrieval surfaces now expose explicit retrieval-mode metadata and payload
 
 `show intent route`, `workflow-advice`, `show workspace context pack`, and `search context index` stay Unicode-safe for mixed-script and non-ASCII requests when canonical tool names, paths, and schema fields remain in English.
 
-Cheap retrieval surfaces also keep Stage 1 payload discipline. They project compact `design_summary` and `testability_summary` counts instead of embedding full design briefs, handoffs, or verification recipe payloads.
+Cheap retrieval surfaces also keep Stage 1 payload discipline. They project compact `design_summary`, `testability_summary`, `structure_summary`, and `hotspot_summary` counts instead of embedding full design briefs, handoffs, verification recipes, or structural artifacts.
 
 The plugin keeps canonical versioned catalogs in `catalogs/` and stores project-derived context indexes globally under `~/.agentiux/agentiux-dev/cache/context/<workspace-fingerprint>/`. No project-derived context cache is written into repositories.
+
+Context indexing is structural in Stage 4. Python and Markdown always use parser-backed extraction, JS/TS can opt into a local TypeScript-compiler backend when `node` plus a resolvable `typescript` package are available, and Kotlin/Rust/other supported source types keep heuristic extraction with the same normalized chunk schema. Large files above `64_000` bytes switch into bounded structural mode instead of full-body summary synthesis, and all structural artifacts remain home-local under the context cache root.
 
 ## Public Command Surface
 
@@ -144,6 +147,7 @@ The plugin keeps canonical versioned catalogs in `catalogs/` and stores project-
 - `show intent route`
 - `show workspace context pack`
 - `search context index`
+- `show context structure`
 - `refresh context index`
 - `show auth profiles`
 - `write auth profile`

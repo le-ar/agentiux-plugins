@@ -24,6 +24,7 @@ from agentiux_dev_lib import (
     python_launcher_tokens,
     python_script_command,
 )
+from agentiux_dev_context import refresh_context_index, search_context_index, show_context_structure, show_workspace_context_pack
 from agentiux_dev_verification import audit_verification_coverage
 from build_context_catalogs import check_catalogs
 
@@ -285,6 +286,7 @@ def mcp_check(plugin_root: Path) -> dict[str, Any]:
         "show_intent_route",
         "show_workspace_context_pack",
         "search_context_index",
+        "show_context_structure",
         "refresh_context_index",
         "show_auth_profiles",
         "list_auth_sessions",
@@ -363,6 +365,89 @@ def verification_coverage_check(repo_root: Path) -> dict[str, Any]:
         "coverage": payload["coverage"],
         "design_summary": payload["design_summary"],
         "testability_summary": payload["testability_summary"],
+    }
+
+
+def context_structure_check(repo_root: Path) -> dict[str, Any]:
+    refresh_payload = refresh_context_index(repo_root, force=True)
+    required_refresh_fields = {
+        "rebuilt_file_count",
+        "reused_file_count",
+        "removed_file_count",
+        "bounded_read_count",
+        "full_read_count",
+        "large_file_count",
+        "parser_backend_status",
+        "structure_summary",
+        "hotspot_summary",
+    }
+    missing_refresh_fields = sorted(field for field in required_refresh_fields if field not in refresh_payload)
+    if missing_refresh_fields:
+        raise AssertionError(f"refresh_context_index missing fields: {missing_refresh_fields}")
+
+    structure_payload = show_context_structure(
+        repo_root,
+        query_text="context structure hotspot symbol",
+        route_id="analysis",
+        module_path="plugins/agentiux-dev",
+        limit=6,
+    )
+    parser_backends = structure_payload.get("parser_backends") or {}
+    if (parser_backends.get("python_ast") or {}).get("status") != "active":
+        raise AssertionError("python_ast backend should be active")
+    if (parser_backends.get("markdown_sections") or {}).get("status") != "active":
+        raise AssertionError("markdown_sections backend should be active")
+    ts_backend_status = (parser_backends.get("typescript_compiler") or {}).get("status")
+    if ts_backend_status not in {"available", "unavailable"}:
+        raise AssertionError(f"Unexpected TypeScript backend status: {ts_backend_status}")
+    if not structure_payload.get("summary", {}).get("chunk_counts"):
+        raise AssertionError("show_context_structure did not expose chunk counts")
+    if not structure_payload.get("modules"):
+        raise AssertionError("show_context_structure did not expose module summaries")
+    if not structure_payload.get("matches"):
+        raise AssertionError("show_context_structure did not expose structural matches")
+
+    search_payload = search_context_index(repo_root, "context structure hotspot symbol", route_id="analysis", limit=4)
+    if not search_payload.get("matches"):
+        raise AssertionError("search_context_index did not return structural matches")
+    if any("match_kind" not in match for match in search_payload["matches"]):
+        raise AssertionError("search_context_index matches are missing match_kind")
+
+    context_pack_payload = show_workspace_context_pack(
+        repo_root,
+        request_text="inspect structural hotspots and modules",
+        route_id="analysis",
+        limit=4,
+    )
+    workspace_context = context_pack_payload.get("workspace_context") or {}
+    if "structure_summary" not in workspace_context or "hotspot_summary" not in workspace_context:
+        raise AssertionError("show_workspace_context_pack did not expose structural summaries")
+
+    return {
+        "check": "context-structure",
+        "refresh": {
+            key: refresh_payload[key]
+            for key in [
+                "status",
+                "rebuilt_file_count",
+                "reused_file_count",
+                "removed_file_count",
+                "bounded_read_count",
+                "full_read_count",
+                "large_file_count",
+                "parser_backend_status",
+                "structure_summary",
+                "hotspot_summary",
+            ]
+        },
+        "structure_summary": structure_payload.get("summary"),
+        "parser_backends": parser_backends,
+        "match_count": len(structure_payload.get("matches") or []),
+        "search_match_count": len(search_payload.get("matches") or []),
+        "workspace_context": {
+            "structure_summary": workspace_context.get("structure_summary"),
+            "hotspot_summary": workspace_context.get("hotspot_summary"),
+        },
     }
 
 
@@ -769,6 +854,7 @@ def run_release_readiness(repo_root: Path, plugin_root: Path, smoke_runs: int) -
         context_catalog_check(plugin_root),
         self_host_check(repo_root, plugin_root),
         verification_coverage_check(repo_root),
+        context_structure_check(repo_root),
         mcp_check(plugin_root),
         dashboard_check(repo_root, plugin_root),
     ]

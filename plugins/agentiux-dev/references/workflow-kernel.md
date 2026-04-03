@@ -41,4 +41,8 @@ AgentiUX Dev combines the strongest workflow rules from the user's reference rep
 - Resolve the intent route through the compact route catalog before reading long docs or Python entrypoints.
 - Use the capability catalog to choose skills, MCP tools, scripts, and reference docs instead of scanning the repo blindly.
 - Load the global workspace context pack and search the context index before broad `rg` or manual exploration.
+- Use `show context structure` for compact module, symbol, doc-section, hotspot, or incremental-index drill-down before opening large files.
 - Project-derived context indexes and semantic cache packets stay under `~/.agentiux/agentiux-dev/cache/context/` and never inside repositories.
+- Stage 4 structural indexing keeps cheap surfaces compact: `workspace_summary`, dashboard snapshots, workspace context packs, and retrieval surfaces expose only `structure_summary` and `hotspot_summary` projections instead of full structural artifacts.
+- Python AST and Markdown section parsing are always available. JS/TS parser depth is optional and must fall back cleanly to heuristic extraction when no local TypeScript backend exists.
+- Files above the large-file threshold use bounded structural extraction and hotspot signals rather than full-body summary generation.

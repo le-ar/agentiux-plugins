@@ -15,6 +15,7 @@ CATALOG_SCHEMA_VERSION = 1
 CATALOG_DIRNAME = "catalogs"
 CATALOG_FILENAMES = ("skills", "mcp_tools", "scripts", "references", "intent_routes")
 SUPPORTED_ROUTE_IDS = (
+    "analysis",
     "design",
     "git",
     "plugin-dev",
@@ -25,6 +26,28 @@ SUPPORTED_ROUTE_IDS = (
 )
 
 ROUTE_DEFINITIONS: dict[str, dict[str, Any]] = {
+    "analysis": {
+        "title": "Structural Analysis",
+        "summary": "Inspect module, symbol, doc-section, hotspot, and incremental index summaries without hydrating full artifacts.",
+        "tags": ["analysis", "hotspot", "incremental", "module", "section", "structural", "symbol"],
+        "triggers": ["context structure", "hotspot", "incremental index", "module", "section", "symbol"],
+        "recommended_skills": ["workspace-kernel", "plugin-platform"],
+        "recommended_tools": [
+            "show_intent_route",
+            "show_capability_catalog",
+            "show_workspace_context_pack",
+            "search_context_index",
+            "show_context_structure",
+            "refresh_context_index",
+        ],
+        "summary_surfaces": ["show_workspace_context_pack", "show_context_structure", "search_context_index"],
+        "primary_paths": [
+            "references/command-surface.md",
+            "references/workflow-kernel.md",
+            "README.md",
+        ],
+        "cost_hint": "low",
+    },
     "git": {
         "title": "Git Workflow",
         "summary": "Inspect repository state, worktrees, commit conventions, and safe local git mutations.",
@@ -204,6 +227,7 @@ ROUTE_DEFINITIONS: dict[str, dict[str, Any]] = {
             "show_intent_route",
             "show_workspace_context_pack",
             "search_context_index",
+            "show_context_structure",
             "refresh_context_index",
         ],
         "summary_surfaces": ["get_plugin_stats", "get_dashboard_snapshot", "show_capability_catalog"],
@@ -529,6 +553,8 @@ def _route_ids_for_hint(*values: str) -> list[str]:
     route_ids: set[str] = set()
     if tokens.intersection({"branch", "commit", "git", "pr", "staging", "worktree"}):
         route_ids.add("git")
+    if tokens.intersection({"analysis", "chunk", "hotspot", "incremental", "index", "module", "section", "structural", "symbol"}):
+        route_ids.add("analysis")
     if tokens.intersection({"baseline", "detox", "playwright", "semantic", "verification", "visual"}):
         route_ids.add("verification")
     if tokens.intersection({"auth", "credentials", "login"}):

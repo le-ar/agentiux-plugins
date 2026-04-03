@@ -40,6 +40,7 @@ from agentiux_dev_context_cache import (
 ROUTE_SCORE_MIN = 8
 ROUTE_SCORE_AMBIGUOUS_DELTA = 3
 TOKEN_SYNONYMS = {
+    "analysis": ["hotspot", "incremental", "module", "section", "structural", "symbol"],
     "a11y": ["accessibility", "semantic"],
     "accessibility": ["a11y", "semantic"],
     "baseline": ["snapshot", "verification", "visual"],
@@ -55,16 +56,22 @@ TOKEN_SYNONYMS = {
     "gui": ["dashboard"],
     "handoff": ["brief", "design"],
     "helper": ["bundle", "semantic", "verification"],
+    "hotspot": ["analysis", "drift", "module", "structural"],
     "index": ["catalog", "context"],
+    "incremental": ["analysis", "index", "refresh", "structural"],
     "mcp": ["catalog", "plugin", "tool", "tools"],
     "memory": ["note", "project"],
+    "module": ["analysis", "hotspot", "structural", "symbol"],
     "plugin": ["catalog", "dashboard", "mcp", "self", "host"],
     "pr": ["pull", "request"],
     "pull": ["pr"],
     "release": ["dashboard", "readiness", "ship", "smoke"],
     "semantic": ["a11y", "helper", "verification", "visual"],
+    "section": ["analysis", "doc", "module", "structural"],
     "ship": ["readiness", "release", "smoke"],
     "smoke": ["readiness", "release", "verification"],
+    "structural": ["analysis", "hotspot", "module", "symbol"],
+    "symbol": ["analysis", "module", "section", "structural"],
     "task": ["stage", "workstream", "workspace"],
     "tool": ["catalog", "mcp"],
     "tools": ["catalog", "mcp"],
@@ -108,12 +115,18 @@ RETRIEVAL_LADDER = [
     },
     {
         "step": 6,
+        "surface": "show_context_structure",
+        "description": "Inspect compact structural module, symbol, doc-section, hotspot, and incremental index summaries.",
+        "tools": ["show_context_structure"],
+    },
+    {
+        "step": 7,
         "surface": "targeted_file_reads",
         "description": "Open only the specific files referenced by the selected route and search hits.",
         "tools": [],
     },
     {
-        "step": 7,
+        "step": 8,
         "surface": "manual_exploration",
         "description": "Use broad rg/manual exploration only if the earlier layers are insufficient.",
         "tools": [],
@@ -161,6 +174,111 @@ def _trim_context_pack_payload(payload: dict[str, Any]) -> dict[str, Any]:
     while payload_size_bytes(payload) > ceiling and context_pack.get("selected_chunks"):
         context_pack["selected_chunks"] = context_pack["selected_chunks"][:-1]
     return payload
+
+
+def _trim_structure_payload(payload: dict[str, Any]) -> dict[str, Any]:
+    ceiling = SURFACE_PAYLOAD_CEILINGS["show_context_structure"]
+    while payload_size_bytes(payload) > ceiling and payload.get("matches"):
+        payload["matches"] = payload["matches"][:-1]
+    while payload_size_bytes(payload) > ceiling and payload.get("hotspots"):
+        payload["hotspots"] = payload["hotspots"][:-1]
+    while payload_size_bytes(payload) > ceiling and payload.get("modules"):
+        payload["modules"] = payload["modules"][:-1]
+    return payload
+
+
+def _serialize_module(module: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "module_id": module.get("module_id"),
+        "path": module.get("path"),
+        "kind": module.get("kind"),
+        "manifest_path": module.get("manifest_path"),
+        "file_count": module.get("file_count", 0),
+        "indexed_file_count": module.get("indexed_file_count", 0),
+        "language_counts": module.get("language_counts", {}),
+        "local_fan_in": module.get("local_fan_in", 0),
+        "local_fan_out": module.get("local_fan_out", 0),
+        "hotspot_score": module.get("hotspot_score", 0),
+        "hotspot_labels": module.get("hotspot_labels", []),
+        "entrypoint_hints": module.get("entrypoint_hints", []),
+        "large_file_count": module.get("large_file_count", 0),
+    }
+
+
+def _serialize_hotspot(hotspot: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "target_kind": hotspot.get("target_kind"),
+        "path": hotspot.get("path"),
+        "module_id": hotspot.get("module_id"),
+        "language": hotspot.get("language"),
+        "hotspot_score": hotspot.get("hotspot_score", 0),
+        "hotspot_labels": hotspot.get("hotspot_labels", []),
+        "local_fan_in": hotspot.get("local_fan_in", 0),
+        "local_fan_out": hotspot.get("local_fan_out", 0),
+        "large_file": hotspot.get("large_file"),
+        "large_file_count": hotspot.get("large_file_count"),
+    }
+
+
+def _serialize_match(match: dict[str, Any]) -> dict[str, Any]:
+    payload = {
+        "chunk_id": match.get("chunk_id"),
+        "path": match.get("path"),
+        "match_kind": match.get("chunk_kind", "file"),
+        "anchor_title": match.get("anchor_title"),
+        "anchor_kind": match.get("anchor_kind"),
+        "summary": match.get("summary"),
+        "module_id": match.get("module_id"),
+        "language": match.get("language"),
+        "line_start": match.get("line_start"),
+        "line_end": match.get("line_end"),
+        "section_level": match.get("section_level"),
+        "hotspot_labels": match.get("hotspot_labels", []),
+        "dependency_targets": match.get("dependency_targets", []),
+        "score": match.get("score"),
+        "why": match.get("why", {}),
+    }
+    if match.get("note_id"):
+        payload["note_id"] = match.get("note_id")
+    return payload
+
+
+def _normalize_module_path(workspace_path: Path, module_path: str | None) -> str | None:
+    if not module_path:
+        return None
+    normalized = str(module_path).strip()
+    if not normalized:
+        return None
+    candidate = Path(normalized).expanduser()
+    if candidate.is_absolute():
+        try:
+            relative = candidate.resolve().relative_to(workspace_path)
+        except ValueError:
+            return normalized
+        return "." if str(relative) == "." else relative.as_posix()
+    return "." if normalized == "." else Path(normalized).as_posix()
+
+
+def _path_within_module(path_value: str | None, module_path: str | None) -> bool:
+    if not path_value or not module_path or module_path == ".":
+        return bool(path_value)
+    path_obj = Path(path_value)
+    module_obj = Path(module_path)
+    return path_obj == module_obj or module_obj in path_obj.parents
+
+
+def _select_modules_for_path(modules: list[dict[str, Any]], module_path: str | None) -> list[dict[str, Any]]:
+    if not module_path:
+        return modules
+    matched = [
+        module
+        for module in modules
+        if _path_within_module(module.get("path"), module_path) or _path_within_module(module_path, module.get("path"))
+    ]
+    if not matched:
+        return []
+    best_depth = max(len(Path(str(module.get("path") or ".")).parts) for module in matched)
+    return [module for module in matched if len(Path(str(module.get("path") or ".")).parts) == best_depth]
 
 
 def _catalog_entry_score(
@@ -528,7 +646,7 @@ def search_context_index(
     retrieval_mode = infer_retrieval_mode(query_text)
     profile = retrieval_mode_profile(retrieval_mode)
     match_limit = _limit(limit, 8, profile["max_match_limit"])
-    refresh_result, cache_paths, workspace_context, modules, chunks, usage = load_workspace_context_bundle(
+    refresh_result, cache_paths, workspace_context, modules, chunks, usage, _structure_index = load_workspace_context_bundle(
         workspace,
         query_text=query_text,
         route_id=route_id,
@@ -563,8 +681,8 @@ def search_context_index(
         "retrieval": retrieval_policy_payload("search_context_index", retrieval_mode),
         "route_candidates": search_bundle["route_candidates"],
         "workspace_context": compact_workspace_context(workspace_context),
-        "modules": search_bundle["modules"],
-        "matches": search_bundle["matches"],
+        "modules": [_serialize_module(module) for module in search_bundle["modules"]],
+        "matches": [_serialize_match(match) for match in search_bundle["matches"]],
         "recommended_capabilities": search_bundle["recommended_capabilities"],
     }
     _trim_search_payload(payload)
@@ -607,7 +725,7 @@ def show_workspace_context_pack(
             route_id=route_id,
             retrieval_mode=retrieval_mode,
         )
-    refresh_result, cache_paths, workspace_context, modules, chunks, usage = load_workspace_context_bundle(
+    refresh_result, cache_paths, workspace_context, modules, chunks, usage, _structure_index = load_workspace_context_bundle(
         resolved_workspace,
         query_text=request_text,
         route_id=route_id,
@@ -769,4 +887,102 @@ def show_workspace_context_pack(
         "retrieval_ladder": RETRIEVAL_LADDER,
     }
     _surface_payload_stats("show_workspace_context_pack", payload)
+    return payload
+
+
+def show_context_structure(
+    workspace: str | Path,
+    query_text: str | None = None,
+    route_id: str | None = None,
+    module_path: str | None = None,
+    limit: int | None = 8,
+) -> dict[str, Any]:
+    resolved_workspace = Path(workspace).expanduser().resolve()
+    retrieval_mode = infer_retrieval_mode(query_text or "show context structure")
+    profile = retrieval_mode_profile(retrieval_mode)
+    match_limit = _limit(limit, 8, profile["max_match_limit"])
+    normalized_module_path = _normalize_module_path(resolved_workspace, module_path)
+    refresh_result, cache_paths, workspace_context, modules, chunks, usage, structure_index = load_workspace_context_bundle(
+        resolved_workspace,
+        query_text=query_text,
+        route_id=route_id or "analysis",
+        retrieval_mode=retrieval_mode,
+    )
+    structure_modules = list(structure_index.get("modules") or modules)
+    selected_modules = _select_modules_for_path(structure_modules, normalized_module_path)
+    selected_module_ids = {item.get("module_id") for item in selected_modules if item.get("module_id")}
+    selected_hotspots = list(structure_index.get("hotspots") or [])
+    if normalized_module_path:
+        selected_hotspots = [
+            hotspot
+            for hotspot in selected_hotspots
+            if hotspot.get("module_id") in selected_module_ids or _path_within_module(hotspot.get("path"), normalized_module_path)
+        ]
+
+    matches: list[dict[str, Any]] = []
+    route, route_candidates, route_status = _resolve_intent_candidates(None, route_id or "analysis", usage=usage)
+    if query_text:
+        search_bundle = _search_bundle_matches(
+            query_text=query_text,
+            route_id=route_id or "analysis",
+            workspace_context=workspace_context,
+            modules=structure_modules,
+            chunks=chunks,
+            usage=usage,
+            match_limit=max(match_limit * 2, profile["max_match_limit"]),
+            capability_limit=profile["max_selected_tool_limit"],
+        )
+        route = search_bundle["route"]
+        route_candidates = search_bundle["route_candidates"]
+        route_status = search_bundle["route_status"]
+        matches = list(search_bundle["matches"])
+        if normalized_module_path:
+            matches = [match for match in matches if _path_within_module(match.get("path"), normalized_module_path)]
+        matches = matches[:match_limit]
+        record_search_stats(
+            cache_paths,
+            query_text=query_text,
+            match_count=search_bundle["match_count"],
+            route_status=route_status,
+            route_id=route["route_id"] if route else None,
+        )
+    elif normalized_module_path:
+        filtered_chunks = [
+            chunk
+            for chunk in chunks
+            if _path_within_module(chunk.get("path"), normalized_module_path)
+            and chunk.get("chunk_kind") in {"file", "symbol", "doc_section"}
+        ]
+        filtered_chunks.sort(
+            key=lambda item: (
+                item.get("chunk_kind") != "file",
+                str(item.get("path") or ""),
+                int(item.get("line_start") or 0),
+                str(item.get("anchor_title") or ""),
+            )
+        )
+        matches = filtered_chunks[:match_limit]
+
+    module_payload_items = selected_modules if normalized_module_path else structure_modules[:8]
+    payload = {
+        "workspace_path": str(resolved_workspace),
+        "cache_root": str(cache_paths["root"]),
+        "index_status": refresh_result["status"],
+        "index_refresh_reason": refresh_result.get("refresh_reason"),
+        "query_text": query_text,
+        "requested_route_id": route_id,
+        "module_path": normalized_module_path,
+        "resolved_route": route,
+        "route_resolution_status": route_status,
+        "route_candidates": route_candidates[:3],
+        "retrieval": retrieval_policy_payload("show_context_structure", retrieval_mode),
+        "summary": structure_index.get("summary") or {},
+        "parser_backends": structure_index.get("parser_backends") or {},
+        "incremental_indexing": structure_index.get("incremental_indexing") or {},
+        "modules": [_serialize_module(module) for module in module_payload_items[:8]],
+        "hotspots": [_serialize_hotspot(item) for item in selected_hotspots[:match_limit]],
+        "matches": [_serialize_match(match) for match in matches] if matches else [],
+    }
+    _trim_structure_payload(payload)
+    _surface_payload_stats("show_context_structure", payload)
     return payload

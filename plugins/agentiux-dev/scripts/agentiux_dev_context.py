@@ -4,6 +4,7 @@ from agentiux_dev_context_cache import refresh_context_index
 from agentiux_dev_context_query import (
     search_context_index,
     show_capability_catalog,
+    show_context_structure,
     show_intent_route,
     show_workspace_context_pack,
 )
@@ -13,6 +14,7 @@ __all__ = [
     "refresh_context_index",
     "search_context_index",
     "show_capability_catalog",
+    "show_context_structure",
     "show_intent_route",
     "show_workspace_context_pack",
 ]

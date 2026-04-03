@@ -6879,6 +6879,7 @@ def workspace_summary(workspace: str | Path) -> dict[str, Any]:
         brief_markdown=brief.get("markdown"),
         brief_kind="task" if task else "workstream",
     )
+    context_cache_summary = _context_cache_summary(workspace)
     return {
         "workspace_path": paths["workspace_path"],
         "workspace_label": workspace_state.get("workspace_label"),
@@ -6914,6 +6915,8 @@ def workspace_summary(workspace: str | Path) -> dict[str, Any]:
         },
         "design_summary": design_testability["design_summary"],
         "testability_summary": design_testability["testability_summary"],
+        "structure_summary": context_cache_summary["structure_summary"],
+        "hotspot_summary": context_cache_summary["hotspot_summary"],
         "workstream": {
             "workstream_id": workstream.get("workstream_id") if workstream else None,
             "title": workstream.get("title") if workstream else None,
@@ -7007,6 +7010,16 @@ def _plugin_stats_from_workspaces(workspaces: list[dict[str, Any]]) -> dict[str,
     }
 
 
+def _context_cache_summary(workspace: str | Path) -> dict[str, Any]:
+    workspace_path = Path(workspace).expanduser().resolve()
+    cache_root = state_root() / "cache" / "context" / f"{slugify(workspace_path.name)}--{workspace_hash(workspace_path)}"
+    workspace_context = _load_json(cache_root / "workspace_context.json", default={}) or {}
+    return {
+        "structure_summary": copy.deepcopy(workspace_context.get("structure_summary") or {}),
+        "hotspot_summary": copy.deepcopy(workspace_context.get("hotspot_summary") or {}),
+    }
+
+
 def _dashboard_workspace_summary(workspace: str | Path) -> dict[str, Any]:
     from agentiux_dev_analytics import workspace_analytics_summary
     from agentiux_dev_verification import list_verification_runs, resolve_verification_selection
@@ -7033,6 +7046,7 @@ def _dashboard_workspace_summary(workspace: str | Path) -> dict[str, Any]:
         brief_markdown=(brief_payload or {}).get("markdown"),
         brief_kind="task" if task_payload else "workstream",
     )
+    context_cache_summary = _context_cache_summary(workspace)
     return {
         "workspace_path": paths["workspace_path"],
         "workspace_label": workspace_state.get("workspace_label"),
@@ -7059,6 +7073,8 @@ def _dashboard_workspace_summary(workspace: str | Path) -> dict[str, Any]:
         "brief_generation_status": (brief_payload or {}).get("brief_generation_status"),
         "design_summary": design_testability["design_summary"],
         "testability_summary": design_testability["testability_summary"],
+        "structure_summary": context_cache_summary["structure_summary"],
+        "hotspot_summary": context_cache_summary["hotspot_summary"],
         "plugin_platform": workspace_state.get("plugin_platform", {"enabled": False}),
         "auth": {
             "profile_count": counts.get("auth_profiles", 0),

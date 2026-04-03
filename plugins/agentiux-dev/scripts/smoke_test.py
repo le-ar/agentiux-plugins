@@ -133,6 +133,7 @@ from agentiux_dev_context import (
     refresh_context_index,
     search_context_index,
     show_capability_catalog,
+    show_context_structure,
     show_intent_route,
     show_workspace_context_pack,
 )
@@ -1070,6 +1071,7 @@ def main() -> int:
         assert all(all(ord(char) < 128 for char in alias) for values in aliases.values() for alias in values)
         assert resolve_command_phrase("init workspace") == "initialize workspace"
         assert resolve_command_phrase("please show workspace context pack for this repo") == "show workspace context pack"
+        assert resolve_command_phrase("show context structure for this repo") == "show context structure"
         mixed_script_request = "Inspect \uff2d\uff23\uff30 tool catalogs and the dashboard runtime for plugin development \u03a3"
         assert normalize_command_phrase(mixed_script_request).startswith("inspect mcp")
         assert "mcp" in tokenize_text(mixed_script_request)
@@ -1263,6 +1265,147 @@ def main() -> int:
         assert usage_payload["refresh_reason_counts"]["catalog-digest"] >= 1
         assert usage_payload["route_resolution_counts"]["exact"] >= 1
         assert usage_payload["last_refresh_reason"] in {"catalog-digest", "manifest-match", "indexed-file-snapshot"}
+
+        with tempfile.TemporaryDirectory() as structure_fixture_dir:
+            structure_workspace = Path(structure_fixture_dir)
+            module_root = structure_workspace / "packages" / "analysis-core"
+            docs_root = module_root / "docs"
+            src_root = module_root / "src"
+            docs_root.mkdir(parents=True)
+            src_root.mkdir(parents=True)
+            (module_root / "package.json").write_text(
+                json.dumps(
+                    {
+                        "name": "analysis-core",
+                        "scripts": {"smoke": "node src/app.ts"},
+                        "dependencies": {"left-pad": "^1.3.0"},
+                    },
+                    indent=2,
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+            (module_root / "README.md").write_text(
+                "# Analysis Core\n\nIntro paragraph.\n\n## Overview\n\nDetails.\n\n## Troubleshooting\n\nFallback notes.\n",
+                encoding="utf-8",
+            )
+            (docs_root / "guide.md").write_text(
+                "# Guide\n\nOverview.\n\n## Setup\n\nSteps.\n\n## Recovery\n\nMore steps.\n",
+                encoding="utf-8",
+            )
+            (src_root / "alpha.py").write_text(
+                "import json\nfrom pathlib import Path\n\nclass FeatureGate:\n    pass\n\n\ndef run_job():\n    return Path('ok')\n",
+                encoding="utf-8",
+            )
+            (src_root / "app.ts").write_text(
+                "import { helper } from './helper';\nexport function startApp() {\n  return helper();\n}\n",
+                encoding="utf-8",
+            )
+            (src_root / "helper.ts").write_text("export const helper = () => 'ok';\n", encoding="utf-8")
+            (src_root / "feature.kt").write_text("package demo\n\nclass FeatureGate\n\nfun renderScreen() = Unit\n", encoding="utf-8")
+            (src_root / "worker.rs").write_text("pub struct Worker;\n\npub fn run_worker() {}\n", encoding="utf-8")
+            (src_root / "large.py").write_text("def large_fixture():\n    return 'x'\n\n" + ("# filler\n" * 9000), encoding="utf-8")
+
+            if shutil.which("node"):
+                ts_module_root = structure_workspace / "node_modules" / "typescript"
+                ts_module_root.mkdir(parents=True)
+                (ts_module_root / "package.json").write_text(
+                    json.dumps({"name": "typescript", "main": "shim.js"}, indent=2) + "\n",
+                    encoding="utf-8",
+                )
+                (ts_module_root / "shim.js").write_text(
+                    "exports.agentiuxExtract = function(filePath, sourceText) {\n"
+                    "  return {\n"
+                    "    status: 'ok',\n"
+                    "    backend: 'typescript_compiler',\n"
+                    "    symbols: [{ title: 'startApp', kind: 'function', line_start: 2, line_end: 4 }],\n"
+                    "    dependencies: sourceText.includes('./helper') ? ['./helper'] : []\n"
+                    "  };\n"
+                    "};\n",
+                    encoding="utf-8",
+                )
+
+            structure_refresh = refresh_context_index(structure_workspace)
+            assert structure_refresh["status"] == "refreshed"
+            assert Path(structure_refresh["structure_index_path"]).exists()
+            assert structure_refresh["structure_summary"]["module_count"] >= 1
+            assert structure_refresh["structure_summary"]["large_file_count"] >= 1
+            assert structure_refresh["bounded_read_count"] >= 1
+            assert structure_refresh["large_file_count"] >= 1
+            assert structure_refresh["parser_backend_status"]["python_ast"]["status"] == "active"
+            assert structure_refresh["parser_backend_status"]["markdown_sections"]["status"] == "active"
+            if shutil.which("node"):
+                assert structure_refresh["parser_backend_status"]["typescript_compiler"]["status"] == "available"
+            else:
+                assert structure_refresh["parser_backend_status"]["typescript_compiler"]["status"] == "unavailable"
+
+            structure_refresh_again = refresh_context_index(structure_workspace)
+            assert structure_refresh_again["status"] == "fresh"
+            assert structure_refresh_again["refresh_reason"] == "manifest-match"
+
+            structure_view = show_context_structure(
+                structure_workspace,
+                query_text="startApp FeatureGate run_worker guide setup",
+                route_id="analysis",
+                module_path="packages/analysis-core",
+                limit=8,
+            )
+            assert structure_view["payload"]["within_ceiling"] is True
+            assert payload_size_bytes(structure_view) <= SURFACE_PAYLOAD_CEILINGS["show_context_structure"]
+            assert structure_view["summary"]["chunk_counts"]["symbol"] >= 3
+            assert structure_view["modules"]
+            assert structure_view["hotspots"]
+            assert structure_view["matches"]
+            assert any(match["match_kind"] == "symbol" for match in structure_view["matches"])
+            assert any(match["match_kind"] == "doc_section" for match in structure_view["matches"])
+
+            structure_search = search_context_index(
+                structure_workspace,
+                "startApp FeatureGate run_worker guide setup",
+                route_id="analysis",
+                limit=8,
+            )
+            assert structure_search["resolved_route"]["route_id"] == "analysis"
+            assert structure_search["matches"]
+            assert any(match["match_kind"] == "symbol" for match in structure_search["matches"])
+            assert all("anchor_title" in match for match in structure_search["matches"])
+
+            structure_pack = show_workspace_context_pack(
+                structure_workspace,
+                request_text="inspect structural hotspots and modules",
+                route_id="analysis",
+                limit=4,
+            )
+            assert structure_pack["workspace_context"]["structure_summary"]["large_file_count"] >= 1
+            assert "hotspot_summary" in structure_pack["workspace_context"]
+
+            (src_root / "alpha.py").write_text(
+                "import json\nfrom pathlib import Path\n\nclass FeatureGate:\n    pass\n\n\ndef run_job():\n    return Path('updated')\n",
+                encoding="utf-8",
+            )
+            incremental_refresh = refresh_context_index(structure_workspace)
+            assert incremental_refresh["status"] == "refreshed"
+            assert incremental_refresh["rebuilt_file_count"] >= 1
+            assert incremental_refresh["reused_file_count"] >= 1
+
+            (src_root / "worker.rs").unlink()
+            removal_refresh = refresh_context_index(structure_workspace)
+            assert removal_refresh["status"] == "refreshed"
+            assert removal_refresh["removed_file_count"] >= 1
+
+        with tempfile.TemporaryDirectory() as fallback_fixture_dir:
+            fallback_workspace = Path(fallback_fixture_dir)
+            fallback_src = fallback_workspace / "src"
+            fallback_src.mkdir(parents=True)
+            (fallback_src / "fallback.ts").write_text(
+                "export function fallbackEntry() {\n  return 'fallback';\n}\n",
+                encoding="utf-8",
+            )
+            fallback_refresh = refresh_context_index(fallback_workspace)
+            assert fallback_refresh["parser_backend_status"]["typescript_compiler"]["status"] == "unavailable"
+            fallback_search = search_context_index(fallback_workspace, "fallbackEntry", route_id="analysis", limit=4)
+            assert fallback_search["matches"]
+            assert any(match["match_kind"] == "symbol" for match in fallback_search["matches"])
 
         preview = preview_workspace_init(workspace)
         assert preview["must_confirm_before_write"] is True

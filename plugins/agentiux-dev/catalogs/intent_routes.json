@@ -2,6 +2,51 @@
   "catalog": "intent_routes",
   "entries": [
     {
+      "cost_hint": "low",
+      "primary_paths": [
+        "README.md",
+        "references/command-surface.md",
+        "references/workflow-kernel.md"
+      ],
+      "recommended_skills": [
+        "plugin-platform",
+        "workspace-kernel"
+      ],
+      "recommended_tools": [
+        "refresh_context_index",
+        "search_context_index",
+        "show_capability_catalog",
+        "show_context_structure",
+        "show_intent_route",
+        "show_workspace_context_pack"
+      ],
+      "route_id": "analysis",
+      "summary": "Inspect module, symbol, doc-section, hotspot, and incremental index summaries without hydrating full artifacts.",
+      "summary_surfaces": [
+        "search_context_index",
+        "show_context_structure",
+        "show_workspace_context_pack"
+      ],
+      "tags": [
+        "analysis",
+        "hotspot",
+        "incremental",
+        "module",
+        "section",
+        "structural",
+        "symbol"
+      ],
+      "title": "Structural Analysis",
+      "triggers": [
+        "context structure",
+        "hotspot",
+        "incremental index",
+        "module",
+        "section",
+        "symbol"
+      ]
+    },
+    {
       "cost_hint": "medium",
       "primary_paths": [
         "README.md",
@@ -119,6 +164,7 @@
         "search_context_index",
         "show_auth_profiles",
         "show_capability_catalog",
+        "show_context_structure",
         "show_intent_route",
         "show_workspace_context_pack"
       ],
@@ -353,7 +399,7 @@
       ]
     }
   ],
-  "entry_count": 7,
+  "entry_count": 8,
   "plugin": {
     "name": "agentiux-dev",
     "version": "0.8.0"

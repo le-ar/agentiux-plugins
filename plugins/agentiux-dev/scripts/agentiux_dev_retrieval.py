@@ -12,6 +12,7 @@ SURFACE_PAYLOAD_CEILINGS = {
     "workflow_advice": 12 * 1024,
     "show_intent_route": 12 * 1024,
     "search_context_index": 24 * 1024,
+    "show_context_structure": 24 * 1024,
     "show_workspace_context_pack": 32 * 1024,
 }
 

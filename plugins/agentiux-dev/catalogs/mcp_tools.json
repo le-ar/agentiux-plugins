@@ -2239,6 +2239,7 @@
       "primary_surface": "mcp",
       "read_only": true,
       "related_routes": [
+        "analysis",
         "verification",
         "workstream"
       ],
@@ -2248,6 +2249,7 @@
       "returns": "Structured JSON payload for inspection and routing.",
       "summary": "Refresh the global project context index and semantic cache metadata for a workspace.",
       "tags": [
+        "analysis",
         "context",
         "index",
         "refresh",
@@ -2258,6 +2260,7 @@
       "title": "Refresh Context Index",
       "tool_name": "refresh_context_index",
       "triggers": [
+        "analysis",
         "refresh context index",
         "verification",
         "workstream"
@@ -2595,13 +2598,19 @@
     },
     {
       "cost_hint": "low",
-      "follow_up_paths": [],
+      "follow_up_paths": [
+        "README.md",
+        "references/command-surface.md",
+        "references/workflow-kernel.md"
+      ],
       "id": "search_context_index",
       "kind": "mcp_tool",
       "path": "scripts/agentiux_dev_mcp.py",
       "primary_surface": "mcp",
       "read_only": true,
-      "related_routes": [],
+      "related_routes": [
+        "analysis"
+      ],
       "required_inputs": [
         "workspacePath",
         "queryText"
@@ -2609,6 +2618,7 @@
       "returns": "Structured JSON payload for inspection and routing.",
       "summary": "Search the global low-token context index for relevant repo chunks and recommended capabilities.",
       "tags": [
+        "analysis",
         "context",
         "index",
         "search",
@@ -2617,6 +2627,7 @@
       "title": "Search Context Index",
       "tool_name": "search_context_index",
       "triggers": [
+        "analysis",
         "search context index"
       ]
     },
@@ -2797,6 +2808,43 @@
       "triggers": [
         "plugin-dev",
         "show capability catalog"
+      ]
+    },
+    {
+      "cost_hint": "low",
+      "follow_up_paths": [
+        "README.md",
+        "references/command-surface.md",
+        "references/workflow-kernel.md"
+      ],
+      "id": "show_context_structure",
+      "kind": "mcp_tool",
+      "path": "scripts/agentiux_dev_mcp.py",
+      "primary_surface": "mcp",
+      "read_only": true,
+      "related_routes": [
+        "analysis",
+        "workstream"
+      ],
+      "required_inputs": [
+        "workspacePath"
+      ],
+      "returns": "Structured JSON payload for inspection and routing.",
+      "summary": "Inspect compact structural module, symbol, doc-section, hotspot, and incremental index summaries for a workspace.",
+      "tags": [
+        "analysis",
+        "context",
+        "show",
+        "show_context_structure",
+        "structure",
+        "workstream"
+      ],
+      "title": "Show Context Structure",
+      "tool_name": "show_context_structure",
+      "triggers": [
+        "analysis",
+        "show context structure",
+        "workstream"
       ]
     },
     {
@@ -3885,7 +3933,7 @@
       ]
     }
   ],
-  "entry_count": 112,
+  "entry_count": 113,
   "plugin": {
     "name": "agentiux-dev",
     "version": "0.8.0"
