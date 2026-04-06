@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import ast
 import copy
-from contextlib import contextmanager
+from contextlib import contextmanager, suppress
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -1059,9 +1059,18 @@ class FakeYouTrackServer:
             self.thread.join(timeout=2)
 
 
-def launch_dashboard_gui(plugin_root: Path, workspace: Path, env: dict[str, str]) -> dict[str, Any]:
+def launch_dashboard_gui(
+    plugin_root: Path,
+    workspace: Path,
+    env: dict[str, str],
+    *,
+    health_timeout_seconds: float = 20.0,
+) -> dict[str, Any]:
     result = completed_process(
-        python_script_command(plugin_root / "scripts" / "agentiux_dev_gui.py", ["launch", "--workspace", str(workspace)]),
+        python_script_command(
+            plugin_root / "scripts" / "agentiux_dev_gui.py",
+            ["launch", "--workspace", str(workspace), "--health-timeout", str(health_timeout_seconds)],
+        ),
         cwd=workspace,
         env=env,
     )
@@ -1075,6 +1084,32 @@ def stop_dashboard_gui(plugin_root: Path, cwd: Path, env: dict[str, str]) -> dic
         env=env,
     )
     return json.loads(result.stdout) if result.stdout.strip() else {"status": "stopped"}
+
+
+def wait_for_dashboard_gui_shutdown(
+    plugin_root: Path,
+    cwd: Path,
+    env: dict[str, str],
+    *,
+    timeout_seconds: float = 8.0,
+) -> dict[str, Any]:
+    deadline = time.monotonic() + timeout_seconds
+    latest = {"status": "unknown"}
+    while time.monotonic() < deadline:
+        try:
+            result = completed_process(
+                python_script_command(plugin_root / "scripts" / "agentiux_dev_gui.py", ["status"]),
+                cwd=cwd,
+                env=env,
+            )
+            latest = json.loads(result.stdout) if result.stdout.strip() else {"status": "stopped"}
+        except Exception:  # noqa: BLE001
+            return {"status": "stopped"}
+        if latest.get("status") != "running":
+            time.sleep(0.25)
+            return latest
+        time.sleep(0.25)
+    return latest
 
 
 def run_browser_layout_audit(
@@ -1197,22 +1232,34 @@ def dashboard_check(repo_root: Path, plugin_root: Path) -> dict[str, Any]:
                 scope_summary="Exercise cockpit-first dashboard cards and stage state for browser layout auditing.",
             )
             fixture_snapshot = dashboard_snapshot(canonical_repo_root)
-        launch_started_at = time.monotonic()
-        launch_output = completed_process(
-            python_script_command(
-                plugin_root / "scripts" / "agentiux_dev_gui.py",
-                ["launch", "--workspace", str(canonical_repo_root)],
-            ),
-            cwd=canonical_repo_root,
-            env=env,
-        )
-        cold_start_ms = round((time.monotonic() - launch_started_at) * 1000, 2)
-        payload = json.loads(launch_output.stdout)
-        url = payload["url"]
+        cold_start_ms = 0.0
+        health: dict[str, Any] = {}
+        snapshot: dict[str, Any] = {}
+        cockpit_snapshot: dict[str, Any] = {}
+        bootstrap_snapshot: dict[str, Any] = {}
+        plan_panel_snapshot: dict[str, Any] = {}
+        auth_payload: dict[str, Any] = {}
+        auth_sessions_payload: dict[str, Any] = {}
+        notes_payload: dict[str, Any] = {}
+        analytics_payload: dict[str, Any] = {}
+        learnings_payload: dict[str, Any] = {}
+        payload_bytes: dict[str, int] = {}
+        request_timings_ms: dict[str, float] = {}
+        render_timings_ms: dict[str, dict[str, float | None]] = {}
         audit_results: list[dict[str, Any]] = []
         deep_link_results: list[dict[str, Any]] = []
         history_navigation_audit: dict[str, Any] | None = None
+        url = ""
+        launch_started_at = time.monotonic()
         try:
+            payload = launch_dashboard_gui(
+                plugin_root,
+                canonical_repo_root,
+                env,
+                health_timeout_seconds=60.0,
+            )
+            cold_start_ms = round((time.monotonic() - launch_started_at) * 1000, 2)
+            url = payload["url"]
             health, _health_bytes, _health_ms = read_json_url(f"{url}/health")
             encoded_workspace = urllib.parse.quote(str(canonical_repo_root), safe="")
             overview_url = f"{url}/api/dashboard"
@@ -1346,11 +1393,10 @@ def dashboard_check(repo_root: Path, plugin_root: Path) -> dict[str, Any]:
                 ]
             )
         finally:
-            completed_process(
-                python_script_command(plugin_root / "scripts" / "agentiux_dev_gui.py", ["stop"]),
-                cwd=canonical_repo_root,
-                env=env,
-            )
+            with suppress(Exception):
+                stop_dashboard_gui(plugin_root, canonical_repo_root, env)
+            with suppress(Exception):
+                wait_for_dashboard_gui_shutdown(plugin_root, canonical_repo_root, env)
     if not health.get("ok"):
         raise AssertionError("Dashboard health check failed")
     if snapshot.get("schema_version") != 2:

@@ -274,7 +274,14 @@ def _stop_unlocked(payload: dict[str, Any]) -> dict[str, Any]:
     return stopped
 
 
-def launch(host: str, port: int | None, workspace: str | None, *, force_restart: bool = False) -> dict[str, Any]:
+def launch(
+    host: str,
+    port: int | None,
+    workspace: str | None,
+    *,
+    force_restart: bool = False,
+    health_timeout_seconds: float = 20.0,
+) -> dict[str, Any]:
     with _runtime_lock():
         current = _status_unlocked()
         expected_source_state = _dashboard_source_state()
@@ -334,6 +341,7 @@ def launch(host: str, port: int | None, workspace: str | None, *, force_restart:
 
         _wait_for_health(
             url,
+            timeout_seconds=health_timeout_seconds,
             process=process,
             log_path=log_path,
             error_log_path=error_log_path,
@@ -733,6 +741,7 @@ def parse_args() -> argparse.Namespace:
     launch_parser.add_argument("--port", type=int)
     launch_parser.add_argument("--workspace")
     launch_parser.add_argument("--restart", action="store_true")
+    launch_parser.add_argument("--health-timeout", type=float, default=20.0)
 
     subparsers.add_parser("stop")
     subparsers.add_parser("status")
@@ -740,6 +749,7 @@ def parse_args() -> argparse.Namespace:
     restart_parser.add_argument("--host", default="127.0.0.1")
     restart_parser.add_argument("--port", type=int)
     restart_parser.add_argument("--workspace")
+    restart_parser.add_argument("--health-timeout", type=float, default=20.0)
     return parser.parse_args()
 
 
@@ -748,10 +758,32 @@ def main() -> int:
     if args.command == "serve":
         return serve(args.host, args.port, args.workspace)
     if args.command == "launch":
-        print(json.dumps(launch(args.host, args.port, args.workspace, force_restart=args.restart), indent=2))
+        print(
+            json.dumps(
+                launch(
+                    args.host,
+                    args.port,
+                    args.workspace,
+                    force_restart=args.restart,
+                    health_timeout_seconds=args.health_timeout,
+                ),
+                indent=2,
+            )
+        )
         return 0
     if args.command == "restart":
-        print(json.dumps(launch(args.host, args.port, args.workspace, force_restart=True), indent=2))
+        print(
+            json.dumps(
+                launch(
+                    args.host,
+                    args.port,
+                    args.workspace,
+                    force_restart=True,
+                    health_timeout_seconds=args.health_timeout,
+                ),
+                indent=2,
+            )
+        )
         return 0
     if args.command == "stop":
         print(json.dumps(stop(), indent=2))

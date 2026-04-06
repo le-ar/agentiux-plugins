@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 
+import { randomBytes, createHash } from "node:crypto";
 import { spawn, spawnSync } from "node:child_process";
 import { existsSync } from "node:fs";
 import fs from "node:fs/promises";
@@ -7,6 +8,7 @@ import net from "node:net";
 import os from "node:os";
 import path from "node:path";
 import process from "node:process";
+import tls from "node:tls";
 import { setTimeout as delay } from "node:timers/promises";
 
 function parseArgs(argv) {
@@ -124,10 +126,13 @@ async function reservePort() {
   });
 }
 
-async function waitForJson(url, timeoutMs) {
+async function waitForJson(url, timeoutMs, { process: childProcess = null, stderrText = "" } = {}) {
   const deadline = Date.now() + timeoutMs;
   let lastError = null;
   while (Date.now() < deadline) {
+    if (childProcess && childProcess.exitCode !== null) {
+      break;
+    }
     try {
       const response = await fetch(url, { cache: "no-store" });
       if (response.ok) {
@@ -139,7 +144,278 @@ async function waitForJson(url, timeoutMs) {
     }
     await delay(120);
   }
-  throw lastError || new Error(`Timed out waiting for ${url}`);
+  const stderrTail = String(stderrText || "")
+    .split(/\n/)
+    .filter(Boolean)
+    .slice(-12)
+    .join("\n");
+  if (childProcess && childProcess.exitCode !== null) {
+    throw new Error(
+      [
+        `Timed out waiting for ${url} before browser process exited with code ${childProcess.exitCode}`,
+        stderrTail ? `browser stderr tail:\n${stderrTail}` : "",
+      ]
+        .filter(Boolean)
+        .join("\n"),
+    );
+  }
+  throw new Error(
+    [
+      lastError ? String(lastError) : `Timed out waiting for ${url}`,
+      stderrTail ? `browser stderr tail:\n${stderrTail}` : "",
+    ]
+      .filter(Boolean)
+      .join("\n"),
+  );
+}
+
+function websocketAcceptValue(key) {
+  return createHash("sha1")
+    .update(`${key}258EAFA5-E914-47DA-95CA-C5AB0DC85B11`, "utf8")
+    .digest("base64");
+}
+
+class NodeWebSocketCompat {
+  constructor(url) {
+    this.url = new URL(url);
+    this.socket = null;
+    this.listeners = new Map();
+    this.handshakeBuffer = Buffer.alloc(0);
+    this.frameBuffer = Buffer.alloc(0);
+    this.handshakeComplete = false;
+    this.closeSent = false;
+    this.messageOpcode = null;
+    this.messageParts = [];
+  }
+
+  addEventListener(type, handler) {
+    const bucket = this.listeners.get(type) || [];
+    bucket.push(handler);
+    this.listeners.set(type, bucket);
+  }
+
+  removeEventListener(type, handler) {
+    const bucket = this.listeners.get(type) || [];
+    this.listeners.set(
+      type,
+      bucket.filter((entry) => entry !== handler),
+    );
+  }
+
+  send(data) {
+    this.#writeFrame(0x1, Buffer.from(String(data), "utf8"), true);
+  }
+
+  close() {
+    if (this.closeSent) {
+      return;
+    }
+    this.closeSent = true;
+    try {
+      this.#writeFrame(0x8, Buffer.alloc(0), true);
+    } catch {}
+    if (this.socket && !this.socket.destroyed) {
+      this.socket.end();
+    }
+  }
+
+  connect() {
+    const isSecure = this.url.protocol === "wss:";
+    const port = Number(this.url.port || (isSecure ? 443 : 80));
+    const host = this.url.hostname;
+    const socket = isSecure
+      ? tls.connect({ host, port, servername: host })
+      : net.connect({ host, port });
+    const connectEvent = isSecure ? "secureConnect" : "connect";
+    this.socket = socket;
+    socket.on(connectEvent, () => {
+      const key = randomBytes(16).toString("base64");
+      this.expectedAccept = websocketAcceptValue(key);
+      const requestPath = `${this.url.pathname || "/"}${this.url.search || ""}`;
+      socket.write(
+        [
+          `GET ${requestPath || "/"} HTTP/1.1`,
+          `Host: ${host}${this.url.port ? `:${this.url.port}` : ""}`,
+          "Upgrade: websocket",
+          "Connection: Upgrade",
+          `Sec-WebSocket-Key: ${key}`,
+          "Sec-WebSocket-Version: 13",
+          "\r\n",
+        ].join("\r\n"),
+      );
+    });
+    socket.on("data", (chunk) => {
+      try {
+        this.#handleData(chunk);
+      } catch (error) {
+        this.#emit("error", { error });
+        this.close();
+      }
+    });
+    socket.on("error", (error) => this.#emit("error", { error }));
+    socket.on("close", () => this.#emit("close", {}));
+  }
+
+  #emit(type, event) {
+    for (const handler of this.listeners.get(type) || []) {
+      handler(event);
+    }
+  }
+
+  #handleData(chunk) {
+    if (!this.handshakeComplete) {
+      this.handshakeBuffer = Buffer.concat([this.handshakeBuffer, chunk]);
+      const headerEnd = this.handshakeBuffer.indexOf("\r\n\r\n");
+      if (headerEnd === -1) {
+        return;
+      }
+      const headerText = this.handshakeBuffer.subarray(0, headerEnd).toString("utf8");
+      const remainder = this.handshakeBuffer.subarray(headerEnd + 4);
+      this.handshakeBuffer = Buffer.alloc(0);
+      const [statusLine, ...headerLines] = headerText.split(/\r\n/);
+      if (!statusLine.includes("101")) {
+        throw new Error(`WebSocket upgrade failed: ${statusLine}`);
+      }
+      const headers = new Map();
+      for (const line of headerLines) {
+        const separator = line.indexOf(":");
+        if (separator === -1) {
+          continue;
+        }
+        headers.set(line.slice(0, separator).trim().toLowerCase(), line.slice(separator + 1).trim());
+      }
+      if (headers.get("sec-websocket-accept") !== this.expectedAccept) {
+        throw new Error("WebSocket upgrade returned an unexpected accept key");
+      }
+      this.handshakeComplete = true;
+      this.#emit("open", {});
+      if (remainder.length > 0) {
+        this.frameBuffer = Buffer.concat([this.frameBuffer, remainder]);
+        this.#consumeFrames();
+      }
+      return;
+    }
+    this.frameBuffer = Buffer.concat([this.frameBuffer, chunk]);
+    this.#consumeFrames();
+  }
+
+  #consumeFrames() {
+    while (this.frameBuffer.length >= 2) {
+      const firstByte = this.frameBuffer[0];
+      const secondByte = this.frameBuffer[1];
+      const opcode = firstByte & 0x0f;
+      const isFinal = (firstByte & 0x80) !== 0;
+      const masked = (secondByte & 0x80) !== 0;
+      let payloadLength = secondByte & 0x7f;
+      let offset = 2;
+      if (payloadLength === 126) {
+        if (this.frameBuffer.length < 4) {
+          return;
+        }
+        payloadLength = this.frameBuffer.readUInt16BE(2);
+        offset = 4;
+      } else if (payloadLength === 127) {
+        if (this.frameBuffer.length < 10) {
+          return;
+        }
+        const highBits = this.frameBuffer.readUInt32BE(2);
+        const lowBits = this.frameBuffer.readUInt32BE(6);
+        if (highBits !== 0) {
+          throw new Error("WebSocket frame is too large");
+        }
+        payloadLength = lowBits;
+        offset = 10;
+      }
+      let mask = null;
+      if (masked) {
+        if (this.frameBuffer.length < offset + 4) {
+          return;
+        }
+        mask = this.frameBuffer.subarray(offset, offset + 4);
+        offset += 4;
+      }
+      if (this.frameBuffer.length < offset + payloadLength) {
+        return;
+      }
+      let payload = this.frameBuffer.subarray(offset, offset + payloadLength);
+      this.frameBuffer = this.frameBuffer.subarray(offset + payloadLength);
+      if (mask) {
+        payload = Buffer.from(payload);
+        for (let index = 0; index < payload.length; index += 1) {
+          payload[index] ^= mask[index % 4];
+        }
+      }
+      if (opcode === 0x8) {
+        this.close();
+        return;
+      }
+      if (opcode === 0x9) {
+        this.#writeFrame(0xA, payload, false);
+        continue;
+      }
+      if (opcode === 0xA) {
+        continue;
+      }
+      if (opcode !== 0x0) {
+        this.messageOpcode = opcode;
+      }
+      this.messageParts.push(Buffer.from(payload));
+      if (!isFinal) {
+        continue;
+      }
+      const messageBuffer = Buffer.concat(this.messageParts);
+      const messageOpcode = this.messageOpcode;
+      this.messageParts = [];
+      this.messageOpcode = null;
+      if (messageOpcode === 0x1) {
+        this.#emit("message", { data: messageBuffer.toString("utf8") });
+      }
+    }
+  }
+
+  #writeFrame(opcode, payload, masked) {
+    if (!this.socket || this.socket.destroyed) {
+      throw new Error("WebSocket is not connected");
+    }
+    const chunks = [];
+    const firstByte = 0x80 | opcode;
+    chunks.push(Buffer.from([firstByte]));
+    const payloadBuffer = Buffer.from(payload);
+    if (payloadBuffer.length < 126) {
+      chunks.push(Buffer.from([(masked ? 0x80 : 0x00) | payloadBuffer.length]));
+    } else if (payloadBuffer.length < 65536) {
+      const header = Buffer.alloc(3);
+      header[0] = (masked ? 0x80 : 0x00) | 126;
+      header.writeUInt16BE(payloadBuffer.length, 1);
+      chunks.push(header);
+    } else {
+      const header = Buffer.alloc(9);
+      header[0] = (masked ? 0x80 : 0x00) | 127;
+      header.writeUInt32BE(0, 1);
+      header.writeUInt32BE(payloadBuffer.length, 5);
+      chunks.push(header);
+    }
+    if (masked) {
+      const mask = randomBytes(4);
+      const maskedPayload = Buffer.from(payloadBuffer);
+      for (let index = 0; index < maskedPayload.length; index += 1) {
+        maskedPayload[index] ^= mask[index % 4];
+      }
+      chunks.push(mask, maskedPayload);
+    } else {
+      chunks.push(payloadBuffer);
+    }
+    this.socket.write(Buffer.concat(chunks));
+  }
+}
+
+function createWebSocket(url) {
+  if (process.env.AGENTIUX_DEV_FORCE_RAW_WEBSOCKET === "1" || typeof WebSocket !== "function") {
+    const socket = new NodeWebSocketCompat(url);
+    socket.connect();
+    return socket;
+  }
+  return new WebSocket(url);
 }
 
 function resolveCommandPath(command) {
@@ -268,7 +544,7 @@ class CdpConnection {
 
   async open() {
     await new Promise((resolve, reject) => {
-      const ws = new WebSocket(this.wsUrl);
+      const ws = createWebSocket(this.wsUrl);
       this.ws = ws;
       ws.addEventListener("open", () => resolve());
       ws.addEventListener("error", (event) => reject(event.error || new Error("WebSocket open failed")));
@@ -284,8 +560,22 @@ class CdpConnection {
 
   async close() {
     if (!this.ws) return;
-    this.ws.close();
-    await delay(50);
+    const ws = this.ws;
+    this.ws = null;
+    await new Promise((resolve) => {
+      let settled = false;
+      const finish = () => {
+        if (settled) {
+          return;
+        }
+        settled = true;
+        resolve();
+      };
+      ws.addEventListener("close", finish);
+      ws.addEventListener("error", finish);
+      ws.close();
+      setTimeout(finish, 300);
+    });
   }
 
   async send(method, params = {}, sessionId = undefined) {
@@ -1199,6 +1489,7 @@ async function runAudit(config) {
       "--disable-default-apps",
       "--no-first-run",
       "--no-default-browser-check",
+      "--remote-debugging-address=127.0.0.1",
       `--remote-debugging-port=${debugPort}`,
       `--user-data-dir=${path.join(tempRoot, "profile")}`,
       "about:blank",
@@ -1207,6 +1498,10 @@ async function runAudit(config) {
       stdio: ["ignore", "pipe", "pipe"],
     },
   );
+  const chromeClosed = new Promise((resolve) => {
+    chrome.once("close", () => resolve());
+    chrome.once("error", () => resolve());
+  });
   let stderr = "";
   chrome.stderr.on("data", (chunk) => {
     stderr += chunk.toString();
@@ -1224,7 +1519,10 @@ async function runAudit(config) {
         }
       });
     });
-    const version = await waitForJson(`http://127.0.0.1:${debugPort}/json/version`, 10000);
+    const version = await waitForJson(`http://127.0.0.1:${debugPort}/json/version`, Math.max(config.waitTimeoutMs, 30000), {
+      process: chrome,
+      stderrText: stderr,
+    });
     const cdp = new CdpConnection(version.webSocketDebuggerUrl);
     await cdp.open();
     try {
@@ -1284,9 +1582,10 @@ async function runAudit(config) {
       await cdp.close().catch(() => {});
     }
   } finally {
-    if (chrome.pid) {
+    if (chrome.pid && chrome.exitCode === null) {
       chrome.kill("SIGKILL");
     }
+    await Promise.race([chromeClosed, delay(1500)]);
     await fs.rm(tempRoot, { recursive: true, force: true }).catch(() => {});
   }
 }
