@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 
-import { spawn } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
+import { existsSync } from "node:fs";
 import fs from "node:fs/promises";
 import net from "node:net";
 import os from "node:os";
@@ -141,14 +142,100 @@ async function waitForJson(url, timeoutMs) {
   throw lastError || new Error(`Timed out waiting for ${url}`);
 }
 
+function resolveCommandPath(command) {
+  const normalized = String(command || "").trim();
+  if (!normalized) {
+    return "";
+  }
+  const locator = process.platform === "win32" ? "where.exe" : "which";
+  try {
+    const result = spawnSync(locator, [normalized], { encoding: "utf8" });
+    if (result.status !== 0) {
+      return "";
+    }
+    return (
+      String(result.stdout || "")
+        .split(/\r?\n/)
+        .map((entry) => entry.trim())
+        .find(Boolean) || ""
+    );
+  } catch {
+    return "";
+  }
+}
+
+function resolveBrowserCandidate(candidate) {
+  const normalized = String(candidate || "").trim();
+  if (!normalized) {
+    return "";
+  }
+  if (path.isAbsolute(normalized) || normalized.includes(path.sep) || normalized.includes("/")) {
+    return existsSync(normalized) ? normalized : "";
+  }
+  return resolveCommandPath(normalized);
+}
+
+function platformChromeCandidates() {
+  if (process.platform === "darwin") {
+    return [
+      "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
+      "/Applications/Google Chrome for Testing.app/Contents/MacOS/Google Chrome for Testing",
+      "/Applications/Chromium.app/Contents/MacOS/Chromium",
+      "/Applications/Microsoft Edge.app/Contents/MacOS/Microsoft Edge",
+    ];
+  }
+  if (process.platform === "win32") {
+    const programFiles = process.env.PROGRAMFILES || "C:\\Program Files";
+    const programFilesX86 = process.env["PROGRAMFILES(X86)"] || "C:\\Program Files (x86)";
+    const localAppData = process.env.LOCALAPPDATA || "";
+    return [
+      path.join(programFiles, "Google", "Chrome", "Application", "chrome.exe"),
+      path.join(programFilesX86, "Google", "Chrome", "Application", "chrome.exe"),
+      path.join(programFiles, "Microsoft", "Edge", "Application", "msedge.exe"),
+      path.join(programFilesX86, "Microsoft", "Edge", "Application", "msedge.exe"),
+      localAppData ? path.join(localAppData, "Google", "Chrome", "Application", "chrome.exe") : "",
+    ].filter(Boolean);
+  }
+  return [
+    "/usr/bin/google-chrome",
+    "/usr/bin/google-chrome-stable",
+    "/usr/bin/chromium-browser",
+    "/usr/bin/chromium",
+    "/usr/bin/microsoft-edge",
+    "/usr/bin/microsoft-edge-stable",
+    "/opt/google/chrome/chrome",
+  ];
+}
+
+function pathChromeCandidates() {
+  if (process.platform === "win32") {
+    return ["chrome", "chrome.exe", "msedge", "msedge.exe"];
+  }
+  return [
+    "google-chrome",
+    "google-chrome-stable",
+    "chromium-browser",
+    "chromium",
+    "microsoft-edge",
+    "microsoft-edge-stable",
+  ];
+}
+
 function defaultChromePath() {
   const candidates = [
     process.env.CHROME_BINARY,
-    "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
-    "/Applications/Chromium.app/Contents/MacOS/Chromium",
-    "/Applications/Microsoft Edge.app/Contents/MacOS/Microsoft Edge",
-  ].filter(Boolean);
-  return candidates[0] || "";
+    process.env.CHROMIUM_BINARY,
+    process.env.BROWSER_BINARY,
+    ...platformChromeCandidates(),
+    ...pathChromeCandidates(),
+  ];
+  for (const candidate of candidates) {
+    const resolved = resolveBrowserCandidate(candidate);
+    if (resolved) {
+      return resolved;
+    }
+  }
+  return "";
 }
 
 async function loadRuleCatalog() {
@@ -1125,6 +1212,18 @@ async function runAudit(config) {
     stderr += chunk.toString();
   });
   try {
+    await new Promise((resolve, reject) => {
+      let settled = false;
+      chrome.once("spawn", () => {
+        settled = true;
+        resolve();
+      });
+      chrome.once("error", (error) => {
+        if (!settled) {
+          reject(error);
+        }
+      });
+    });
     const version = await waitForJson(`http://127.0.0.1:${debugPort}/json/version`, 10000);
     const cdp = new CdpConnection(version.webSocketDebuggerUrl);
     await cdp.open();
@@ -1185,7 +1284,9 @@ async function runAudit(config) {
       await cdp.close().catch(() => {});
     }
   } finally {
-    chrome.kill("SIGKILL");
+    if (chrome.pid) {
+      chrome.kill("SIGKILL");
+    }
     await fs.rm(tempRoot, { recursive: true, force: true }).catch(() => {});
   }
 }

@@ -584,7 +584,7 @@ def _read_first_paths(text: str, base_dir: Path, root: Path) -> list[str]:
             raw_path = stripped[3:-1]
             resolved = (base_dir / raw_path).resolve()
             try:
-                results.append(str(resolved.relative_to(root)))
+                results.append(resolved.relative_to(root).as_posix())
             except ValueError:
                 continue
     return sorted(dict.fromkeys(results))
@@ -688,7 +688,7 @@ def _build_skill_entries(root: Path) -> list[dict[str, Any]]:
                 kind="skill",
                 title=title or skill_id.replace("-", " ").title(),
                 summary=frontmatter.get("description") or summary_line,
-                path=str(skill_path.relative_to(root)),
+                path=skill_path.relative_to(root).as_posix(),
                 tags=[skill_id, *skill_id.split("-"), *(overrides.get("tags") or [])],
                 triggers=[skill_id.replace("-", " "), *(overrides.get("triggers") or [])],
                 primary_surface="skill",
@@ -713,7 +713,7 @@ def _build_reference_entries(root: Path) -> list[dict[str, Any]]:
                 kind="reference",
                 title=title or reference_path.stem.replace("-", " ").title(),
                 summary=summary,
-                path=str(reference_path.relative_to(root)),
+                path=reference_path.relative_to(root).as_posix(),
                 tags=[reference_path.stem, *reference_path.stem.split("-"), *(overrides.get("tags") or [])],
                 triggers=[reference_path.stem.replace("-", " "), *(overrides.get("triggers") or [])],
                 primary_surface="reference",

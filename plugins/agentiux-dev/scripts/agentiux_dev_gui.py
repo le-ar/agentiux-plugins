@@ -204,16 +204,53 @@ def _find_free_port(host: str) -> int:
         return int(sock.getsockname()[1])
 
 
-def _wait_for_health(url: str, timeout_seconds: float = 5.0) -> None:
+def _tail_log(path: str | Path | None, *, lines: int = 20) -> str:
+    if not path:
+        return ""
+    try:
+        log_path = Path(path)
+        if not log_path.exists():
+            return ""
+        return "\n".join(log_path.read_text(encoding="utf-8", errors="ignore").splitlines()[-lines:])
+    except Exception:  # noqa: BLE001
+        return ""
+
+
+def _wait_for_health(
+    url: str,
+    timeout_seconds: float = 20.0,
+    *,
+    process: Any | None = None,
+    log_path: str | Path | None = None,
+    error_log_path: str | Path | None = None,
+) -> None:
     deadline = time.time() + timeout_seconds
+    last_error: Exception | None = None
     while time.time() < deadline:
         try:
-            with urllib.request.urlopen(f"{url}/health", timeout=0.5) as response:
+            with urllib.request.urlopen(f"{url}/health", timeout=1.0) as response:
                 if response.status == 200:
                     return
-        except Exception:  # noqa: BLE001
-            time.sleep(0.1)
-    raise RuntimeError(f"GUI did not become ready at {url}")
+        except Exception as exc:  # noqa: BLE001
+            last_error = exc
+            if process is not None and callable(getattr(process, "poll", None)) and process.poll() is not None:
+                break
+            time.sleep(0.15)
+    details: list[str] = []
+    if process is not None and callable(getattr(process, "poll", None)) and process.poll() is not None:
+        details.append(f"process exited with code {process.returncode}")
+    if last_error is not None:
+        details.append(f"last health error: {last_error}")
+    stdout_tail = _tail_log(log_path)
+    stderr_tail = _tail_log(error_log_path)
+    if stdout_tail:
+        details.append(f"stdout tail:\n{stdout_tail}")
+    if stderr_tail:
+        details.append(f"stderr tail:\n{stderr_tail}")
+    message = f"GUI did not become ready at {url}"
+    if details:
+        message += "\n" + "\n".join(details)
+    raise RuntimeError(message)
 
 
 def _stop_unlocked(payload: dict[str, Any]) -> dict[str, Any]:
@@ -295,7 +332,12 @@ def launch(host: str, port: int | None, workspace: str | None, *, force_restart:
             start_new_session=True,
         )
 
-        _wait_for_health(url)
+        _wait_for_health(
+            url,
+            process=process,
+            log_path=log_path,
+            error_log_path=error_log_path,
+        )
         payload = _runtime_payload(
             "running",
             pid=process.pid,
