@@ -1,0 +1,10 @@
+{
+  "name": "@bench/storefront",
+  "private": true,
+  "scripts": {
+    "test:checkout": "playwright test ../../tests/storefront-checkout.spec.ts --config ../../playwright.config.ts"
+  },
+  "dependencies": {
+    "@bench/checkout-cta": "workspace:*"
+  }
+}

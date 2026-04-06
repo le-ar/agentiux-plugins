@@ -1,7 +1,7 @@
 {
   "name": "agentiux-dev",
   "version": "0.8.0",
-  "description": "Home-local Codex development workflow plugin with external workspace state, dynamic planning, task and workstream routing, self-hosted plugin support, repository audits, deterministic verification, Android logcat capture, and safe local Git execution.",
+  "description": "Home-local Codex development workflow plugin with first-pass repository triage, external workspace state, dynamic planning, task and workstream routing, self-hosted plugin support, repository audits, deterministic verification, Android logcat capture, and safe local Git execution.",
   "author": {
     "name": "le-ar",
     "url": "https://github.com/le-ar"
@@ -24,6 +24,10 @@
     "nx",
     "docker",
     "verification",
+    "triage",
+    "owner-files",
+    "command-discovery",
+    "symptom-triage",
     "logcat",
     "git",
     "mcp",
@@ -34,8 +38,8 @@
   "mcpServers": "./.mcp.json",
   "interface": {
     "displayName": "AgentiUX Dev",
-    "shortDescription": "Home-local workflow kernel with external workstreams, tasks, design boards, and deterministic checks",
-    "longDescription": "Use AgentiUX Dev to initialize external workspace state, keep Codex-specific workflow infrastructure outside project repositories, manage named workstreams and lightweight tasks, audit existing repositories, create curated greenfield starters, persist design briefs and handoffs, drive deterministic verification across web, mobile, backend, and plugin-runtime surfaces, and manage release-readiness checks and the local dashboard from the same plugin.",
+    "shortDescription": "First-pass repo triage, external workflow state, and deterministic verification for Codex",
+    "longDescription": "Use AgentiUX Dev to resolve the smallest owner files, exact package-level commands, and do-not-scan guidance before broad repository exploration, initialize external workspace state, keep Codex-specific workflow infrastructure outside project repositories, manage named workstreams and lightweight tasks, audit existing repositories, create curated greenfield starters, persist design briefs and handoffs, drive deterministic verification across web, mobile, backend, and plugin-runtime surfaces, and manage release-readiness checks and the local dashboard from the same plugin.",
     "developerName": "le-ar",
     "category": "Coding",
     "capabilities": [
@@ -47,6 +51,7 @@
     "privacyPolicyURL": "https://docs.github.com/en/site-policy/privacy-policies/github-general-privacy-statement",
     "termsOfServiceURL": "https://docs.github.com/en/site-policy/github-terms/github-terms-of-service",
     "defaultPrompt": [
+      "For existing repository questions about owner files, symptom triage, or minimal verification commands, call `triage_repo_request` before broad `rg --files`, `find`, or manual tree scans",
       "Inspect this repository first, and if it is not initialized in AgentiUX Dev state, propose initialization and show the generated paths before writing anything",
       "Collect a design brief and 3 to 5 references for this web or Expo surface, then persist the board outside the repository",
       "If this is greenfield work, propose the best starter preset before scaffolding; if it is existing work, choose task or workstream mode automatically",

@@ -11,10 +11,24 @@ from agentiux_dev_text import match_keywords, normalize_command_phrase
 SURFACE_PAYLOAD_CEILINGS = {
     "workflow_advice": 12 * 1024,
     "show_intent_route": 12 * 1024,
+    "show_capability_catalog": 16 * 1024,
+    "triage_repo_request": 20 * 1024,
+    "show_runtime_preflight": 20 * 1024,
     "search_context_index": 24 * 1024,
     "show_context_structure": 24 * 1024,
     "show_workspace_context_pack": 32 * 1024,
     "run_analysis_audit": 40 * 1024,
+}
+
+SURFACE_WORKING_BUDGETS = {
+    "show_intent_route": 10 * 1024,
+    "show_capability_catalog": 16 * 1024,
+    "triage_repo_request": 12 * 1024,
+    "show_runtime_preflight": 12 * 1024,
+    "search_context_index": 20 * 1024,
+    "show_workspace_context_pack": 12 * 1024,
+    "show_context_structure": 18 * 1024,
+    "run_analysis_audit": 14 * 1024,
 }
 
 RETRIEVAL_MODE_PROFILES = {
@@ -100,6 +114,22 @@ AUDIT_RETRIEVAL_HINTS = [
 
 def payload_size_bytes(payload: Any) -> int:
     return len(json.dumps(payload, ensure_ascii=False, sort_keys=True).encode("utf-8"))
+
+
+def surface_budget_result(surface_name: str, payload_stats: dict[str, Any] | None) -> dict[str, Any]:
+    actual_bytes = int((payload_stats or {}).get("bytes") or 0)
+    ceiling_bytes = int((payload_stats or {}).get("ceiling_bytes") or SURFACE_PAYLOAD_CEILINGS[surface_name])
+    working_budget_bytes = int(SURFACE_WORKING_BUDGETS.get(surface_name, ceiling_bytes))
+    return {
+        "surface": surface_name,
+        "bytes": actual_bytes,
+        "budget_bytes": working_budget_bytes,
+        "ceiling_bytes": ceiling_bytes,
+        "within_budget": actual_bytes <= working_budget_bytes,
+        "within_ceiling": actual_bytes <= ceiling_bytes,
+        "over_budget_bytes": max(actual_bytes - working_budget_bytes, 0),
+        "over_ceiling_bytes": max(actual_bytes - ceiling_bytes, 0),
+    }
 
 
 def retrieval_mode_profile(mode: str | None) -> dict[str, Any]:

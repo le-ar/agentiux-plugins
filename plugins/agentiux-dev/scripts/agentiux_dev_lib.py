@@ -136,6 +136,36 @@ DISCOVERY_EXCLUDED_DIRS = {
     "build",
 }
 
+REPO_MATURITY_SOURCE_SUFFIXES = {".cjs", ".go", ".js", ".jsx", ".kt", ".kts", ".mjs", ".py", ".rs", ".ts", ".tsx"}
+REPO_MATURITY_CONFIG_FILENAMES = {
+    ".mcp.json",
+    "Cargo.toml",
+    "Dockerfile",
+    "app.json",
+    "app.config.js",
+    "app.config.json",
+    "app.config.ts",
+    "build.gradle",
+    "compose.yaml",
+    "compose.yml",
+    "docker-compose.yaml",
+    "docker-compose.yml",
+    "nest-cli.json",
+    "nx.json",
+    "package.json",
+    "plugin.json",
+    "pnpm-workspace.yaml",
+    "pyproject.toml",
+    "requirements.txt",
+    "settings.gradle",
+    "settings.gradle.kts",
+    "tailwind.config.js",
+    "tailwind.config.ts",
+    "tsconfig.base.json",
+    "tsconfig.json",
+}
+REPO_MATURITY_IGNORE_FILENAMES = {"README.md", "README", ".gitignore", ".editorconfig", ".prettierrc", ".prettierrc.json", ".prettierrc.js"}
+
 PROD_READY_BACKLOG = [
     {
         "title": "Deepen platform verification adapters",
@@ -369,7 +399,14 @@ def _tool_override_env(command: str) -> str:
     return f"AGENTIUX_DEV_TOOL_OVERRIDE_{normalized}"
 
 
+def _test_tool_overrides_enabled() -> bool:
+    value = str(os.getenv("AGENTIUX_DEV_ALLOW_TEST_OVERRIDES") or "").strip().lower()
+    return value in {"1", "true", "yes", "on"}
+
+
 def _tool_override_value(command: str) -> str | None:
+    if not _test_tool_overrides_enabled():
+        return None
     return os.getenv(_tool_override_env(command))
 
 
@@ -1638,6 +1675,65 @@ def _available_upgrade_playbooks(selected_profiles: list[str]) -> list[str]:
     return playbooks
 
 
+def _repo_maturity(workspace_path: Path) -> dict[str, Any]:
+    source_file_count = 0
+    config_file_count = 0
+    interesting_file_count = 0
+    sample_paths: list[str] = []
+    source_roots = {"app", "apps", "libs", "packages", "plugins", "services", "src"}
+    for root, dirnames, filenames in os.walk(workspace_path):
+        relative_root = Path(root).relative_to(workspace_path)
+        dirnames[:] = sorted(
+            dirname
+            for dirname in dirnames
+            if dirname not in DISCOVERY_EXCLUDED_DIRS and not dirname.startswith(".")
+        )
+        for filename in sorted(filenames):
+            relative_path = relative_root / filename
+            if any(part in DISCOVERY_EXCLUDED_DIRS for part in relative_path.parts):
+                continue
+            if filename in REPO_MATURITY_IGNORE_FILENAMES:
+                continue
+            interesting_file_count += 1
+            if len(sample_paths) < 8:
+                sample_paths.append(relative_path.as_posix())
+            if filename in REPO_MATURITY_CONFIG_FILENAMES:
+                config_file_count += 1
+            if relative_path.suffix.lower() in REPO_MATURITY_SOURCE_SUFFIXES:
+                if not set(relative_path.parts).intersection({"docs", "references"}):
+                    if relative_path.parts and relative_path.parts[0] in source_roots:
+                        source_file_count += 1
+                    elif filename in {"main.py", "main.ts", "main.tsx", "index.ts", "index.tsx", "lib.rs"}:
+                        source_file_count += 1
+            if source_file_count >= 12 and config_file_count >= 4:
+                break
+        if source_file_count >= 12 and config_file_count >= 4:
+            break
+    if interesting_file_count == 0 or (interesting_file_count <= 2 and source_file_count == 0 and config_file_count == 0):
+        mode = "empty"
+        reason = "The workspace has no meaningful project files yet."
+    elif source_file_count == 0 and config_file_count >= 1:
+        mode = "scaffold"
+        reason = "The workspace has project scaffolding and configs but no owned source yet."
+    elif source_file_count <= 2 and config_file_count >= 2 and interesting_file_count <= 6:
+        mode = "scaffold"
+        reason = "The workspace has project scaffolding and configs but only a small amount of owned source."
+    elif source_file_count == 0 and config_file_count == 0:
+        mode = "empty"
+        reason = "The workspace only has non-project files or placeholders."
+    else:
+        mode = "existing"
+        reason = "The workspace already contains substantive source and should use the existing-project workflow."
+    return {
+        "mode": mode,
+        "reason": reason,
+        "source_file_count": source_file_count,
+        "config_file_count": config_file_count,
+        "interesting_file_count": interesting_file_count,
+        "sample_paths": sample_paths,
+    }
+
+
 def detect_workspace(workspace: str | Path) -> dict[str, Any]:
     workspace_path = Path(workspace).expanduser().resolve()
     host_os = current_host_os()
@@ -1719,6 +1815,7 @@ def detect_workspace(workspace: str | Path) -> dict[str, Any]:
     local_dev_policy = _local_dev_policy(techs, selected_profiles)
     toolchain_capabilities = _toolchain_capabilities(techs, host_os=host_os)
     capability_matrix = host_capabilities(host_os)
+    repo_maturity = _repo_maturity(workspace_path)
     return {
         "workspace_path": str(workspace_path),
         "workspace_name": workspace_path.name,
@@ -1746,6 +1843,7 @@ def detect_workspace(workspace: str | Path) -> dict[str, Any]:
         },
         "planning_policy": default_planning_policy(),
         "paths": paths,
+        "repo_maturity": repo_maturity,
         "package_manager": manifest.get("packageManager"),
         "available_starters": list_starter_presets()["presets"],
         "available_upgrade_playbooks": _available_upgrade_playbooks(selected_profiles),
@@ -1760,6 +1858,7 @@ def _workflow_workspace_state_summary(payload: dict[str, Any] | None) -> dict[st
         "workspace_mode": payload.get("workspace_mode"),
         "current_workstream_id": payload.get("current_workstream_id"),
         "current_task_id": payload.get("current_task_id"),
+        "repo_maturity": payload.get("repo_maturity"),
         "detected_stacks": (payload.get("detected_stacks") or [])[:8],
         "selected_profiles": (payload.get("selected_profiles") or [])[:8],
         "support_warnings": (payload.get("support_warnings") or [])[:4],
@@ -1849,23 +1948,96 @@ def _finalize_workflow_advice_payload(payload: dict[str, Any]) -> dict[str, Any]
     return payload
 
 
-def workflow_advice(workspace: str | Path, request_text: str | None = None, auto_create: bool = False) -> dict[str, Any]:
+def _load_workflow_runtime_state(
+    workspace: str | Path,
+    paths: dict[str, str],
+    *,
+    workspace_state_payload: dict[str, Any] | None = None,
+) -> tuple[dict[str, Any] | None, dict[str, Any] | None, dict[str, Any] | None]:
+    workspace_state_payload = workspace_state_payload or _workspace_state_from_paths(paths)
+    current_workstream_payload = _current_workstream_record_from_paths(paths, workspace_state=workspace_state_payload)
+    current_task_payload = _current_task_record_from_paths(paths, workspace_state=workspace_state_payload)
+    if current_task_payload is None:
+        fallback_task_payload = current_task(workspace)
+        if fallback_task_payload is not None:
+            current_task_payload = fallback_task_payload
+            workspace_state_payload = {
+                **(workspace_state_payload or {}),
+                "current_task_id": fallback_task_payload.get("task_id"),
+                "workspace_mode": "task",
+                "updated_at": fallback_task_payload.get("updated_at") or now_iso(),
+            }
+            _persist_workspace_state(workspace, workspace_state_payload, paths=paths)
+    return workspace_state_payload, current_workstream_payload, current_task_payload
+
+
+def workflow_advice(
+    workspace: str | Path,
+    request_text: str | None = None,
+    auto_create: bool = False,
+    canonical_request_text: str | None = None,
+) -> dict[str, Any]:
     detection = detect_workspace(workspace)
     paths = detection["paths"]
+    repo_maturity = detection.get("repo_maturity") or {"mode": "existing"}
     initialized = _workspace_initialized(paths)
-    analysis = _analyze_request_text(request_text)
-    retrieval_mode = infer_retrieval_mode(request_text, execution_intent=analysis["execution_intent"])
-    starter = _recommend_starter_preset(request_text) if analysis["request_kind"] == "greenfield" else None
+    initially_initialized = initialized
+    analysis = _analyze_request_text(request_text, canonical_request_text=canonical_request_text)
+    analysis_text = analysis.get("analysis_text") or request_text
+    retrieval_mode = infer_retrieval_mode(analysis_text, execution_intent=analysis["execution_intent"])
+    starter = _recommend_starter_preset(analysis_text) if analysis["request_kind"] == "greenfield" else None
     current_workstream_payload = None
     current_task_payload = None
     workspace_state_payload = None
     track_recommendation: dict[str, Any] | None = None
-    applied_action: dict[str, Any] | None = None
+    applied_actions: list[dict[str, Any]] = []
+
+    next_actions: list[str] = []
+    initialization_advice: dict[str, Any] | None = None
+    if not initialized:
+        preview = _preview_workspace_init_from_detection(detection)
+        repo_mode = (preview.get("repo_maturity") or {}).get("mode")
+        if repo_mode == "empty":
+            reason = "This workspace looks empty. Propose a starter first for greenfield work, or initialize the workspace if you want planning state before real source exists."
+        elif repo_mode == "scaffold":
+            reason = "This workspace looks scaffold-only. Initialization is supported, and the next step is setup or verification planning rather than upgrade-first hardening."
+        else:
+            reason = "This repository is not initialized in external AgentiUX Dev state yet."
+        initialization_advice = {
+            "should_propose": True,
+            "requires_confirmation": True,
+            "reason": reason,
+            "preview": preview,
+        }
+        if auto_create and not starter and repo_mode in {"existing", "scaffold"}:
+            init_result = init_workspace(workspace)
+            initialized = True
+            workspace_state_payload = init_result["workspace_state"]
+            applied_actions.append(
+                {
+                    "action": "initialize_workspace",
+                    "mode": "workspace",
+                    "reason": f"Auto-create initialized the {repo_mode} workspace before execution routing.",
+                    "workspace_path": detection["workspace_path"],
+                }
+            )
+            initialization_advice["auto_applied"] = True
+            initialization_advice["requires_confirmation"] = False
+        if initialization_advice.get("auto_applied"):
+            next_actions.append("Workspace initialization was applied automatically because the repository already looked safe to initialize.")
+        elif repo_mode == "empty":
+            next_actions.append("If this is a new project, propose a starter before initializing workspace state.")
+        elif repo_mode == "scaffold":
+            next_actions.append("Propose workspace initialization with scaffold-first setup and verification follow-up steps.")
+        else:
+            next_actions.append("Propose workspace initialization before any stateful work starts.")
 
     if initialized:
-        workspace_state_payload = _workspace_state_from_paths(paths)
-        current_workstream_payload = _current_workstream_record_from_paths(paths, workspace_state=workspace_state_payload)
-        current_task_payload = _current_task_record_from_paths(paths, workspace_state=workspace_state_payload)
+        workspace_state_payload, current_workstream_payload, current_task_payload = _load_workflow_runtime_state(
+            workspace,
+            paths,
+            workspace_state_payload=workspace_state_payload,
+        )
 
     if analysis["recommended_mode"] == "workstream":
         should_create = current_workstream_payload is None
@@ -1875,8 +2047,8 @@ def workflow_advice(workspace: str | Path, request_text: str | None = None, auto
             "should_create": should_create,
             "requires_confirmation": True,
             "reason": analysis["reason"],
-            "title": _suggested_title_from_request(request_text, "New Workstream"),
-            "scope_summary": _suggested_objective_from_request(request_text),
+            "title": _suggested_title_from_request(analysis_text, "New Workstream"),
+            "scope_summary": _suggested_objective_from_request(analysis_text),
             "reuse_current_workstream_id": current_workstream_payload.get("workstream_id") if current_workstream_payload and not should_create else None,
         }
     elif analysis["recommended_mode"] == "task":
@@ -1887,12 +2059,12 @@ def workflow_advice(workspace: str | Path, request_text: str | None = None, auto
             "should_create": should_create,
             "requires_confirmation": True,
             "reason": analysis["reason"],
-            "title": _suggested_title_from_request(request_text, "Targeted Task"),
-            "objective": _suggested_objective_from_request(request_text),
+            "title": _suggested_title_from_request(analysis_text, "Targeted Task"),
+            "objective": _suggested_objective_from_request(analysis_text),
             "linked_workstream_id": current_workstream_payload.get("workstream_id") if current_workstream_payload else None,
             "reuse_current_task_id": current_task_payload.get("task_id") if current_task_payload and not should_create else None,
         }
-        if initialized and analysis["request_kind"] == "point_task":
+        if auto_create and initialized and analysis["request_kind"] == "point_task":
             if should_create:
                 created_task = create_task(
                     workspace,
@@ -1909,50 +2081,47 @@ def workflow_advice(workspace: str | Path, request_text: str | None = None, auto
                     "workspace_mode": "task",
                     "updated_at": current_task_payload.get("updated_at"),
                 }
-                applied_action = {
-                    "action": "create_task",
-                    "mode": "task",
-                    "reason": analysis["reason"],
-                    "task_id": created_task["created_task_id"],
-                    "linked_workstream_id": track_recommendation.get("linked_workstream_id"),
-                }
+                applied_actions.append(
+                    {
+                        "action": "create_task",
+                        "mode": "task",
+                        "reason": analysis["reason"],
+                        "task_id": created_task["created_task_id"],
+                        "linked_workstream_id": track_recommendation.get("linked_workstream_id"),
+                    }
+                )
             elif current_task_payload is not None:
-                applied_action = {
-                    "action": "reuse_current_task",
-                    "mode": "task",
-                    "reason": analysis["reason"],
-                    "task_id": current_task_payload["task_id"],
-                    "linked_workstream_id": current_task_payload.get("linked_workstream_id"),
-                }
-            track_recommendation["auto_applied"] = applied_action is not None
+                applied_actions.append(
+                    {
+                        "action": "reuse_current_task",
+                        "mode": "task",
+                        "reason": analysis["reason"],
+                        "task_id": current_task_payload["task_id"],
+                        "linked_workstream_id": current_task_payload.get("linked_workstream_id"),
+                    }
+                )
+            track_recommendation["auto_applied"] = bool(applied_actions)
             track_recommendation["requires_confirmation"] = False
 
-    next_actions: list[str] = []
-    initialization_advice: dict[str, Any] | None = None
-    if not initialized:
-        preview = preview_workspace_init(workspace)
-        initialization_advice = {
-            "should_propose": True,
-            "requires_confirmation": True,
-            "reason": "This repository is not initialized in external AgentiUX Dev state yet.",
-            "preview": preview,
-        }
-        next_actions.append("Propose workspace initialization before any stateful work starts.")
     if starter:
         next_actions.append(f"Propose starter preset `{starter['recommended_preset_id']}` and wait for confirmation before bootstrapping the new project.")
     if track_recommendation and initialized:
-        if track_recommendation.get("auto_applied") and applied_action:
-            next_actions.append(f"Continue in task mode using `{applied_action['task_id']}` for this focused request.")
+        if track_recommendation.get("auto_applied") and applied_actions:
+            final_action = applied_actions[-1]
+            if final_action.get("task_id"):
+                next_actions.append(f"Continue in task mode using `{final_action['task_id']}` for this focused request.")
         else:
             next_actions.append(f"Propose {track_recommendation['recommended_mode']} mode for this request and wait for explicit confirmation before writing state.")
     if analysis["request_kind"] == "commit":
         next_actions.append("Inspect existing commit history or commitlint-style rules before writing a commit message.")
 
+    applied_action = applied_actions[-1] if applied_actions else None
     return _finalize_workflow_advice_payload(
         {
         "workspace_path": detection["workspace_path"],
         "workspace_label": detection["workspace_label"],
         "workspace_initialized": initialized,
+        "repo_maturity": repo_maturity,
         "request_analysis": analysis,
         "retrieval": retrieval_policy_payload("workflow_advice", retrieval_mode),
         "initialization_advice": initialization_advice,
@@ -1963,8 +2132,20 @@ def workflow_advice(workspace: str | Path, request_text: str | None = None, auto
         "current_task": _workflow_task_summary(workspace, current_task_payload),
         "language_policy": language_policy(),
         "applied_action": applied_action,
-        "requires_confirmation": bool(initialization_advice or starter or (track_recommendation and not track_recommendation.get("auto_applied"))),
-        "auto_create_supported": bool(initialized and analysis["request_kind"] == "point_task"),
+        "applied_actions": applied_actions,
+        "requires_confirmation": bool(
+            (initialization_advice and not initialization_advice.get("auto_applied"))
+            or starter
+            or (track_recommendation and not track_recommendation.get("auto_applied"))
+        ),
+        "auto_create_supported": bool(
+            ((initialized or initially_initialized) and analysis["request_kind"] == "point_task")
+            or (
+                not initially_initialized
+                and not starter
+                and repo_maturity.get("mode") in {"existing", "scaffold"}
+            )
+        ),
         "next_actions": next_actions,
         }
     )
@@ -3909,12 +4090,191 @@ def _write_registry_entry(workspace: str | Path, workspace_state: dict[str, Any]
     _write_json(_registry_path(), registry)
 
 
+def _workspace_context_cache_root(workspace: str | Path) -> Path:
+    workspace_path = Path(workspace).expanduser().resolve()
+    return state_root() / "cache" / "context" / f"{slugify(workspace_path.name)}--{workspace_hash(workspace_path)}"
+
+
+def _workspace_learning_entry_summary(entry: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "entry_id": entry.get("entry_id"),
+        "kind": entry.get("kind"),
+        "status": entry.get("status"),
+        "workspace_path": entry.get("workspace_path"),
+        "workspace_hash": entry.get("workspace_hash"),
+        "workstream_id": entry.get("workstream_id"),
+        "task_id": entry.get("task_id"),
+        "run_id": entry.get("run_id"),
+        "external_issue": copy.deepcopy(entry.get("external_issue")),
+        "symptom": entry.get("symptom"),
+        "source": entry.get("source"),
+        "updated_at": entry.get("updated_at"),
+        "created_at": entry.get("created_at"),
+    }
+
+
+def _default_analytics_index_payload() -> dict[str, Any]:
+    return {
+        "schema_version": 1,
+        "event_counts": {
+            "total": 0,
+            "by_type": {},
+            "by_workspace": {},
+        },
+        "learning_entries": [],
+        "updated_at": now_iso(),
+    }
+
+
+def _rebuild_analytics_index(*, persist: bool = True) -> dict[str, Any]:
+    analytics_root = state_root() / "analytics"
+    events_root = analytics_root / "events"
+    learnings_dir = analytics_root / "learnings"
+    index = _default_analytics_index_payload()
+    if events_root.exists():
+        for event_path in sorted(events_root.glob("*/*.jsonl")):
+            try:
+                with event_path.open(encoding="utf-8") as handle:
+                    for raw_line in handle:
+                        line = raw_line.strip()
+                        if not line:
+                            continue
+                        try:
+                            payload = json.loads(line)
+                        except json.JSONDecodeError:
+                            continue
+                        event_type = str(payload.get("event_type") or "").strip()
+                        workspace_hash_value = str(payload.get("workspace_hash") or "").strip()
+                        index["event_counts"]["total"] += 1
+                        if event_type:
+                            index["event_counts"]["by_type"][event_type] = int(
+                                index["event_counts"]["by_type"].get(event_type) or 0
+                            ) + 1
+                        if workspace_hash_value:
+                            index["event_counts"]["by_workspace"][workspace_hash_value] = int(
+                                index["event_counts"]["by_workspace"].get(workspace_hash_value) or 0
+                            ) + 1
+            except OSError:
+                continue
+    learning_entries: list[dict[str, Any]] = []
+    if learnings_dir.exists():
+        for candidate in sorted(learnings_dir.glob("*.json")):
+            payload = _load_json(candidate, default=None, strict=False)
+            if isinstance(payload, dict) and payload.get("entry_id"):
+                learning_entries.append(_workspace_learning_entry_summary(payload))
+    learning_entries.sort(
+        key=lambda item: (item.get("status") != "open", item.get("updated_at") or "", item.get("entry_id") or ""),
+        reverse=False,
+    )
+    index["learning_entries"] = learning_entries
+    if persist:
+        analytics_root.mkdir(parents=True, exist_ok=True)
+        _write_json(analytics_root / "index.json", index)
+    return index
+
+
+def _remove_workspace_analytics_records(workspace: str | Path) -> dict[str, Any]:
+    workspace_path = str(Path(workspace).expanduser().resolve())
+    workspace_hash_value = workspace_hash(Path(workspace_path))
+    analytics_root = state_root() / "analytics"
+    events_root = analytics_root / "events"
+    learnings_dir = analytics_root / "learnings"
+    removed_event_paths: list[str] = []
+    removed_learning_paths: list[str] = []
+
+    if not analytics_root.exists():
+        return {
+            "workspace_path": workspace_path,
+            "workspace_hash": workspace_hash_value,
+            "removed_event_paths": removed_event_paths,
+            "removed_learning_paths": removed_learning_paths,
+            "analytics_index_path": str(analytics_root / "index.json"),
+            "analytics_index": _default_analytics_index_payload(),
+        }
+
+    if events_root.exists():
+        for event_path in sorted(events_root.glob(f"*/*{workspace_hash_value}.jsonl")):
+            if event_path.name != f"{workspace_hash_value}.jsonl":
+                continue
+            removed_event_paths.append(str(event_path))
+            event_path.unlink(missing_ok=True)
+        for month_dir in sorted(events_root.glob("*")):
+            if month_dir.is_dir() and not any(month_dir.iterdir()):
+                month_dir.rmdir()
+
+    if learnings_dir.exists():
+        for candidate in sorted(learnings_dir.glob("*.json")):
+            payload = _load_json(candidate, default=None, strict=False)
+            if not isinstance(payload, dict):
+                continue
+            if payload.get("workspace_path") != workspace_path and payload.get("workspace_hash") != workspace_hash_value:
+                continue
+            removed_learning_paths.append(str(candidate))
+            candidate.unlink(missing_ok=True)
+
+    rebuilt_index = _rebuild_analytics_index()
+    return {
+        "workspace_path": workspace_path,
+        "workspace_hash": workspace_hash_value,
+        "removed_event_paths": removed_event_paths,
+        "removed_learning_paths": removed_learning_paths,
+        "analytics_index_path": str(analytics_root / "index.json"),
+        "analytics_index": rebuilt_index,
+    }
+
+
+def _preview_workspace_analytics_cleanup(workspace: str | Path) -> dict[str, Any]:
+    workspace_path = str(Path(workspace).expanduser().resolve())
+    workspace_hash_value = workspace_hash(Path(workspace_path))
+    event_paths = [
+        str(path)
+        for path in sorted((state_root() / "analytics" / "events").glob(f"*/{workspace_hash_value}.jsonl"))
+    ]
+    learning_paths = []
+    for candidate in sorted((state_root() / "analytics" / "learnings").glob("*.json")):
+        payload = _load_json(candidate, default=None, strict=False)
+        if not isinstance(payload, dict):
+            continue
+        if payload.get("workspace_path") != workspace_path and payload.get("workspace_hash") != workspace_hash_value:
+            continue
+        learning_paths.append(str(candidate))
+    return {
+        "workspace_path": workspace_path,
+        "workspace_hash": workspace_hash_value,
+        "event_paths": event_paths,
+        "learning_paths": learning_paths,
+    }
+
+
+def _clear_gui_default_workspace(workspace: str | Path) -> dict[str, Any]:
+    workspace_path = str(Path(workspace).expanduser().resolve())
+    payload = read_gui_runtime()
+    if payload.get("default_workspace") != workspace_path:
+        return {
+            "workspace_path": workspace_path,
+            "default_workspace_cleared": False,
+            "runtime_path": str(gui_runtime_path()),
+        }
+    updated = copy.deepcopy(payload)
+    updated["default_workspace"] = None
+    updated["updated_at"] = now_iso()
+    _write_json(gui_runtime_path(), updated)
+    return {
+        "workspace_path": workspace_path,
+        "default_workspace_cleared": True,
+        "runtime_path": str(gui_runtime_path()),
+    }
+
+
 def preview_reset_workspace_state(workspace: str | Path) -> dict[str, Any]:
     detection = detect_workspace(workspace)
     paths = detection["paths"]
     registry = _load_registry()
     key = _workspace_key(detection)
     workspace_root = Path(paths["workspace_root"])
+    context_cache_root = _workspace_context_cache_root(workspace)
+    analytics_cleanup = _preview_workspace_analytics_cleanup(workspace)
+    gui_payload = read_gui_runtime()
     return {
         "workspace_path": detection["workspace_path"],
         "workspace_label": detection["workspace_label"],
@@ -3922,9 +4282,21 @@ def preview_reset_workspace_state(workspace: str | Path) -> dict[str, Any]:
         "registry_key": key,
         "workspace_root_exists": workspace_root.exists(),
         "registry_entry_exists": key in registry.get("workspaces", {}),
+        "context_cache_root": str(context_cache_root),
+        "context_cache_exists": context_cache_root.exists(),
+        "analytics_cleanup": {
+            "workspace_hash": analytics_cleanup["workspace_hash"],
+            "event_paths": analytics_cleanup["event_paths"],
+            "learning_paths": analytics_cleanup["learning_paths"],
+        },
+        "gui_runtime_path": str(gui_runtime_path()),
+        "gui_default_workspace_matches": gui_payload.get("default_workspace") == detection["workspace_path"],
         "will_remove": [
             str(workspace_root),
             f"{paths['registry']}::{key}",
+            str(context_cache_root),
+            *analytics_cleanup["event_paths"],
+            *analytics_cleanup["learning_paths"],
         ],
         "must_confirm_before_write": True,
     }
@@ -3933,22 +4305,31 @@ def preview_reset_workspace_state(workspace: str | Path) -> dict[str, Any]:
 def reset_workspace_state(workspace: str | Path) -> dict[str, Any]:
     preview = preview_reset_workspace_state(workspace)
     workspace_root = Path(preview["paths"]["workspace_root"])
+    context_cache_root = Path(preview["context_cache_root"])
     removed_workspace_root = workspace_root.exists()
     if removed_workspace_root:
         shutil.rmtree(workspace_root)
+    removed_context_cache_root = context_cache_root.exists()
+    if removed_context_cache_root:
+        shutil.rmtree(context_cache_root)
     registry = _load_registry()
     removed_registry_entry = registry.get("workspaces", {}).pop(preview["registry_key"], None) is not None
     registry["updated_at"] = now_iso()
     _write_json(_registry_path(), registry)
+    analytics_cleanup = _remove_workspace_analytics_records(workspace)
+    gui_cleanup = _clear_gui_default_workspace(workspace)
     return {
         **preview,
         "removed_workspace_root": removed_workspace_root,
+        "removed_context_cache_root": removed_context_cache_root,
         "removed_registry_entry": removed_registry_entry,
+        "analytics_cleanup": analytics_cleanup,
+        "gui_cleanup": gui_cleanup,
+        "post_reset_preview": preview_workspace_init(workspace),
     }
 
 
-def preview_workspace_init(workspace: str | Path) -> dict[str, Any]:
-    detection = detect_workspace(workspace)
+def _preview_workspace_init_from_detection(detection: dict[str, Any]) -> dict[str, Any]:
     paths = detection["paths"]
     workspace_root_exists = Path(paths["workspace_root"]).exists()
     workspace_state_exists = Path(paths["workspace_state"]).exists()
@@ -3956,6 +4337,7 @@ def preview_workspace_init(workspace: str | Path) -> dict[str, Any]:
         "workspace_path": detection["workspace_path"],
         "workspace_label": detection["workspace_label"],
         "host_os": detection["host_os"],
+        "repo_maturity": detection["repo_maturity"],
         "detected_stacks": detection["detected_stacks"],
         "selected_profiles": detection["selected_profiles"],
         "plugin_platform": detection["plugin_platform"],
@@ -3978,6 +4360,11 @@ def preview_workspace_init(workspace: str | Path) -> dict[str, Any]:
         ],
         "must_confirm_before_write": True,
     }
+
+
+def preview_workspace_init(workspace: str | Path) -> dict[str, Any]:
+    detection = detect_workspace(workspace)
+    return _preview_workspace_init_from_detection(detection)
 
 
 def build_stage_register(
@@ -4237,6 +4624,7 @@ def _migrate_legacy_workspace(workspace: str | Path) -> None:
         "host_capabilities": detection["host_capabilities"],
         "toolchain_capabilities": detection["toolchain_capabilities"],
         "selected_profiles": detection["selected_profiles"],
+        "repo_maturity": detection["repo_maturity"],
         "local_dev_policy": detection["local_dev_policy"],
         "init_status": "initialized",
         "initialized_at": state.get("initialized_at") or now_iso(),
@@ -4480,13 +4868,19 @@ def init_workspace(workspace: str | Path, force: bool = False) -> dict[str, Any]
     from agentiux_dev_memory import _default_notes_index
 
     detection = detect_workspace(workspace)
-    preview = preview_workspace_init(workspace)
+    preview = _preview_workspace_init_from_detection(detection)
     paths = detection["paths"]
     workspace_root = Path(paths["workspace_root"])
     if preview["already_initialized"]:
         if force:
             raise ValueError(f"Workspace already initialized: {workspace_root}. Use reset workspace state first.")
-        raise ValueError(f"Workspace already initialized: {workspace_root}")
+        return {
+            "status": "already_initialized",
+            "workspace_state": read_workspace_state(workspace),
+            "workstreams": list_workstreams(workspace),
+            "tasks": list_tasks(workspace),
+            "paths": workspace_paths(workspace),
+        }
 
     _ensure_state_dirs(paths)
     for key in ("tasks_root", "audits_root", "upgrade_plans_root", "migrations_root"):
@@ -4512,6 +4906,7 @@ def init_workspace(workspace: str | Path, force: bool = False) -> dict[str, Any]
         "detected_stacks": detection["detected_stacks"],
         "selected_profiles": detection["selected_profiles"],
         "plugin_platform": detection["plugin_platform"],
+        "repo_maturity": detection["repo_maturity"],
         "local_dev_policy": detection["local_dev_policy"],
         "planning_policy": detection["planning_policy"],
         "support_warnings": detection["support_warnings"],

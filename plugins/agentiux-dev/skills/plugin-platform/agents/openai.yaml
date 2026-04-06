@@ -1,4 +1,4 @@
 interface:
   display_name: "Plugin Platform"
   short_description: "Handle self-hosted Codex plugin development, MCP runtime checks, and release-readiness gates"
-  default_prompt: "Use $plugin-platform to develop AgentiUX Dev itself as a Python, MCP, installer, and dashboard workspace with release-readiness guardrails."
+  default_prompt: "Use $plugin-platform to develop AgentiUX Dev itself as a Python, MCP, installer, and dashboard workspace with release-readiness guardrails, and prefer `triage_repo_request` before broad shell exploration when the next owner files or exact commands are still unclear."

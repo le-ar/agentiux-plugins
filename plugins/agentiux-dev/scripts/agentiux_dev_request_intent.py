@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 from typing import Any
 
 from agentiux_dev_text import match_keywords, normalize_command_phrase
@@ -163,6 +164,88 @@ SMALL_TASK_HINTS = [
     "small",
     "hotfix",
 ]
+
+NEGATIVE_LARGE_WORK_HINTS = [
+    "typo",
+    "spacing",
+    "padding",
+    "margin",
+    "rename",
+    "copy",
+    "lint",
+    "warning",
+    "button",
+    "minor",
+    "small",
+    "hotfix",
+]
+
+NEGATIVE_SMALL_TASK_HINTS = [
+    "from scratch",
+    "greenfield",
+    "new project",
+    "new app",
+    "migration",
+    "architecture",
+    "system",
+    "platform",
+    "multi-step",
+    "across web and backend",
+    "across frontend and backend",
+    "fullstack",
+]
+
+TRIAGE_OWNER_ONLY_HINTS = [
+    "owner file only",
+    "owner files only",
+    "owner-only",
+    "return owner files only",
+    "smallest owner file",
+    "smallest owner files",
+    "smallest set of files",
+]
+
+TRIAGE_OWNER_ROUTING_HINTS = [
+    "owner file set",
+    "owner files",
+    "owner set",
+    "route file",
+    "route files",
+    "entrypoint",
+    "entry point",
+    "shared package file",
+    "shared package files",
+]
+
+TRIAGE_SUPPRESS_COMMAND_HINTS = [
+    "candidate_commands should be empty",
+    "candidate commands should be empty",
+    "candidate commands empty",
+    "do not include commands",
+    "no commands",
+    "without commands",
+]
+
+TRIAGE_COMMAND_REQUEST_HINTS = [
+    "package-level command",
+    "package-level commands",
+    "package level command",
+    "package level commands",
+    "minimal package-level command",
+    "minimal package-level commands",
+    "verification command",
+    "verification commands",
+    "command to inspect next",
+    "commands you would use",
+]
+
+TRIAGE_EXCLUDED_FAMILY_ALIASES = {
+    "admin": ["admin", "admin checkout", "admin-console"],
+    "storefront": ["storefront", "customer storefront"],
+    "server": ["server", "backend", "readiness backend"],
+    "docs": ["docs", "documentation", "readme"],
+    "tests": ["tests", "test", "spec", "specs"],
+}
 
 AUDIT_HINTS = [
     "audit repository",
@@ -408,43 +491,84 @@ def recommend_starter_preset(request_text: str | None) -> dict[str, Any] | None:
     }
 
 
-def analyze_request_text(request_text: str | None) -> dict[str, Any]:
-    normalized = normalize_command_phrase(request_text)
+def analyze_request_text(
+    request_text: str | None,
+    *,
+    canonical_request_text: str | None = None,
+) -> dict[str, Any]:
+    analysis_text = canonical_request_text or request_text
+    normalized = normalize_command_phrase(analysis_text)
+    original_normalized = normalize_command_phrase(request_text)
     recognized_command = resolve_command_phrase(normalized) if normalized else None
     greenfield_matches = match_keywords(normalized, GREENFIELD_HINTS)
     large_matches = match_keywords(normalized, LARGE_WORK_HINTS)
     small_matches = match_keywords(normalized, SMALL_TASK_HINTS)
     audit_matches = match_keywords(normalized, AUDIT_HINTS)
     commit_matches = match_keywords(normalized, COMMIT_HINTS)
+    negative_large_matches = match_keywords(normalized, NEGATIVE_LARGE_WORK_HINTS)
+    negative_small_matches = match_keywords(normalized, NEGATIVE_SMALL_TASK_HINTS)
     execution_intent = has_execution_intent(normalized)
     word_count = len(normalized.split())
 
     request_kind = "neutral"
     recommended_mode = None
     reason = "No stage-aware routing recommendation is required yet."
+    fallback_reason = reason
 
-    if greenfield_matches:
+    greenfield_score = len(greenfield_matches) * 6
+    commit_score = len(commit_matches) * 6
+    audit_score = len(audit_matches) * 5
+    large_feature_score = (
+        len(large_matches) * 3
+        + (2 if execution_intent else 0)
+        + (2 if word_count >= 18 else 0)
+        - len(negative_large_matches) * 2
+        - len(small_matches)
+    )
+    point_task_score = (
+        len(small_matches) * 3
+        + (2 if execution_intent else 0)
+        + (2 if word_count <= 14 else 0)
+        - len(negative_small_matches) * 2
+        - len(large_matches)
+    )
+
+    if greenfield_score > 0:
         request_kind = "greenfield"
         recommended_mode = "workstream"
         reason = "Greenfield product work is better tracked through a dedicated workstream."
-    elif commit_matches:
+    elif commit_score > 0:
         request_kind = "commit"
         reason = "Commit requests should inspect repo commit history or commit rules before generating a message."
-    elif audit_matches:
+    elif audit_score > 0:
         request_kind = "repository_audit"
         reason = "Repository audits should stay read-only until an upgrade plan is explicitly approved."
-    elif large_matches or (execution_intent and word_count >= 18 and len(small_matches) <= 1):
+    elif large_feature_score >= max(point_task_score + 2, 4):
         request_kind = "large_feature"
         recommended_mode = "workstream"
         reason = "Large or multi-slice implementation work should use a named workstream."
-    elif small_matches or (execution_intent and word_count <= 14):
+    elif point_task_score >= max(large_feature_score + 2, 4):
         request_kind = "point_task"
         recommended_mode = "task"
         reason = "Narrow corrections and point fixes are cheaper to track as lightweight tasks."
+    elif execution_intent:
+        if word_count <= 14:
+            request_kind = "point_task"
+            recommended_mode = "task"
+            fallback_reason = "Execution intent with a short request defaults to the lighter-weight task flow."
+        elif word_count >= 18:
+            request_kind = "large_feature"
+            recommended_mode = "workstream"
+            fallback_reason = "Execution intent with a broader request defaults to workstream mode when heuristics are inconclusive."
+        reason = fallback_reason
 
     return {
         "request_text": request_text or "",
+        "canonical_request_text": canonical_request_text or "",
+        "analysis_text": analysis_text or "",
+        "analysis_source": "canonical_request_text" if canonical_request_text else "request_text",
         "normalized_request": normalized,
+        "original_normalized_request": original_normalized,
         "recognized_command": recognized_command,
         "execution_intent": execution_intent,
         "word_count": word_count,
@@ -457,5 +581,35 @@ def analyze_request_text(request_text: str | None) -> dict[str, Any]:
             "small_task": small_matches,
             "audit": audit_matches,
             "commit": commit_matches,
+            "negative_large_work": negative_large_matches,
+            "negative_small_task": negative_small_matches,
         },
+    }
+
+
+def parse_runtime_triage_constraints(request_text: str | None) -> dict[str, Any]:
+    normalized = normalize_command_phrase(request_text)
+    explicit_owner_only = bool(match_keywords(normalized, TRIAGE_OWNER_ONLY_HINTS))
+    owner_file_routing = bool(match_keywords(normalized, TRIAGE_OWNER_ROUTING_HINTS))
+    explicit_command_request = bool(match_keywords(normalized, TRIAGE_COMMAND_REQUEST_HINTS))
+    owner_files_only = explicit_owner_only or (owner_file_routing and not explicit_command_request)
+    suppress_commands = bool(match_keywords(normalized, TRIAGE_SUPPRESS_COMMAND_HINTS)) or bool(
+        re.search(r"candidate[_ ]commands?\s*(?:should be|=)?\s*(?:empty|\[\s*\])", normalized)
+    ) or ((explicit_owner_only or owner_file_routing) and not explicit_command_request)
+    excluded_families_unless_imported: list[str] = []
+    for family, aliases in TRIAGE_EXCLUDED_FAMILY_ALIASES.items():
+        for alias in aliases:
+            pattern = (
+                r"(?:exclude|ignore|skip|avoid)\s+"
+                + re.escape(alias)
+                + r"(?:\s+[a-z0-9/_-]+){0,2}\s+unless\b[^.]{0,120}\bimport(?:ed|s?)\b"
+            )
+            if re.search(pattern, normalized):
+                excluded_families_unless_imported.append(family)
+                break
+    return {
+        "owner_files_only": owner_files_only,
+        "suppress_commands": suppress_commands,
+        "excluded_families_unless_imported": excluded_families_unless_imported,
+        "normalized_request": normalized,
     }

@@ -19,7 +19,9 @@
         "show_capability_catalog",
         "show_context_structure",
         "show_intent_route",
-        "show_workspace_context_pack"
+        "show_runtime_preflight",
+        "show_workspace_context_pack",
+        "triage_repo_request"
       ],
       "route_id": "analysis",
       "summary": "Inspect module, symbol, doc-section, hotspot, incremental index, and optional semantic audit summaries without hydrating full artifacts.",
@@ -27,7 +29,9 @@
         "run_analysis_audit",
         "search_context_index",
         "show_context_structure",
-        "show_workspace_context_pack"
+        "show_runtime_preflight",
+        "show_workspace_context_pack",
+        "triage_repo_request"
       ],
       "tags": [
         "analysis",
@@ -147,7 +151,7 @@
       "cost_hint": "low",
       "primary_paths": [
         "README.md",
-        "references/workflow-kernel.md",
+        "references/command-surface.md",
         "skills/plugin-platform/SKILL.md"
       ],
       "recommended_skills": [
@@ -168,34 +172,52 @@
         "show_capability_catalog",
         "show_context_structure",
         "show_intent_route",
-        "show_workspace_context_pack"
+        "show_runtime_preflight",
+        "show_workspace_context_pack",
+        "triage_repo_request"
       ],
       "route_id": "plugin-dev",
-      "summary": "Orient on plugin source, auth profiles and sessions, project memory, learnings, MCP interfaces, scripts, catalogs, and self-host development surfaces.",
+      "summary": "Orient on plugin source, low-token retrieval surfaces, payload ceilings, benchmark telemetry, context-pack cache behavior, dashboard performance budgets, auth profiles and sessions, project memory, learnings, MCP interfaces, scripts, catalogs, and self-host development surfaces.",
       "summary_surfaces": [
         "get_dashboard_snapshot",
         "get_plugin_stats",
-        "show_capability_catalog"
+        "show_capability_catalog",
+        "show_runtime_preflight",
+        "triage_repo_request"
       ],
       "tags": [
         "analytics",
         "auth",
+        "benchmark",
+        "budget",
+        "cache",
         "catalog",
+        "context pack",
         "dashboard",
+        "low-token",
         "mcp",
         "memory",
+        "payload",
+        "performance",
         "plugin",
         "python",
+        "retrieval",
         "self-host",
-        "session"
+        "session",
+        "telemetry"
       ],
       "title": "Plugin Development",
       "triggers": [
         "auth profile",
         "auth session",
+        "benchmark telemetry",
         "catalog",
+        "context pack",
         "learning entry",
+        "low token",
         "mcp",
+        "payload ceiling",
+        "performance budget",
         "plugin",
         "project memory",
         "python scripts",
@@ -318,8 +340,10 @@
         "show_auth_profiles",
         "show_host_setup_plan",
         "show_host_support",
+        "show_runtime_preflight",
         "show_verification_helper_catalog",
         "sync_verification_helpers",
+        "triage_repo_request",
         "update_verification_baseline"
       ],
       "route_id": "verification",
@@ -373,7 +397,9 @@
         "list_tasks",
         "list_workstreams",
         "preview_workspace_init",
+        "show_runtime_preflight",
         "show_upgrade_plan",
+        "triage_repo_request",
         "write_stage_register"
       ],
       "route_id": "workstream",

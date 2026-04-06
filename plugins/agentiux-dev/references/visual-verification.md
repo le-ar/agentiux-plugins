@@ -58,6 +58,7 @@ Deterministic verification is the default closeout path for AgentiUX Dev.
 - The helper catalog is read-only and reports bundle version, runner entrypoints, required host tools, and current materialization status.
 - When enabled, the runner must emit a JSON report into the verification artifact root.
 - The runtime validates helper sync status, runner capability compatibility, the shared report schema, and the declared `required_checks`.
+- Contract-only semantic fixture reports may validate helper sync, shared report shape, and downstream audit contracts, but they do not replace live browser or live runner evidence.
 - Verification recipes are schema v3.
 - The semantic spec shape is `enabled`, `report_path`, `required_checks`, `targets`, `reachability_paths`, `limitation_entries`, `auto_scan`, `heuristics`, `artifacts`, and `platform_hooks`.
 - Each target uses `target_id`, `locator`, `container_locator`, `scroll_container_locator`, `interactions`, `expected_attributes`, `expected_styles`, `expected_layout`, `allow_clipping`, `allow_occlusion`, and `allow_text_truncation`.

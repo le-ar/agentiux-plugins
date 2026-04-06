@@ -35,6 +35,18 @@ def install_bin_root(destination: Path) -> Path:
     return destination / "bin"
 
 
+def codex_cache_install_root(codex_home: Path, *, provider_name: str = "local-plugins") -> Path:
+    return (codex_home / "plugins" / "cache" / provider_name / PLUGIN_NAME / "local").resolve()
+
+
+def codex_tmp_plugin_install_root(codex_home: Path) -> Path:
+    return (codex_home / ".tmp" / "plugins" / "plugins" / PLUGIN_NAME).resolve()
+
+
+def codex_tmp_marketplace_path(codex_home: Path) -> Path:
+    return (codex_home / ".tmp" / "plugins" / ".agents" / "plugins" / "marketplace.json").resolve()
+
+
 def _path_entries(path_env: str | None = None) -> list[Path]:
     entries: list[Path] = []
     for raw_entry in (path_env or os.environ.get("PATH", "")).split(os.pathsep):
@@ -189,6 +201,69 @@ def _write_installed_mcp(destination: Path) -> None:
     (destination / ".mcp.json").write_text(json.dumps(payload, indent=2) + "\n")
 
 
+def _load_plugin_manifest(source: Path) -> dict[str, Any]:
+    manifest_path = source / ".codex-plugin" / "plugin.json"
+    if not manifest_path.exists():
+        return {}
+    try:
+        payload = json.loads(manifest_path.read_text())
+    except json.JSONDecodeError:
+        return {}
+    return payload if isinstance(payload, dict) else {}
+
+
+def _marketplace_plugin_entry(source: Path) -> dict[str, Any]:
+    manifest = _load_plugin_manifest(source)
+    interface_payload = dict(manifest.get("interface") or {})
+    entry = {
+        "name": PLUGIN_NAME,
+        "source": {
+            "source": "local",
+            "path": f"./plugins/{PLUGIN_NAME}",
+        },
+        "policy": {
+            "installation": "AVAILABLE",
+            "authentication": "ON_INSTALL",
+        },
+        "category": str(interface_payload.get("category") or "Coding"),
+    }
+    description = str(manifest.get("description") or "").strip()
+    if description:
+        entry["description"] = description
+    version = str(manifest.get("version") or "").strip()
+    if version:
+        entry["version"] = version
+    keywords = [
+        str(item).strip()
+        for item in (manifest.get("keywords") or [])
+        if isinstance(item, str) and item.strip()
+    ]
+    if keywords:
+        entry["keywords"] = keywords
+    interface: dict[str, Any] = {}
+    for field in ("displayName", "shortDescription", "longDescription", "brandColor"):
+        value = str(interface_payload.get(field) or "").strip()
+        if value:
+            interface[field] = value
+    default_prompt = [
+        str(item).strip()
+        for item in (interface_payload.get("defaultPrompt") or [])
+        if isinstance(item, str) and item.strip()
+    ]
+    if default_prompt:
+        interface["defaultPrompt"] = default_prompt
+    capabilities = [
+        str(item).strip()
+        for item in (interface_payload.get("capabilities") or [])
+        if isinstance(item, str) and item.strip()
+    ]
+    if capabilities:
+        interface["capabilities"] = capabilities
+    if interface:
+        entry["interface"] = interface
+    return entry
+
+
 def _load_marketplace(path: Path) -> dict[str, Any]:
     if not path.exists():
         return {
@@ -214,20 +289,9 @@ def _normalize_marketplace_metadata(payload: dict[str, Any]) -> dict[str, Any]:
     return normalized
 
 
-def _update_marketplace(path: Path) -> dict[str, Any]:
+def _update_marketplace(path: Path, source: Path) -> dict[str, Any]:
     payload = _normalize_marketplace_metadata(_load_marketplace(path))
-    entry = {
-        "name": PLUGIN_NAME,
-        "source": {
-            "source": "local",
-            "path": f"./plugins/{PLUGIN_NAME}",
-        },
-        "policy": {
-            "installation": "AVAILABLE",
-            "authentication": "ON_INSTALL",
-        },
-        "category": "Coding",
-    }
+    entry = _marketplace_plugin_entry(source)
     plugins = [plugin for plugin in payload.get("plugins", []) if plugin.get("name") != PLUGIN_NAME]
     plugins.append(entry)
     payload["plugins"] = plugins
@@ -249,7 +313,7 @@ def install_plugin(
     _write_install_metadata(destination, source, marketplace)
     _write_installed_mcp(destination)
     launcher_payload = install_launchers(destination, bin_dir=bin_dir, install_global_command=install_global_command)
-    marketplace_payload = _update_marketplace(marketplace)
+    marketplace_payload = _update_marketplace(marketplace, source)
     return {
         "plugin_name": PLUGIN_NAME,
         "source_root": str(source.resolve()),
@@ -258,6 +322,36 @@ def install_plugin(
         "installed_at": now_iso(),
         "marketplace_plugin_count": len(marketplace_payload.get("plugins", [])),
         **launcher_payload,
+    }
+
+
+def install_plugin_into_codex_home(
+    source: Path,
+    codex_home: Path,
+    *,
+    provider_name: str = "local-plugins",
+) -> dict[str, Any]:
+    resolved_codex_home = codex_home.expanduser().resolve()
+    cache_root = codex_cache_install_root(resolved_codex_home, provider_name=provider_name)
+    stage_root = codex_tmp_plugin_install_root(resolved_codex_home)
+    marketplace = codex_tmp_marketplace_path(resolved_codex_home)
+
+    stage_result = install_plugin(
+        source,
+        stage_root,
+        marketplace,
+        install_global_command=False,
+    )
+    _copy_plugin(source, cache_root)
+    _write_install_metadata(cache_root, source, marketplace)
+    _write_installed_mcp(cache_root)
+    return {
+        **stage_result,
+        "install_root": str(cache_root),
+        "cache_install_root": str(cache_root),
+        "stage_install_root": str(stage_root),
+        "marketplace_path": str(marketplace),
+        "provider_name": provider_name,
     }
 
 

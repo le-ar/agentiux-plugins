@@ -2,6 +2,8 @@
 
 AgentiUX Dev exposes a small chat-first command surface.
 
+The primary operator UX is through Codex. Raw CLI commands are transport and debugging equivalents for the same runtime surfaces.
+
 ## Canonical Phrases
 
 - `initialize workspace`
@@ -21,6 +23,7 @@ AgentiUX Dev exposes a small chat-first command surface.
 - `show verification recipes`
 - `show capability catalog`
 - `show intent route`
+- `show runtime preflight`
 - `show workspace context pack`
 - `search context index`
 - `show context structure`
@@ -86,8 +89,12 @@ AgentiUX Dev exposes a small chat-first command surface.
 - If the workspace is not initialized, the plugin must propose initialization before creating state.
 - The initialization proposal should appear proactively when stage-aware work starts, even if the user did not explicitly ask for initialization.
 - The initialization proposal must show detected stacks plus the absolute external paths it will create.
+- `preview init`, `init workspace`, and `workflow-advice` must surface `repo_maturity` with at least `empty`, `scaffold`, and `existing` modes so empty or scaffold directories do not get treated like legacy repos.
+- `preview reset workspace state` is a read-only dry run for destructive workspace cleanup.
+- `reset workspace state` removes the workspace state slice, workspace context cache, workspace-scoped analytics slices, and the dashboard default workspace pointer when it targets that workspace.
 - The tracked source keeps canonical command phrases in English.
 - Any localized aliases must come from external or runtime-only data and are not bundled into tracked source.
+- When Codex already understands the user's wording, it may pass an English `canonicalRequestText` into workflow advice so tracked source stays English-only while routing remains accurate.
 - If the user describes work without naming `create workstream` or `create task`, the kernel should infer the right mode first.
 - `continue work` is an execution-intent trigger only after the workspace is initialized and either a current task exists or the current workstream has a confirmed stage plan.
 - `propose stage plan changes` is a planning action. It must not mutate state.
@@ -98,16 +105,19 @@ AgentiUX Dev exposes a small chat-first command surface.
 - `run verification case` starts one deterministic verification case.
 - `run verification suite` starts a deterministic suite in stable case order.
 - `show verification log` reads stdout, stderr, or Android logcat from the active or selected verification run in external state.
-- `show capability catalog` returns the compact repo-tracked catalog for skills, MCP tools, scripts, and references.
+- `show capability catalog` returns the compact repo-tracked catalog for skills, MCP tools, scripts, and references, includes the same `payload` size or ceiling contract as the other cheap retrieval surfaces, and trims oversized entry lists back under its hard ceiling.
 - `show intent route` resolves the low-token route family that should be used before reading large docs or Python entrypoints.
-- `show workspace context pack` returns the current global workspace context pack. It keeps full semantic units out of the payload, accepts additive `semanticMode`, and only uses semantic shortlist expansion on explicit `analysis` requests.
+- `triage repo request` is the front-door read-only surface for existing repository questions. Before broad `rg`, `find`, or manual tree scans, it now resolves checkout or readiness owner-triage toward `verification` or `analysis` earlier instead of starting from `git` or `release`, infers owner-only command suppression from route-file and shared-package-file phrasing, returns `primary_owner_files` plus `supporting_evidence_files`, exact package-level commands, compact `why` rationale, `next_read_paths`, `do_not_scan_paths`, and explicit stop/go guidance. `candidate_files` represent the primary owner slice, while `supporting_evidence_files` carry manifests, specs, and other confirming evidence that should not compete with direct owners in one flat shortlist. Answer-ready payloads now also return `follow_up_policy`, `proof_assertions`, and compact `dependency_edges`, clear `selected_tools`, and collapse thin wrapper or re-export layers out of the owner shortlist when entrypoint plus leaf ownership is already proven.
+- `show runtime preflight` is the cheapest route-aware runtime retrieval surface for initialized repos and the low-level preflight behind `triage repo request`. It returns `repo_maturity`, resolved route, top owner candidates, `primary_owner_files`, `supporting_evidence_files`, exact package-owned command hints, compact `why_these_files` rationale, `next_read_paths`, `do_not_scan_paths`, and explicit stop/go guidance without benchmark-only bootstrap transport, and it may reuse the last high-confidence runtime request from external state when a follow-up call omits request text. It now mirrors the same answer-ready contract as `triage repo request`: positive `confidence_reason`, empty `selected_tools`, zero-budget `follow_up_policy`, and the same generic owner pairing or wrapper-collapse logic. When commands are intentionally suppressed, it no longer lets one exact package root demote unrelated retained route families as conflicts.
+- `show workspace context pack` returns the current global workspace context pack. It keeps full semantic units out of the payload, accepts additive `semanticMode` including compatible aliases such as `balanced`, only uses semantic shortlist expansion on explicit `analysis` requests, may reuse a bounded task-scoped retrieval cache inside the active task or workstream scope, and should usually be called after `triage repo request` rather than before it.
 - `search context index` searches the global project context index for relevant chunks and recommended capabilities. It accepts additive `semanticMode`, keeps symbolic hits first, and tags explicit semantic shortlist expansions with `match_source`.
 - `show context structure` returns compact structural summaries for modules, symbols, doc sections, hotspots, parser backends, incremental indexing, and compact `semantic_summary` without hydrating the full cache.
 - `run analysis audit` is the read-only advanced analysis surface for `architecture`, `performance`, and `docs_style` modes. It may use `semanticMode=auto` by default, returns compact findings and evidence, and emits a non-persisted `memory_snapshot_draft`.
-- `refresh context index` rebuilds the global project context index outside the repository and also refreshes the optional semantic tier incrementally.
+- Setting `AGENTIUX_DEV_BENCHMARK_LOG` is an opt-in evidence mode only. When present, cheap retrieval surfaces append JSONL benchmark records with payload bytes, ceiling status, route id, retrieval or semantic mode, cache status, selected chunk counts, selected tool counts, and refresh reason. Default runs do not write that log.
+- `refresh context index` rebuilds the global project context index outside the repository, refreshes the optional semantic tier incrementally, and precomputes lightweight ownership-graph plus route-scoped shortlist projections for the warmed runtime path.
 - The low-token `analysis` route is the structural drill-down path for module, symbol, section, hotspot, large-file, incremental-index, and explicit semantic-audit requests.
 - Structural chunk storage stays bounded: file, symbol, doc-section, and project-memory chunks share one normalized schema with anchors and line ranges.
-- `semantic_cache.jsonl` remains the query-pack cache only. The optional semantic tier persists separate home-local artifacts: `semantic_units.jsonl`, `semantic_index.sqlite`, and `semantic_manifest.json`.
+- `context_store.sqlite` is the hot-path backend for indexed modules, files, chunks, and query-cache packets. The optional semantic tier persists separate home-local artifacts: `semantic_units.jsonl`, `semantic_index.sqlite`, and `semantic_manifest.json`.
 - Generated project-memory snapshots live outside the manual note store, are not created by public audit commands, expire from semantic recall automatically, and surface only through compact summary counts on cheap payloads.
 - Python and Markdown are parser-backed by default. JS/TS parser depth is optional and activates only when a local TypeScript backend is resolvable; otherwise the command surface must degrade to heuristic extraction without failing.
 - Large files switch to bounded structural extraction and hotspot labeling instead of full-body summary synthesis.
@@ -135,12 +145,14 @@ AgentiUX Dev exposes a small chat-first command surface.
 - `search youtrack issues` persists a search or triage session with ranked shortlist data plus richer ticket context for shortlisted issues, including linked-issue metadata, and must not auto-create workstreams or tasks.
 - `propose youtrack workstream plan` is a planning action layered on a persisted search session, should analyze linked-issue signals that affect execution order or duplicate risk, and must keep the result in draft form until the user confirms apply.
 - `apply youtrack workstream plan` requires explicit confirmation before creating a workstream, linked tasks, and stage batches from the approved issue set, and retries must reuse an already-applied plan instead of duplicating state.
-- In initialized repositories, `workflow-advice` may auto-create or reuse the active point task for narrow fixes.
+- With `autoCreate=true`, `workflow-advice` may auto-initialize `existing` or `scaffold` repositories, and in initialized repositories it may auto-create or reuse the active point task for narrow fixes.
 - Greenfield requests should trigger starter recommendations automatically instead of requiring `show starter presets` first.
 - `audit repository` is read-only for repo code and produces a structured gap report.
 - `apply upgrade plan` requires explicit confirmation before creating remediation workstreams and tasks.
 - `create starter` uses the official upstream CLI only and does not initialize AgentiUX Dev state automatically.
 - Cheap summaries and catalogs should be preferred before broad manual exploration.
+- Warm runtime sessions should prefer `triage repo request` before `show runtime preflight`, `show workspace context pack`, or broad manual scans when the next move is still unclear.
+- Runtime retrieval stays product-neutral. Any benchmark-only transport files are internal to the evidence harness and must not appear as public operator commands or repository state.
 - Commit requests should inspect commit history or config before a message is suggested or a commit is created.
 - If the current task is linked to a YouTrack issue, `plan git change`, `suggest commit message`, and `create git commit` must require the `ISSUE-ID ...` commit-subject prefix from the linked task metadata.
 - `show git state` and `plan git change` are read-only.

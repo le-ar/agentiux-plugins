@@ -1,4 +1,4 @@
 interface:
   display_name: "Workspace Kernel"
   short_description: "Initialize external state, route intent, and guard stage execution"
-  default_prompt: "Use $workspace-kernel to inspect this repository first, propose external initialization if needed, infer starter versus workstream versus task mode from the user's request, and route the work without creating Codex files inside the repo."
+  default_prompt: "Use $workspace-kernel to inspect this repository first, call `triage_repo_request` before broad shell exploration for existing-repo questions, propose external initialization if needed, infer starter versus workstream versus task mode from the user's request, and route the work without creating Codex files inside the repo."

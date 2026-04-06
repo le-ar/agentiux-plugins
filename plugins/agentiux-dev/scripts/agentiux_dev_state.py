@@ -84,6 +84,7 @@ from agentiux_dev_lib import (
     current_workstream,
     plugin_stats,
     plan_git_change,
+    preview_reset_workspace_state,
     preview_repair_workspace_state,
     preview_workspace_init,
     read_current_audit,
@@ -102,6 +103,7 @@ from agentiux_dev_lib import (
     show_upgrade_plan,
     install_host_requirements,
     repair_host_requirements,
+    reset_workspace_state,
     stage_git_files,
     switch_task,
     suggest_branch_name,
@@ -124,8 +126,11 @@ from agentiux_dev_context import (
     show_capability_catalog,
     show_context_structure,
     show_intent_route,
+    show_runtime_preflight,
     show_workspace_context_pack,
+    triage_repo_request,
 )
+from agentiux_dev_context_semantic import SEMANTIC_MODE_ARGUMENT_VALUES
 from agentiux_dev_youtrack import (
     apply_youtrack_workstream_plan,
     connect_youtrack,
@@ -171,6 +176,12 @@ def parse_args() -> argparse.Namespace:
     cmd = subparsers.add_parser("init-workspace")
     add_workspace_arg(cmd)
     cmd.add_argument("--force", action="store_true")
+
+    cmd = subparsers.add_parser("preview-reset-workspace-state")
+    add_workspace_arg(cmd)
+
+    cmd = subparsers.add_parser("reset-workspace-state")
+    add_workspace_arg(cmd)
 
     cmd = subparsers.add_parser("preview-repair-workspace-state")
     add_workspace_arg(cmd)
@@ -296,6 +307,7 @@ def parse_args() -> argparse.Namespace:
     cmd = subparsers.add_parser("workflow-advice")
     add_workspace_arg(cmd)
     cmd.add_argument("--request-text")
+    cmd.add_argument("--canonical-request-text")
     cmd.add_argument("--auto-create", action="store_true")
 
     cmd = subparsers.add_parser("audit-repository")
@@ -390,14 +402,30 @@ def parse_args() -> argparse.Namespace:
     cmd.add_argument("--route-id")
     cmd.add_argument("--limit", type=int)
     cmd.add_argument("--force-refresh", action="store_true")
-    cmd.add_argument("--semantic-mode", choices=["disabled", "auto", "enabled"], default="disabled")
+    cmd.add_argument("--semantic-mode", choices=SEMANTIC_MODE_ARGUMENT_VALUES, default="disabled")
+
+    cmd = subparsers.add_parser("show-runtime-preflight")
+    add_workspace_arg(cmd)
+    cmd.add_argument("--request-text")
+    cmd.add_argument("--route-id")
+    cmd.add_argument("--limit", type=int)
+    cmd.add_argument("--force-refresh", action="store_true")
+    cmd.add_argument("--semantic-mode", choices=SEMANTIC_MODE_ARGUMENT_VALUES, default="disabled")
+
+    cmd = subparsers.add_parser("triage-repo-request")
+    add_workspace_arg(cmd)
+    cmd.add_argument("--request-text")
+    cmd.add_argument("--route-id")
+    cmd.add_argument("--limit", type=int)
+    cmd.add_argument("--force-refresh", action="store_true")
+    cmd.add_argument("--semantic-mode", choices=SEMANTIC_MODE_ARGUMENT_VALUES, default="disabled")
 
     cmd = subparsers.add_parser("search-context-index")
     add_workspace_arg(cmd)
     cmd.add_argument("--query-text", required=True)
     cmd.add_argument("--route-id")
     cmd.add_argument("--limit", type=int)
-    cmd.add_argument("--semantic-mode", choices=["disabled", "auto", "enabled"], default="disabled")
+    cmd.add_argument("--semantic-mode", choices=SEMANTIC_MODE_ARGUMENT_VALUES, default="disabled")
 
     cmd = subparsers.add_parser("show-context-structure")
     add_workspace_arg(cmd)
@@ -405,7 +433,7 @@ def parse_args() -> argparse.Namespace:
     cmd.add_argument("--route-id")
     cmd.add_argument("--module-path")
     cmd.add_argument("--limit", type=int)
-    cmd.add_argument("--semantic-mode", choices=["disabled", "auto", "enabled"], default="disabled")
+    cmd.add_argument("--semantic-mode", choices=SEMANTIC_MODE_ARGUMENT_VALUES, default="disabled")
 
     cmd = subparsers.add_parser("run-analysis-audit")
     add_workspace_arg(cmd)
@@ -413,7 +441,7 @@ def parse_args() -> argparse.Namespace:
     cmd.add_argument("--query-text")
     cmd.add_argument("--module-path")
     cmd.add_argument("--limit", type=int)
-    cmd.add_argument("--semantic-mode", choices=["disabled", "auto", "enabled"], default="auto")
+    cmd.add_argument("--semantic-mode", choices=SEMANTIC_MODE_ARGUMENT_VALUES, default="auto")
 
     cmd = subparsers.add_parser("refresh-context-index")
     add_workspace_arg(cmd)
@@ -723,6 +751,10 @@ def main() -> int:
             payload = preview_workspace_init(args.workspace)
         elif args.command == "init-workspace":
             payload = init_workspace(args.workspace, force=args.force)
+        elif args.command == "preview-reset-workspace-state":
+            payload = preview_reset_workspace_state(args.workspace)
+        elif args.command == "reset-workspace-state":
+            payload = reset_workspace_state(args.workspace)
         elif args.command == "preview-repair-workspace-state":
             payload = preview_repair_workspace_state(args.workspace)
         elif args.command == "repair-workspace-state":
@@ -817,7 +849,12 @@ def main() -> int:
         elif args.command == "dashboard-snapshot":
             payload = dashboard_snapshot(args.workspace)
         elif args.command == "workflow-advice":
-            payload = workflow_advice(args.workspace, request_text=args.request_text, auto_create=args.auto_create)
+            payload = workflow_advice(
+                args.workspace,
+                request_text=args.request_text,
+                auto_create=args.auto_create,
+                canonical_request_text=args.canonical_request_text,
+            )
         elif args.command == "audit-repository":
             payload = audit_repository(args.workspace)
         elif args.command == "current-audit":
@@ -872,6 +909,24 @@ def main() -> int:
             payload = show_verification_helper_catalog(args.workspace)
         elif args.command == "show-workspace-context-pack":
             payload = show_workspace_context_pack(
+                args.workspace,
+                request_text=args.request_text,
+                route_id=args.route_id,
+                limit=args.limit,
+                force_refresh=args.force_refresh,
+                semantic_mode=args.semantic_mode,
+            )
+        elif args.command == "show-runtime-preflight":
+            payload = show_runtime_preflight(
+                args.workspace,
+                request_text=args.request_text,
+                route_id=args.route_id,
+                limit=args.limit,
+                force_refresh=args.force_refresh,
+                semantic_mode=args.semantic_mode,
+            )
+        elif args.command == "triage-repo-request":
+            payload = triage_repo_request(
                 args.workspace,
                 request_text=args.request_text,
                 route_id=args.route_id,

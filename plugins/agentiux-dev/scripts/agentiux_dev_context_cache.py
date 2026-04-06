@@ -48,14 +48,34 @@ from agentiux_dev_context_semantic import (
     refresh_semantic_index,
     semantic_summary_from_manifest,
 )
+from agentiux_dev_context_projection import (
+    OWNERSHIP_GRAPH_SCHEMA_VERSION,
+    ROUTE_SHORTLIST_SCHEMA_VERSION,
+    build_ownership_graph,
+    build_route_shortlist_projections,
+)
+from agentiux_dev_context_store import (
+    QUERY_CACHE_CONTEXT_PACK_KIND,
+    QUERY_CACHE_OWNERSHIP_GRAPH_KIND,
+    QUERY_CACHE_ROUTE_SHORTLIST_KIND,
+    QUERY_CACHE_RUNTIME_PREFLIGHT_KIND,
+    QUERY_CACHE_TASK_RETRIEVAL_KIND,
+    context_store_summary,
+    load_chunks as load_context_store_chunks,
+    load_modules as load_context_store_modules,
+    list_query_cache_entries,
+    replace_context_records,
+    replace_query_cache_entries,
+)
 from agentiux_dev_retrieval import infer_retrieval_mode, retrieval_mode_profile, retrieval_policy_payload
 from agentiux_dev_text import normalize_command_phrase, score_token_match, short_hash, tokenize_text
 from agentiux_dev_verification import read_verification_recipes
+from agentiux_dev_memory import list_generated_memory_snapshots, pinned_project_notes
 
 
 CATALOG_FILENAMES = ("skills", "mcp_tools", "scripts", "references", "intent_routes")
-CONTEXT_CACHE_SCHEMA_VERSION = 5
-CONTEXT_INDEX_MANIFEST_SCHEMA_VERSION = 5
+CONTEXT_CACHE_SCHEMA_VERSION = 6
+CONTEXT_INDEX_MANIFEST_SCHEMA_VERSION = 6
 SEMANTIC_CACHE_ENTRY_SCHEMA_VERSION = 5
 CONTEXT_INDEX_EXCLUDED_DIRS = {
     ".agentiux",
@@ -167,8 +187,30 @@ ROUTE_PROFILES: dict[str, dict[str, Any]] = {
     },
     "plugin-dev": {
         "priority_dirs": {"catalogs", "references", "scripts", "skills"},
-        "priority_files": {".mcp.json", "README.md", "plugin.json"},
-        "path_tokens": {"catalog", "dashboard", "mcp", "plugin", "release"},
+        "priority_files": {
+            ".mcp.json",
+            "README.md",
+            "plugin.json",
+            "agentiux_dev_context_cache.py",
+            "agentiux_dev_context_query.py",
+            "agentiux_dev_e2e_support.py",
+            "agentiux_dev_retrieval.py",
+            "agentiux_dev_state.py",
+        },
+        "path_tokens": {
+            "benchmark",
+            "budget",
+            "cache",
+            "catalog",
+            "context",
+            "dashboard",
+            "mcp",
+            "payload",
+            "performance",
+            "plugin",
+            "retrieval",
+            "telemetry",
+        },
     },
     "release": {
         "priority_dirs": {"references", "scripts", "skills"},
@@ -186,6 +228,7 @@ ROUTE_PROFILES: dict[str, dict[str, Any]] = {
         "path_tokens": {"stage", "task", "workflow", "workstream", "workspace"},
     },
 }
+PERSISTED_RUNTIME_CONTEXT_CONFIDENCE_MIN = 0.68
 
 
 def load_json(path: Path, default: Any) -> Any:
@@ -278,8 +321,8 @@ def context_cache_paths(workspace: str | Path) -> dict[str, Path]:
         "workspace_context": root / "workspace_context.json",
         "module_map": root / "module_map.json",
         "structure_index": root / "structure_index.json",
+        "context_store": root / "context_store.sqlite",
         "chunk_summaries": root / "chunk_summaries.jsonl",
-        "semantic_cache": root / "semantic_cache.jsonl",
         "semantic_units": root / "semantic_units.jsonl",
         "semantic_index": root / "semantic_index.sqlite",
         "semantic_manifest": root / "semantic_manifest.json",
@@ -290,6 +333,316 @@ def context_cache_paths(workspace: str | Path) -> dict[str, Path]:
 def load_structure_index(paths: dict[str, Path]) -> dict[str, Any]:
     payload = load_json(paths["structure_index"], default={})
     return payload if isinstance(payload, dict) else {}
+
+
+def _read_legacy_chunk_records(cache_paths: dict[str, Path]) -> list[dict[str, Any]]:
+    return load_jsonl(cache_paths["chunk_summaries"])
+
+
+def _materialize_context_store_from_legacy(
+    cache_paths: dict[str, Path],
+    *,
+    structure_index: dict[str, Any] | None = None,
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]], bool]:
+    modules = (load_json(cache_paths["module_map"], default={"modules": []}) or {}).get("modules") or []
+    files = list((structure_index or {}).get("files") or [])
+    chunks = _read_legacy_chunk_records(cache_paths)
+    if modules or files or chunks:
+        replace_context_records(
+            cache_paths["context_store"],
+            modules=modules,
+            files=files,
+            chunks=chunks,
+        )
+        return modules, chunks, True
+    return modules, chunks, False
+
+
+def _load_context_store_records(
+    cache_paths: dict[str, Path],
+    *,
+    structure_index: dict[str, Any] | None = None,
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]], str]:
+    store_path = cache_paths["context_store"]
+    modules = load_context_store_modules(store_path)
+    chunks = load_context_store_chunks(store_path)
+    if modules or chunks:
+        return modules, chunks, "sqlite"
+    legacy_modules, legacy_chunks, migrated = _materialize_context_store_from_legacy(
+        cache_paths,
+        structure_index=structure_index,
+    )
+    if migrated:
+        return legacy_modules, legacy_chunks, "sqlite-migrated"
+    return legacy_modules, legacy_chunks, "sqlite-empty"
+
+
+def _prune_context_pack_cache_entries(
+    cache_paths: dict[str, Path],
+    chunks: list[dict[str, Any]],
+    catalog_digest: str,
+    *,
+    full_reset_reason: str | None = None,
+) -> tuple[int, str | None]:
+    entries = list_query_cache_entries(cache_paths["context_store"], cache_kind=QUERY_CACHE_CONTEXT_PACK_KIND)
+    if full_reset_reason:
+        replace_query_cache_entries(
+            cache_paths["context_store"],
+            cache_kind=QUERY_CACHE_CONTEXT_PACK_KIND,
+            entries=[],
+            limit=40,
+        )
+        return len(entries), full_reset_reason if entries else None
+    chunk_hashes = {chunk["path"]: chunk["hash"] for chunk in chunks}
+    retained: list[dict[str, Any]] = []
+    pruned = 0
+    prune_reason: str | None = None
+    for entry in entries:
+        payload = entry.get("payload") or {}
+        if entry.get("catalog_digest") != catalog_digest:
+            pruned += 1
+            prune_reason = prune_reason or "catalog-digest"
+            continue
+        if int(payload.get("schema_version") or 0) < 8:
+            pruned += 1
+            prune_reason = prune_reason or "cache-schema"
+            continue
+        source_hashes = entry.get("source_hashes") or {}
+        if source_hashes and any(chunk_hashes.get(path) != expected_hash for path, expected_hash in source_hashes.items()):
+            pruned += 1
+            prune_reason = prune_reason or "source-hash-drift"
+            continue
+        retained.append(entry)
+    if pruned:
+        replace_query_cache_entries(
+            cache_paths["context_store"],
+            cache_kind=QUERY_CACHE_CONTEXT_PACK_KIND,
+            entries=retained,
+            limit=40,
+        )
+    return pruned, prune_reason
+
+
+def _prune_runtime_preflight_cache_entries(
+    cache_paths: dict[str, Path],
+    chunks: list[dict[str, Any]],
+    catalog_digest: str,
+    *,
+    full_reset_reason: str | None = None,
+) -> tuple[int, str | None]:
+    entries = list_query_cache_entries(cache_paths["context_store"], cache_kind=QUERY_CACHE_RUNTIME_PREFLIGHT_KIND)
+    if full_reset_reason:
+        replace_query_cache_entries(
+            cache_paths["context_store"],
+            cache_kind=QUERY_CACHE_RUNTIME_PREFLIGHT_KIND,
+            entries=[],
+            limit=40,
+        )
+        return len(entries), full_reset_reason if entries else None
+    chunk_hashes = {chunk["path"]: chunk["hash"] for chunk in chunks}
+    retained: list[dict[str, Any]] = []
+    pruned = 0
+    prune_reason: str | None = None
+    for entry in entries:
+        payload = entry.get("payload") or {}
+        if entry.get("catalog_digest") != catalog_digest:
+            pruned += 1
+            prune_reason = prune_reason or "catalog-digest"
+            continue
+        if int(payload.get("schema_version") or 0) < 2:
+            pruned += 1
+            prune_reason = prune_reason or "cache-schema"
+            continue
+        source_hashes = entry.get("source_hashes") or {}
+        if source_hashes and any(chunk_hashes.get(path) != expected_hash for path, expected_hash in source_hashes.items()):
+            pruned += 1
+            prune_reason = prune_reason or "source-hash-drift"
+            continue
+        retained.append(entry)
+    if pruned:
+        replace_query_cache_entries(
+            cache_paths["context_store"],
+            cache_kind=QUERY_CACHE_RUNTIME_PREFLIGHT_KIND,
+            entries=retained,
+            limit=40,
+        )
+    return pruned, prune_reason
+
+
+def _prune_task_retrieval_cache_entries(
+    cache_paths: dict[str, Path],
+    chunks: list[dict[str, Any]],
+    catalog_digest: str,
+    *,
+    full_reset_reason: str | None = None,
+) -> tuple[int, str | None]:
+    entries = list_query_cache_entries(cache_paths["context_store"], cache_kind=QUERY_CACHE_TASK_RETRIEVAL_KIND)
+    if full_reset_reason:
+        replace_query_cache_entries(
+            cache_paths["context_store"],
+            cache_kind=QUERY_CACHE_TASK_RETRIEVAL_KIND,
+            entries=[],
+            limit=24,
+        )
+        return len(entries), full_reset_reason if entries else None
+    chunk_hashes = {chunk["path"]: chunk["hash"] for chunk in chunks}
+    retained: list[dict[str, Any]] = []
+    pruned = 0
+    prune_reason: str | None = None
+    for entry in entries:
+        payload = entry.get("payload") or {}
+        if entry.get("catalog_digest") != catalog_digest:
+            pruned += 1
+            prune_reason = prune_reason or "catalog-digest"
+            continue
+        if int(payload.get("schema_version") or 0) < 1:
+            pruned += 1
+            prune_reason = prune_reason or "cache-schema"
+            continue
+        source_hashes = entry.get("source_hashes") or {}
+        if source_hashes and any(chunk_hashes.get(path) != expected_hash for path, expected_hash in source_hashes.items()):
+            pruned += 1
+            prune_reason = prune_reason or "source-hash-drift"
+            continue
+        retained.append(entry)
+    if pruned:
+        replace_query_cache_entries(
+            cache_paths["context_store"],
+            cache_kind=QUERY_CACHE_TASK_RETRIEVAL_KIND,
+            entries=retained,
+            limit=24,
+        )
+    return pruned, prune_reason
+
+
+def _runtime_auxiliary_cache_current(
+    cache_paths: dict[str, Path],
+    *,
+    workspace_fingerprint: str | None,
+    catalog_digest: str,
+) -> bool:
+    if not workspace_fingerprint:
+        return False
+    ownership_entries = list_query_cache_entries(
+        cache_paths["context_store"],
+        cache_kind=QUERY_CACHE_OWNERSHIP_GRAPH_KIND,
+    )
+    if len(ownership_entries) != 1:
+        return False
+    ownership_entry = ownership_entries[0]
+    ownership_payload = ownership_entry.get("payload") or {}
+    if (
+        ownership_entry.get("workspace_fingerprint") != workspace_fingerprint
+        or ownership_entry.get("catalog_digest") != catalog_digest
+        or int(ownership_payload.get("schema_version") or 0) < OWNERSHIP_GRAPH_SCHEMA_VERSION
+    ):
+        return False
+    route_entries = list_query_cache_entries(
+        cache_paths["context_store"],
+        cache_kind=QUERY_CACHE_ROUTE_SHORTLIST_KIND,
+    )
+    route_index = {str(entry.get("cache_key") or ""): entry for entry in route_entries}
+    for route_id in ROUTE_PROFILES:
+        entry = route_index.get(route_id)
+        if entry is None:
+            return False
+        payload = entry.get("payload") or {}
+        if (
+            entry.get("workspace_fingerprint") != workspace_fingerprint
+            or entry.get("catalog_digest") != catalog_digest
+            or int(payload.get("schema_version") or 0) < ROUTE_SHORTLIST_SCHEMA_VERSION
+        ):
+            return False
+    return True
+
+
+def _ensure_runtime_auxiliary_cache_entries(
+    workspace: Path,
+    *,
+    cache_paths: dict[str, Path],
+    workspace_context: dict[str, Any],
+    catalog_digest: str,
+    structure_index: dict[str, Any] | None = None,
+    chunk_records: list[dict[str, Any]] | None = None,
+) -> dict[str, Any]:
+    workspace_fingerprint = str(workspace_context.get("workspace_fingerprint") or "").strip()
+    if _runtime_auxiliary_cache_current(
+        cache_paths,
+        workspace_fingerprint=workspace_fingerprint,
+        catalog_digest=catalog_digest,
+    ):
+        ownership_entries = list_query_cache_entries(
+            cache_paths["context_store"],
+            cache_kind=QUERY_CACHE_OWNERSHIP_GRAPH_KIND,
+        )
+        ownership_payload = (ownership_entries[0].get("payload") or {}) if ownership_entries else {}
+        return {
+            "status": "fresh",
+            "route_projection_count": len(ROUTE_PROFILES),
+            "ownership_graph_path_count": int(ownership_payload.get("path_count") or 0),
+        }
+    resolved_structure_index = structure_index or load_structure_index(cache_paths) or _empty_structure_index(workspace)
+    resolved_file_records = [
+        record for record in (resolved_structure_index.get("files") or []) if isinstance(record, dict) and record.get("path")
+    ]
+    if chunk_records is None:
+        _modules, resolved_chunk_records, _backend = _load_context_store_records(
+            cache_paths,
+            structure_index=resolved_structure_index,
+        )
+    else:
+        resolved_chunk_records = chunk_records
+    ownership_graph = build_ownership_graph(file_records=resolved_file_records)
+    created_at = now_iso()
+    replace_query_cache_entries(
+        cache_paths["context_store"],
+        cache_kind=QUERY_CACHE_OWNERSHIP_GRAPH_KIND,
+        entries=[
+            {
+                "cache_key": workspace_fingerprint or "current",
+                "route_id": None,
+                "workspace_fingerprint": workspace_fingerprint,
+                "catalog_digest": catalog_digest,
+                "semantic_mode": None,
+                "created_at": created_at,
+                "source_hashes": {},
+                "payload": ownership_graph,
+            }
+        ],
+        limit=1,
+    )
+    route_projections = build_route_shortlist_projections(
+        workspace=workspace,
+        chunk_records=resolved_chunk_records,
+        file_records=resolved_file_records,
+        route_profiles=ROUTE_PROFILES,
+        workspace_context=workspace_context,
+        ownership_graph=ownership_graph,
+    )
+    replace_query_cache_entries(
+        cache_paths["context_store"],
+        cache_kind=QUERY_CACHE_ROUTE_SHORTLIST_KIND,
+        entries=[
+            {
+                "cache_key": str(projection.get("route_id") or ""),
+                "route_id": projection.get("route_id"),
+                "workspace_fingerprint": workspace_fingerprint,
+                "catalog_digest": catalog_digest,
+                "semantic_mode": None,
+                "created_at": created_at,
+                "source_hashes": projection.get("source_hashes") or {},
+                "payload": projection,
+            }
+            for projection in route_projections
+            if projection.get("route_id")
+        ],
+        limit=max(len(route_projections), 1),
+    )
+    return {
+        "status": "rebuilt",
+        "route_projection_count": len(route_projections),
+        "ownership_graph_path_count": int(ownership_graph.get("path_count") or 0),
+    }
 
 
 def _empty_structure_index(workspace: Path) -> dict[str, Any]:
@@ -1006,6 +1359,7 @@ def _workspace_context_payload(
         "workspace_fingerprint": _workspace_fingerprint(workspace, chunks),
         "generated_at": now_iso(),
         "state_initialized": state is not None,
+        "repo_maturity": detection.get("repo_maturity") or {},
         "detected_stacks": detection.get("detected_stacks", []),
         "selected_profiles": detection.get("selected_profiles", []),
         "package_managers": _package_managers(workspace),
@@ -1066,6 +1420,157 @@ def _workspace_context_payload(
     }
 
 
+def _workspace_context_payload_from_existing(
+    workspace: Path,
+    *,
+    detection: dict[str, Any],
+    git_state: dict[str, Any],
+    usage: dict[str, Any],
+    catalog_digest: str,
+    existing_context: dict[str, Any],
+    semantic_summary: dict[str, Any],
+) -> dict[str, Any]:
+    state, workstream, task = _safe_workspace_state(workspace)
+    verification = _safe_verification_context(workspace, state=state, workstream=workstream)
+    current_workstream_id = (workstream or {}).get("workstream_id")
+    brief_markdown = None
+    brief_kind = "workstream"
+    if state is not None:
+        resolved_paths = workspace_paths(workspace, workstream_id=current_workstream_id)
+        if state.get("workspace_mode") == "task" and (task or {}).get("task_id"):
+            brief_kind = "task"
+            brief_path = Path(resolved_paths["tasks_root"]) / str(task["task_id"]) / "task-brief.md"
+            brief_markdown = brief_path.read_text() if brief_path.exists() else None
+        elif current_workstream_id and resolved_paths.get("current_workstream_active_brief"):
+            brief_path = Path(resolved_paths["current_workstream_active_brief"])
+            brief_markdown = brief_path.read_text() if brief_path.exists() else None
+    design_brief = read_design_brief(workspace, workstream_id=current_workstream_id) if current_workstream_id else {}
+    design_handoff = read_design_handoff(workspace, workstream_id=current_workstream_id) if current_workstream_id else {}
+    design_testability = _design_and_testability_summary(
+        workspace,
+        workstream_id=current_workstream_id,
+        design_brief=design_brief,
+        design_handoff=design_handoff,
+        brief_markdown=brief_markdown,
+        brief_kind=brief_kind,
+    )
+    changed_paths = [entry["path"] for entry in git_state.get("changed_files", [])][:24]
+    top_level_modules = (existing_context.get("top_level_modules") or [])[:16]
+    project_memory = copy.deepcopy(existing_context.get("project_memory") or {})
+    return {
+        "schema_version": CONTEXT_CACHE_SCHEMA_VERSION,
+        "plugin_version": PLUGIN_VERSION,
+        "catalog_digest": catalog_digest,
+        "workspace_path": str(workspace),
+        "workspace_label": detection.get("workspace_label"),
+        "workspace_slug": detection.get("workspace_slug"),
+        "workspace_hash": detection.get("workspace_hash"),
+        "workspace_fingerprint": existing_context.get("workspace_fingerprint"),
+        "generated_at": now_iso(),
+        "state_initialized": state is not None,
+        "repo_maturity": detection.get("repo_maturity") or {},
+        "detected_stacks": detection.get("detected_stacks", []),
+        "selected_profiles": detection.get("selected_profiles", []),
+        "package_managers": _package_managers(workspace),
+        "top_level_modules": top_level_modules,
+        "current_workstream": {
+            "workstream_id": workstream.get("workstream_id"),
+            "title": workstream.get("title"),
+            "kind": workstream.get("kind"),
+            "status": workstream.get("status"),
+        }
+        if workstream
+        else None,
+        "current_task": {
+            "task_id": task.get("task_id"),
+            "title": task.get("title"),
+            "status": task.get("status"),
+        }
+        if task
+        else None,
+        "changed_paths": changed_paths,
+        "git_summary": {
+            "current_branch": git_state.get("current_branch"),
+            "head_commit": git_state.get("head_commit"),
+            "dirty": git_state.get("dirty"),
+            "summary_counts": git_state.get("summary_counts", {}),
+            "linked_worktree_count": (git_state.get("worktree") or {}).get("linked_worktree_count", 0),
+        },
+        "known_test_surfaces": _known_test_surfaces(workspace),
+        "known_verification_surfaces": verification,
+        "design_summary": design_testability["design_summary"],
+        "testability_summary": design_testability["testability_summary"],
+        "structure_summary": copy.deepcopy(existing_context.get("structure_summary") or {}),
+        "hotspot_summary": copy.deepcopy(existing_context.get("hotspot_summary") or {}),
+        "semantic_summary": copy.deepcopy(semantic_summary or {}),
+        "project_memory": project_memory,
+        "last_used_routes": usage.get("recent_route_ids", [])[:6],
+        "last_used_tools": usage.get("recent_tool_ids", [])[:12],
+        "usage_stats": {
+            "fresh_hit_count": usage.get("fresh_hit_count", 0),
+            "refresh_count": usage.get("refresh_count", 0),
+            "search_count": usage.get("search_count", 0),
+            "context_pack_hit_count": usage.get("context_pack_hit_count", 0),
+            "context_pack_miss_count": usage.get("context_pack_miss_count", 0),
+        },
+        "chunk_count": existing_context.get("chunk_count", 0),
+        "module_count": existing_context.get("module_count", len(top_level_modules)),
+    }
+
+
+def _semantic_artifact_fingerprints(workspace: Path) -> dict[str, Any]:
+    note_digest = hashlib.sha1()
+    note_count = 0
+    try:
+        for note in pinned_project_notes(workspace):
+            note_digest.update(str(note.get("note_id") or "").encode("utf-8"))
+            note_digest.update(b"\0")
+            note_digest.update(str(note.get("updated_at") or "").encode("utf-8"))
+            note_digest.update(b"\0")
+            note_digest.update(str(note.get("latest_revision_id") or "").encode("utf-8"))
+            note_digest.update(b"\0")
+            note_count += 1
+    except FileNotFoundError:
+        note_count = 0
+
+    snapshot_digest = hashlib.sha1()
+    snapshot_count = 0
+    try:
+        snapshot_payload = list_generated_memory_snapshots(workspace)
+        items = snapshot_payload.get("items") or []
+        snapshot_count = int((snapshot_payload.get("counts") or {}).get("active") or 0)
+        for snapshot in items:
+            snapshot_digest.update(str(snapshot.get("snapshot_id") or "").encode("utf-8"))
+            snapshot_digest.update(b"\0")
+            snapshot_digest.update(str(snapshot.get("title") or "").encode("utf-8"))
+            snapshot_digest.update(b"\0")
+            snapshot_digest.update(str(snapshot.get("status") or "").encode("utf-8"))
+            snapshot_digest.update(b"\0")
+            snapshot_digest.update(str(snapshot.get("confidence") or "").encode("utf-8"))
+            snapshot_digest.update(b"\0")
+            snapshot_digest.update(str(snapshot.get("source_audit_mode") or "").encode("utf-8"))
+            snapshot_digest.update(b"\0")
+            snapshot_digest.update(str(snapshot.get("source_query_text") or "").encode("utf-8"))
+            snapshot_digest.update(b"\0")
+            snapshot_digest.update(str(snapshot.get("source_module_path") or "").encode("utf-8"))
+            snapshot_digest.update(b"\0")
+            snapshot_digest.update(str(snapshot.get("updated_at") or "").encode("utf-8"))
+            snapshot_digest.update(b"\0")
+            snapshot_digest.update(str(snapshot.get("expires_at") or "").encode("utf-8"))
+            snapshot_digest.update(b"\0")
+            snapshot_digest.update(str(snapshot.get("preview") or "").encode("utf-8"))
+            snapshot_digest.update(b"\0")
+    except FileNotFoundError:
+        snapshot_count = 0
+
+    return {
+        "note_fingerprint": note_digest.hexdigest(),
+        "note_count": note_count,
+        "snapshot_fingerprint": snapshot_digest.hexdigest(),
+        "snapshot_count": snapshot_count,
+    }
+
+
 def _annotate_modules(workspace: Path, modules: list[dict[str, Any]], candidate_files: list[Path]) -> list[dict[str, Any]]:
     annotated: list[dict[str, Any]] = []
     for module in modules:
@@ -1084,8 +1589,7 @@ def _required_cache_files(cache_paths: dict[str, Path]) -> list[Path]:
         cache_paths["workspace_context"],
         cache_paths["module_map"],
         cache_paths["structure_index"],
-        cache_paths["chunk_summaries"],
-        cache_paths["semantic_cache"],
+        cache_paths["context_store"],
         cache_paths["semantic_units"],
         cache_paths["semantic_index"],
         cache_paths["semantic_manifest"],
@@ -1194,6 +1698,10 @@ def _usage_stats_payload() -> dict[str, Any]:
         "last_context_pack_route_status": None,
         "last_context_pack_route_id": None,
         "last_context_pack_selected_tool_count": 0,
+        "last_high_confidence_request_text": None,
+        "last_high_confidence_route_id": None,
+        "last_high_confidence_confidence": 0.0,
+        "last_high_confidence_recorded_at": None,
         "refresh_reason_counts": {},
         "route_resolution_counts": {},
     }
@@ -1222,6 +1730,17 @@ def load_usage(paths: dict[str, Path]) -> dict[str, Any]:
     for field in ("recent_route_ids", "recent_tool_ids", "last_refresh_stale_reasons"):
         if not isinstance(merged.get(field), list):
             merged[field] = []
+    for field in (
+        "last_high_confidence_request_text",
+        "last_high_confidence_route_id",
+        "last_high_confidence_recorded_at",
+    ):
+        if merged.get(field) is not None and not isinstance(merged.get(field), str):
+            merged[field] = None
+    try:
+        merged["last_high_confidence_confidence"] = round(float(merged.get("last_high_confidence_confidence") or 0.0), 2)
+    except (TypeError, ValueError):
+        merged["last_high_confidence_confidence"] = 0.0
     return merged
 
 
@@ -1312,7 +1831,7 @@ def record_context_pack_stats(
     selected_tool_count: int,
 ) -> dict[str, Any]:
     usage = load_usage(paths)
-    if cache_status == "hit":
+    if cache_status in {"hit", "task-hit"}:
         usage["context_pack_hit_count"] = int(usage.get("context_pack_hit_count", 0)) + 1
     elif cache_status == "miss":
         usage["context_pack_miss_count"] = int(usage.get("context_pack_miss_count", 0)) + 1
@@ -1324,12 +1843,38 @@ def record_context_pack_stats(
     return _write_usage_payload(paths, usage)
 
 
+def record_high_confidence_runtime_context(
+    paths: dict[str, Path],
+    *,
+    request_text: str | None,
+    route_id: str | None,
+    route_status: str,
+    confidence: float | int | None,
+) -> dict[str, Any]:
+    normalized_request = " ".join(str(request_text or "").split())
+    confidence_value = round(float(confidence or 0.0), 2)
+    if (
+        not normalized_request
+        or not route_id
+        or route_status != "exact"
+        or confidence_value < PERSISTED_RUNTIME_CONTEXT_CONFIDENCE_MIN
+    ):
+        return load_usage(paths)
+    usage = load_usage(paths)
+    usage["last_high_confidence_request_text"] = normalized_request
+    usage["last_high_confidence_route_id"] = route_id
+    usage["last_high_confidence_confidence"] = confidence_value
+    usage["last_high_confidence_recorded_at"] = now_iso()
+    return _write_usage_payload(paths, usage)
+
+
 def compact_workspace_context(workspace_context: dict[str, Any]) -> dict[str, Any]:
     return {
         "workspace_fingerprint": workspace_context.get("workspace_fingerprint"),
         "catalog_digest": workspace_context.get("catalog_digest"),
         "workspace_label": workspace_context.get("workspace_label"),
         "state_initialized": workspace_context.get("state_initialized"),
+        "repo_maturity": workspace_context.get("repo_maturity") or {},
         "detected_stacks": (workspace_context.get("detected_stacks") or [])[:8],
         "selected_profiles": (workspace_context.get("selected_profiles") or [])[:8],
         "package_managers": (workspace_context.get("package_managers") or [])[:4],
@@ -1480,7 +2025,16 @@ def refresh_context_index(
     candidate_snapshot = _indexed_file_snapshot(resolved_workspace, [*candidate_files, *project_note_candidates])
     candidate_count = len(candidate_snapshot)
     catalog_digest = _catalog_digest()
+    workspace_context = load_json(cache_paths["workspace_context"], default={})
+    store_summary = context_store_summary(cache_paths["context_store"])
     manifest = _load_manifest(cache_paths)
+    semantic_manifest = load_semantic_manifest(cache_paths)
+    semantic_summary = semantic_summary_from_manifest(semantic_manifest)
+    semantic_artifact_state = _semantic_artifact_fingerprints(resolved_workspace)
+    semantic_manifest_stale = (
+        semantic_manifest.get("note_fingerprint") != semantic_artifact_state["note_fingerprint"]
+        or semantic_manifest.get("snapshot_fingerprint") != semantic_artifact_state["snapshot_fingerprint"]
+    )
     stale_reasons = _manifest_stale_reasons(
         manifest,
         workspace=resolved_workspace,
@@ -1490,29 +2044,43 @@ def refresh_context_index(
     )
     if force:
         stale_reasons = ["force-refresh", *stale_reasons]
-
-    existing_structure_index = load_structure_index(cache_paths) or _empty_structure_index(resolved_workspace)
-    existing_chunk_records = load_jsonl(cache_paths["chunk_summaries"])
-    existing_chunk_groups = _chunk_records_by_path(existing_chunk_records)
-    existing_file_records = _file_records_by_path(existing_structure_index)
+    storage_backend_status = "sqlite" if any(store_summary[key] for key in ("module_count", "file_count", "chunk_count")) else "sqlite-empty"
 
     if not stale_reasons:
-        workspace_context = load_json(cache_paths["workspace_context"], default={})
-        module_map = load_json(cache_paths["module_map"], default={"modules": []})
-        structure_index = existing_structure_index
-        chunks = existing_chunk_records
-        semantic_result = _refresh_semantic_context(
+        semantic_result: dict[str, Any] | None = None
+        if semantic_manifest_stale:
+            existing_structure_index = load_structure_index(cache_paths) or _empty_structure_index(resolved_workspace)
+            existing_modules, existing_chunk_records, _storage_backend = _load_context_store_records(
+                cache_paths,
+                structure_index=existing_structure_index,
+            )
+            modules = existing_modules or (load_json(cache_paths["module_map"], default={"modules": []}) or {}).get("modules", [])
+            semantic_result = _refresh_semantic_context(
+                resolved_workspace,
+                cache_paths=cache_paths,
+                modules=modules,
+                chunks=existing_chunk_records,
+                structure_index=existing_structure_index,
+                force=False,
+            )
+            semantic_summary = semantic_result["semantic_summary"]
+        if workspace_context.get("semantic_summary") != semantic_summary:
+            workspace_context["semantic_summary"] = semantic_summary
+            write_json(cache_paths["workspace_context"], workspace_context)
+        auxiliary_cache = _ensure_runtime_auxiliary_cache_entries(
             resolved_workspace,
             cache_paths=cache_paths,
-            modules=module_map.get("modules", []),
-            chunks=chunks,
-            structure_index=structure_index,
-            force=False,
+            workspace_context=workspace_context,
+            catalog_digest=catalog_digest,
         )
-        workspace_context["semantic_summary"] = semantic_result["semantic_summary"]
-        write_json(cache_paths["workspace_context"], workspace_context)
         duration_ms = int((perf_counter() - started_at) * 1000)
-        parser_status = _parser_backend_status_payload(structure_index.get("parser_backends") or {})
+        parser_status = copy.deepcopy(usage.get("last_refresh_parser_backend_status") or {})
+        structure_summary_payload = copy.deepcopy(workspace_context.get("structure_summary") or {})
+        hotspot_summary_payload = copy.deepcopy(workspace_context.get("hotspot_summary") or {})
+        reused_file_count = int(structure_summary_payload.get("file_count") or 0)
+        large_file_count = int(structure_summary_payload.get("large_file_count") or 0)
+        module_count = int(workspace_context.get("module_count") or store_summary["module_count"] or 0)
+        chunk_count = int(workspace_context.get("chunk_count") or store_summary["chunk_count"] or 0)
         _record_refresh_stats(
             cache_paths,
             status="fresh",
@@ -1521,13 +2089,13 @@ def refresh_context_index(
             stale_reasons=[],
             candidate_file_count=candidate_count,
             rebuilt_file_count=0,
-            reused_file_count=int((structure_index.get("summary") or {}).get("file_count") or 0),
+            reused_file_count=reused_file_count,
             removed_file_count=0,
             rebuilt_chunk_count=0,
-            reused_chunk_count=len(chunks),
+            reused_chunk_count=chunk_count,
             bounded_read_count=0,
             full_read_count=0,
-            large_file_count=int((structure_index.get("summary") or {}).get("large_file_count") or 0),
+            large_file_count=large_file_count,
             parser_backend_status=parser_status,
         )
         return {
@@ -1538,35 +2106,40 @@ def refresh_context_index(
             "workspace_context_path": str(cache_paths["workspace_context"]),
             "module_map_path": str(cache_paths["module_map"]),
             "structure_index_path": str(cache_paths["structure_index"]),
-            "chunk_summaries_path": str(cache_paths["chunk_summaries"]),
-            "semantic_cache_path": str(cache_paths["semantic_cache"]),
+            "context_store_path": str(cache_paths["context_store"]),
+            "storage_backend": "sqlite",
+            "storage_backend_status": storage_backend_status,
+            "storage_summary": store_summary,
             "semantic_units_path": str(cache_paths["semantic_units"]),
             "semantic_index_path": str(cache_paths["semantic_index"]),
             "semantic_manifest_path": str(cache_paths["semantic_manifest"]),
             "workspace_fingerprint": workspace_context.get("workspace_fingerprint"),
             "catalog_digest": catalog_digest,
             "candidate_file_count": candidate_count,
-            "module_count": len(module_map.get("modules", [])),
-            "chunk_count": len(chunks),
-            "structure_summary": structure_summary(structure_index),
-            "hotspot_summary": hotspot_summary(structure_index),
-            "semantic_summary": semantic_result["semantic_summary"],
+            "module_count": module_count,
+            "chunk_count": chunk_count,
+            "structure_summary": structure_summary_payload,
+            "hotspot_summary": hotspot_summary_payload,
+            "semantic_summary": semantic_summary,
             "rebuilt_file_count": 0,
-            "reused_file_count": int((structure_index.get("summary") or {}).get("file_count") or 0),
+            "reused_file_count": reused_file_count,
             "removed_file_count": 0,
             "rebuilt_chunk_count": 0,
-            "reused_chunk_count": len(chunks),
+            "reused_chunk_count": chunk_count,
             "bounded_read_count": 0,
             "full_read_count": 0,
-            "large_file_count": int((structure_index.get("summary") or {}).get("large_file_count") or 0),
+            "large_file_count": large_file_count,
             "parser_backend_status": parser_status,
-            "semantic_backend_status": semantic_result.get("backend_status"),
-            "semantic_refresh_status": semantic_result.get("status"),
-            "semantic_rebuilt_unit_count": semantic_result.get("rebuilt_unit_count", 0),
-            "semantic_reused_unit_count": semantic_result.get("reused_unit_count", 0),
-            "semantic_removed_unit_count": semantic_result.get("removed_unit_count", 0),
+            "semantic_backend_status": semantic_summary.get("backend_status"),
+            "semantic_refresh_status": (semantic_result or {}).get("status", "fresh"),
+            "semantic_rebuilt_unit_count": (semantic_result or {}).get("rebuilt_unit_count", 0),
+            "semantic_reused_unit_count": (semantic_result or {}).get("reused_unit_count", int(semantic_summary.get("unit_count") or 0)),
+            "semantic_removed_unit_count": (semantic_result or {}).get("removed_unit_count", 0),
             "pruned_semantic_cache_entries": 0,
             "pruned_semantic_cache_reason": None,
+            "runtime_projection_status": auxiliary_cache["status"],
+            "route_projection_count": auxiliary_cache["route_projection_count"],
+            "ownership_graph_path_count": auxiliary_cache["ownership_graph_path_count"],
             "refresh_reason": "manifest-match",
             "stale_reasons": [],
             "rebuilt_paths": [],
@@ -1574,59 +2147,34 @@ def refresh_context_index(
 
     if not force and stale_reasons and not _requires_chunk_refresh(stale_reasons):
         detection = detect_workspace(resolved_workspace)
-        module_map = load_json(cache_paths["module_map"], default={"modules": []})
-        modules = module_map.get("modules", [])
-        structure_index = existing_structure_index
-        parser_status = _parser_backend_status_payload(structure_index.get("parser_backends") or {})
-        incremental_indexing = _incremental_indexing_payload(
-            candidate_file_count=candidate_count,
-            rebuilt_file_count=0,
-            reused_file_count=int((structure_index.get("summary") or {}).get("file_count") or 0),
-            removed_file_count=0,
-            rebuilt_chunk_count=0,
-            reused_chunk_count=len(existing_chunk_records),
-            bounded_read_count=0,
-            full_read_count=0,
-            large_file_count=int((structure_index.get("summary") or {}).get("large_file_count") or 0),
-            refresh_reason=stale_reasons[0],
-            stale_reasons=stale_reasons,
-            parser_backend_status=parser_status,
-        )
-        structure_index = {
-            **structure_index,
-            "incremental_indexing": incremental_indexing,
-            "generated_at": incremental_indexing["generated_at"],
-        }
-        workspace_context = _workspace_context_payload(
+        parser_status = copy.deepcopy(usage.get("last_refresh_parser_backend_status") or {})
+        semantic_result: dict[str, Any] | None = None
+        if semantic_manifest_stale:
+            existing_structure_index = load_structure_index(cache_paths) or _empty_structure_index(resolved_workspace)
+            existing_modules, existing_chunk_records, _storage_backend = _load_context_store_records(
+                cache_paths,
+                structure_index=existing_structure_index,
+            )
+            modules = existing_modules or (load_json(cache_paths["module_map"], default={"modules": []}) or {}).get("modules", [])
+            semantic_result = _refresh_semantic_context(
+                resolved_workspace,
+                cache_paths=cache_paths,
+                modules=modules,
+                chunks=existing_chunk_records,
+                structure_index=existing_structure_index,
+                force=False,
+            )
+            semantic_summary = semantic_result["semantic_summary"]
+        workspace_context = _workspace_context_payload_from_existing(
             resolved_workspace,
-            detection,
-            git_state,
-            modules,
-            existing_chunk_records,
-            structure_index,
-            usage,
-            catalog_digest,
-        )
-        semantic_result = _refresh_semantic_context(
-            resolved_workspace,
-            cache_paths=cache_paths,
-            modules=modules,
-            chunks=existing_chunk_records,
-            structure_index=structure_index,
-            force=False,
-        )
-        workspace_context["semantic_summary"] = semantic_result["semantic_summary"]
-        previous_context = load_json(cache_paths["workspace_context"], default={})
-        previous_catalog_digest = previous_context.get("catalog_digest")
-        semantic_cache_entries = load_jsonl(cache_paths["semantic_cache"])
-        semantic_cache_entries, pruned, pruned_reason = _prune_semantic_cache_entries(
-            semantic_cache_entries,
-            existing_chunk_records,
-            catalog_digest,
-            full_reset_reason="catalog-digest" if previous_catalog_digest and previous_catalog_digest != catalog_digest else None,
+            detection=detection,
+            git_state=git_state,
+            usage=usage,
+            catalog_digest=catalog_digest,
+            existing_context=workspace_context,
+            semantic_summary=semantic_summary,
         )
         write_json(cache_paths["workspace_context"], workspace_context)
-        write_json(cache_paths["structure_index"], structure_index)
         write_json(
             cache_paths["manifest"],
             {
@@ -1640,14 +2188,23 @@ def refresh_context_index(
                 "indexed_file_snapshot": candidate_snapshot,
                 "workspace_fingerprint": workspace_context["workspace_fingerprint"],
                 "candidate_file_count": candidate_count,
-                "module_count": len(modules),
-                "chunk_count": len(existing_chunk_records),
+                "module_count": int(workspace_context.get("module_count") or store_summary["module_count"] or 0),
+                "chunk_count": int(workspace_context.get("chunk_count") or store_summary["chunk_count"] or 0),
                 "generated_at": now_iso(),
             },
         )
-        write_jsonl(cache_paths["semantic_cache"], semantic_cache_entries)
         duration_ms = int((perf_counter() - started_at) * 1000)
+        auxiliary_cache = _ensure_runtime_auxiliary_cache_entries(
+            resolved_workspace,
+            cache_paths=cache_paths,
+            workspace_context=workspace_context,
+            catalog_digest=catalog_digest,
+        )
         refresh_reason = stale_reasons[0]
+        reused_file_count = int((workspace_context.get("structure_summary") or {}).get("file_count") or 0)
+        large_file_count = int((workspace_context.get("structure_summary") or {}).get("large_file_count") or 0)
+        chunk_count = int(workspace_context.get("chunk_count") or store_summary["chunk_count"] or 0)
+        module_count = int(workspace_context.get("module_count") or store_summary["module_count"] or 0)
         _record_refresh_stats(
             cache_paths,
             status="context-refreshed",
@@ -1656,13 +2213,13 @@ def refresh_context_index(
             stale_reasons=stale_reasons,
             candidate_file_count=candidate_count,
             rebuilt_file_count=0,
-            reused_file_count=int((structure_index.get("summary") or {}).get("file_count") or 0),
+            reused_file_count=reused_file_count,
             removed_file_count=0,
             rebuilt_chunk_count=0,
-            reused_chunk_count=len(existing_chunk_records),
+            reused_chunk_count=chunk_count,
             bounded_read_count=0,
             full_read_count=0,
-            large_file_count=int((structure_index.get("summary") or {}).get("large_file_count") or 0),
+            large_file_count=large_file_count,
             parser_backend_status=parser_status,
         )
         return {
@@ -1673,40 +2230,52 @@ def refresh_context_index(
             "workspace_context_path": str(cache_paths["workspace_context"]),
             "module_map_path": str(cache_paths["module_map"]),
             "structure_index_path": str(cache_paths["structure_index"]),
-            "chunk_summaries_path": str(cache_paths["chunk_summaries"]),
-            "semantic_cache_path": str(cache_paths["semantic_cache"]),
+            "context_store_path": str(cache_paths["context_store"]),
+            "storage_backend": "sqlite",
+            "storage_backend_status": storage_backend_status,
+            "storage_summary": store_summary,
             "semantic_units_path": str(cache_paths["semantic_units"]),
             "semantic_index_path": str(cache_paths["semantic_index"]),
             "semantic_manifest_path": str(cache_paths["semantic_manifest"]),
             "workspace_fingerprint": workspace_context["workspace_fingerprint"],
             "catalog_digest": catalog_digest,
             "candidate_file_count": candidate_count,
-            "module_count": len(modules),
-            "chunk_count": len(existing_chunk_records),
-            "structure_summary": structure_summary(structure_index),
-            "hotspot_summary": hotspot_summary(structure_index),
-            "semantic_summary": semantic_result["semantic_summary"],
+            "module_count": module_count,
+            "chunk_count": chunk_count,
+            "structure_summary": workspace_context.get("structure_summary") or {},
+            "hotspot_summary": workspace_context.get("hotspot_summary") or {},
+            "semantic_summary": semantic_summary,
             "rebuilt_file_count": 0,
-            "reused_file_count": int((structure_index.get("summary") or {}).get("file_count") or 0),
+            "reused_file_count": reused_file_count,
             "removed_file_count": 0,
             "rebuilt_chunk_count": 0,
-            "reused_chunk_count": len(existing_chunk_records),
+            "reused_chunk_count": chunk_count,
             "bounded_read_count": 0,
             "full_read_count": 0,
-            "large_file_count": int((structure_index.get("summary") or {}).get("large_file_count") or 0),
+            "large_file_count": large_file_count,
             "parser_backend_status": parser_status,
-            "semantic_backend_status": semantic_result.get("backend_status"),
-            "semantic_refresh_status": semantic_result.get("status"),
-            "semantic_rebuilt_unit_count": semantic_result.get("rebuilt_unit_count", 0),
-            "semantic_reused_unit_count": semantic_result.get("reused_unit_count", 0),
-            "semantic_removed_unit_count": semantic_result.get("removed_unit_count", 0),
-            "pruned_semantic_cache_entries": pruned,
-            "pruned_semantic_cache_reason": pruned_reason,
+            "semantic_backend_status": semantic_summary.get("backend_status"),
+            "semantic_refresh_status": (semantic_result or {}).get("status", "fresh"),
+            "semantic_rebuilt_unit_count": (semantic_result or {}).get("rebuilt_unit_count", 0),
+            "semantic_reused_unit_count": (semantic_result or {}).get("reused_unit_count", int(semantic_summary.get("unit_count") or 0)),
+            "semantic_removed_unit_count": (semantic_result or {}).get("removed_unit_count", 0),
+            "pruned_semantic_cache_entries": 0,
+            "pruned_semantic_cache_reason": None,
+            "runtime_projection_status": auxiliary_cache["status"],
+            "route_projection_count": auxiliary_cache["route_projection_count"],
+            "ownership_graph_path_count": auxiliary_cache["ownership_graph_path_count"],
             "refresh_reason": refresh_reason,
             "stale_reasons": stale_reasons[:8],
             "rebuilt_paths": [],
         }
 
+    existing_structure_index = load_structure_index(cache_paths) or _empty_structure_index(resolved_workspace)
+    existing_modules, existing_chunk_records, storage_backend = _load_context_store_records(
+        cache_paths,
+        structure_index=existing_structure_index,
+    )
+    existing_chunk_groups = _chunk_records_by_path(existing_chunk_records)
+    existing_file_records = _file_records_by_path(existing_structure_index)
     detection = detect_workspace(resolved_workspace)
     modules = _discover_modules(resolved_workspace, detection)
     modules = _annotate_modules(resolved_workspace, modules, candidate_files)
@@ -1843,16 +2412,41 @@ def refresh_context_index(
         },
     )
     write_json(cache_paths["structure_index"], structure_index)
-    write_jsonl(cache_paths["chunk_summaries"], chunk_records)
+    replace_context_records(
+        cache_paths["context_store"],
+        modules=modules,
+        files=file_records,
+        chunks=chunk_records,
+    )
+    auxiliary_cache = _ensure_runtime_auxiliary_cache_entries(
+        resolved_workspace,
+        cache_paths=cache_paths,
+        workspace_context=workspace_context,
+        catalog_digest=catalog_digest,
+        structure_index=structure_index,
+        chunk_records=chunk_records,
+    )
 
-    semantic_cache_entries = load_jsonl(cache_paths["semantic_cache"])
-    semantic_cache_entries, pruned, pruned_reason = _prune_semantic_cache_entries(
-        semantic_cache_entries,
+    pruned_context_pack, pruned_context_pack_reason = _prune_context_pack_cache_entries(
+        cache_paths,
         chunk_records,
         catalog_digest,
         full_reset_reason="catalog-digest" if previous_catalog_digest and previous_catalog_digest != catalog_digest else None,
     )
-    write_jsonl(cache_paths["semantic_cache"], semantic_cache_entries)
+    pruned_runtime_preflight, pruned_runtime_preflight_reason = _prune_runtime_preflight_cache_entries(
+        cache_paths,
+        chunk_records,
+        catalog_digest,
+        full_reset_reason="catalog-digest" if previous_catalog_digest and previous_catalog_digest != catalog_digest else None,
+    )
+    pruned_task_retrieval, pruned_task_retrieval_reason = _prune_task_retrieval_cache_entries(
+        cache_paths,
+        chunk_records,
+        catalog_digest,
+        full_reset_reason="catalog-digest" if previous_catalog_digest and previous_catalog_digest != catalog_digest else None,
+    )
+    pruned = pruned_context_pack + pruned_runtime_preflight + pruned_task_retrieval
+    pruned_reason = pruned_context_pack_reason or pruned_runtime_preflight_reason or pruned_task_retrieval_reason
 
     write_json(
         cache_paths["manifest"],
@@ -1900,8 +2494,10 @@ def refresh_context_index(
         "workspace_context_path": str(cache_paths["workspace_context"]),
         "module_map_path": str(cache_paths["module_map"]),
         "structure_index_path": str(cache_paths["structure_index"]),
-        "chunk_summaries_path": str(cache_paths["chunk_summaries"]),
-        "semantic_cache_path": str(cache_paths["semantic_cache"]),
+        "context_store_path": str(cache_paths["context_store"]),
+        "storage_backend": "sqlite",
+        "storage_backend_status": storage_backend,
+        "storage_summary": context_store_summary(cache_paths["context_store"]),
         "semantic_units_path": str(cache_paths["semantic_units"]),
         "semantic_index_path": str(cache_paths["semantic_index"]),
         "semantic_manifest_path": str(cache_paths["semantic_manifest"]),
@@ -1929,10 +2525,13 @@ def refresh_context_index(
         "semantic_removed_unit_count": semantic_result.get("removed_unit_count", 0),
         "pruned_semantic_cache_entries": pruned,
         "pruned_semantic_cache_reason": pruned_reason,
+        "runtime_projection_status": auxiliary_cache["status"],
+        "route_projection_count": auxiliary_cache["route_projection_count"],
+        "ownership_graph_path_count": auxiliary_cache["ownership_graph_path_count"],
         "refresh_reason": refresh_reason,
         "stale_reasons": stale_reasons[:8],
         "rebuilt_paths": rebuilt_paths[:24],
-    }
+}
 
 
 def load_workspace_context_bundle(
@@ -1941,7 +2540,8 @@ def load_workspace_context_bundle(
     query_text: str | None = None,
     route_id: str | None = None,
     retrieval_mode: str | None = None,
-) -> tuple[dict[str, Any], dict[str, Path], dict[str, Any], list[dict[str, Any]], list[dict[str, Any]], dict[str, Any], dict[str, Any]]:
+    include_structure_index: bool = False,
+) -> tuple[dict[str, Any], dict[str, Path], dict[str, Any], dict[str, Any], dict[str, Any] | None]:
     refresh_result = refresh_context_index(
         workspace,
         force=False,
@@ -1951,8 +2551,10 @@ def load_workspace_context_bundle(
     )
     cache_paths = context_cache_paths(workspace)
     workspace_context = load_json(cache_paths["workspace_context"], default={})
-    module_map = load_json(cache_paths["module_map"], default={"modules": []})
-    chunks = load_jsonl(cache_paths["chunk_summaries"])
     usage = load_usage(cache_paths)
-    structure_index = load_structure_index(cache_paths) or _empty_structure_index(Path(workspace).expanduser().resolve())
-    return refresh_result, cache_paths, workspace_context, module_map.get("modules", []), chunks, usage, structure_index
+    structure_index = (
+        load_structure_index(cache_paths) or _empty_structure_index(Path(workspace).expanduser().resolve())
+        if include_structure_index
+        else None
+    )
+    return refresh_result, cache_paths, workspace_context, usage, structure_index

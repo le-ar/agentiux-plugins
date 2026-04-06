@@ -1,0 +1,20 @@
+{
+  "name": "codex-benchmark-workspace",
+  "private": true,
+  "packageManager": "pnpm@10.0.0",
+  "workspaces": [
+    "apps/*",
+    "packages/*"
+  ],
+  "scripts": {
+    "test:all": "pnpm --filter @bench/storefront test:checkout && pnpm --filter @bench/server test:readiness"
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.54.0",
+    "next": "^16.0.0",
+    "react": "^19.0.0",
+    "react-dom": "^19.0.0",
+    "tsx": "^4.19.0",
+    "typescript": "^5.8.0"
+  }
+}

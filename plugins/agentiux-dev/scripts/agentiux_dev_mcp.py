@@ -82,6 +82,7 @@ from agentiux_dev_lib import (
     migrate_workspace_state,
     plugin_stats,
     plan_git_change,
+    preview_reset_workspace_state,
     preview_repair_workspace_state,
     preview_workspace_init,
     read_current_audit,
@@ -100,6 +101,7 @@ from agentiux_dev_lib import (
     show_upgrade_plan,
     install_host_requirements,
     repair_host_requirements,
+    reset_workspace_state,
     stage_git_files,
     switch_task,
     suggest_branch_name,
@@ -121,7 +123,9 @@ from agentiux_dev_context import (
     show_capability_catalog,
     show_context_structure,
     show_intent_route,
+    show_runtime_preflight,
     show_workspace_context_pack,
+    triage_repo_request,
 )
 from agentiux_dev_youtrack import (
     apply_youtrack_workstream_plan,
@@ -134,6 +138,7 @@ from agentiux_dev_youtrack import (
     test_youtrack_connection,
     update_youtrack_connection,
 )
+from agentiux_dev_context_semantic import SEMANTIC_MODE_ARGUMENT_VALUES
 
 
 PROTOCOL_VERSION = "2025-06-18"
@@ -141,6 +146,7 @@ SERVER_INFO = {
     "name": "agentiux-dev-state",
     "version": "0.8.0",
 }
+SEMANTIC_MODE_SCHEMA = {"type": "string", "enum": list(SEMANTIC_MODE_ARGUMENT_VALUES)}
 
 
 def _emit(message: dict[str, Any]) -> None:
@@ -245,6 +251,18 @@ TOOLS = {
             "workspacePath": {"type": "string"},
             "force": {"type": "boolean"},
         },
+        ["workspacePath"],
+    ),
+    "preview_reset_workspace_state": _read_tool(
+        "preview_reset_workspace_state",
+        "Preview how a workspace-scoped state reset would remove external state, context cache, and workspace analytics slices.",
+        lambda args: preview_reset_workspace_state(args["workspacePath"]),
+    ),
+    "reset_workspace_state": _write_tool(
+        "reset_workspace_state",
+        "Remove the external state slice for one workspace so initialization and destructive test flows can restart from a clean baseline.",
+        lambda args: reset_workspace_state(args["workspacePath"]),
+        {"workspacePath": {"type": "string"}},
         ["workspacePath"],
     ),
     "preview_repair_workspace_state": _read_tool(
@@ -737,15 +755,17 @@ TOOLS = {
     },
     "advise_workflow": _write_tool(
         "advise_workflow",
-        "Inspect the current request context and recommend workspace init, starter, workstream, or task actions before execution starts. This tool does not write state automatically.",
+        "Inspect the current request context and recommend workspace init, starter, workstream, or task actions before execution starts. With autoCreate=true it may safely initialize existing or scaffold workspaces and auto-create or reuse a narrow point task.",
         lambda args: workflow_advice(
             args["workspacePath"],
             request_text=args.get("requestText"),
             auto_create=args.get("autoCreate", False),
+            canonical_request_text=args.get("canonicalRequestText"),
         ),
         {
             "workspacePath": {"type": "string"},
             "requestText": {"type": "string"},
+            "canonicalRequestText": {"type": "string"},
             "autoCreate": {"type": "boolean"},
         },
         ["workspacePath"],
@@ -934,7 +954,7 @@ TOOLS = {
     ),
     "show_workspace_context_pack": _read_tool(
         "show_workspace_context_pack",
-        "Load the current workspace context pack and optional semantic retrieval pack for a request.",
+        "Internal low-token context-pack surface. Use this only after triage_repo_request when triage still says broader repo context is needed.",
         lambda args: show_workspace_context_pack(
             args["workspacePath"],
             request_text=args.get("requestText"),
@@ -948,7 +968,45 @@ TOOLS = {
             "routeId": {"type": "string"},
             "limit": {"type": "integer"},
             "forceRefresh": {"type": "boolean"},
-            "semanticMode": {"type": "string", "enum": ["disabled", "auto", "enabled"]},
+            "semanticMode": SEMANTIC_MODE_SCHEMA,
+        },
+    ),
+    "show_runtime_preflight": _read_tool(
+        "show_runtime_preflight",
+        "Internal cheap runtime preflight surface behind triage_repo_request. Use triage_repo_request first for general existing-repo questions, and only use this directly when you need the lower-level preflight packet.",
+        lambda args: show_runtime_preflight(
+            args["workspacePath"],
+            request_text=args.get("requestText"),
+            route_id=args.get("routeId"),
+            limit=args.get("limit"),
+            force_refresh=args.get("forceRefresh", False),
+            semantic_mode=args.get("semanticMode"),
+        ),
+        {
+            "requestText": {"type": "string"},
+            "routeId": {"type": "string"},
+            "limit": {"type": "integer"},
+            "forceRefresh": {"type": "boolean"},
+            "semanticMode": SEMANTIC_MODE_SCHEMA,
+        },
+    ),
+    "triage_repo_request": _read_tool(
+        "triage_repo_request",
+        "First tool for existing repository triage. Before broad rg/find/manual scans, return the smallest owner files, exact package-level commands, route, and do-not-scan guidance for a user request. If it returns answer_ready=true, answer directly from candidate_files and candidate_commands instead of calling more retrieval surfaces.",
+        lambda args: triage_repo_request(
+            args["workspacePath"],
+            request_text=args.get("requestText"),
+            route_id=args.get("routeId"),
+            limit=args.get("limit"),
+            force_refresh=args.get("forceRefresh", False),
+            semantic_mode=args.get("semanticMode"),
+        ),
+        {
+            "requestText": {"type": "string"},
+            "routeId": {"type": "string"},
+            "limit": {"type": "integer"},
+            "forceRefresh": {"type": "boolean"},
+            "semanticMode": SEMANTIC_MODE_SCHEMA,
         },
     ),
     "search_context_index": _read_tool(
@@ -965,7 +1023,7 @@ TOOLS = {
             "queryText": {"type": "string"},
             "routeId": {"type": "string"},
             "limit": {"type": "integer"},
-            "semanticMode": {"type": "string", "enum": ["disabled", "auto", "enabled"]},
+            "semanticMode": SEMANTIC_MODE_SCHEMA,
         },
         ["workspacePath", "queryText"],
     ),
@@ -985,7 +1043,7 @@ TOOLS = {
             "routeId": {"type": "string"},
             "modulePath": {"type": "string"},
             "limit": {"type": "integer"},
-            "semanticMode": {"type": "string", "enum": ["disabled", "auto", "enabled"]},
+            "semanticMode": SEMANTIC_MODE_SCHEMA,
         },
     ),
     "run_analysis_audit": _read_tool(
@@ -1004,7 +1062,7 @@ TOOLS = {
             "queryText": {"type": "string"},
             "modulePath": {"type": "string"},
             "limit": {"type": "integer"},
-            "semanticMode": {"type": "string", "enum": ["disabled", "auto", "enabled"]},
+            "semanticMode": SEMANTIC_MODE_SCHEMA,
         },
         ["workspacePath", "mode"],
     ),
@@ -1620,6 +1678,7 @@ def _handle_request(request: dict[str, Any]) -> dict[str, Any] | None:
                 "protocolVersion": PROTOCOL_VERSION,
                 "capabilities": {
                     "tools": {"listChanged": False},
+                    "resources": {"listChanged": False, "subscribe": False},
                 },
                 "serverInfo": SERVER_INFO,
             },
@@ -1674,6 +1733,20 @@ def _handle_request(request: dict[str, Any]) -> dict[str, Any] | None:
                     is_error=True,
                 ),
             }
+
+    if method == "resources/list":
+        return {
+            "jsonrpc": "2.0",
+            "id": request_id,
+            "result": {"resources": []},
+        }
+
+    if method in {"resources/templates/list", "resources/templates"}:
+        return {
+            "jsonrpc": "2.0",
+            "id": request_id,
+            "result": {"resourceTemplates": []},
+        }
 
     return {
         "jsonrpc": "2.0",

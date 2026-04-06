@@ -20,7 +20,7 @@
         "workspacePath"
       ],
       "returns": "Structured mutation result payload.",
-      "summary": "Inspect the current request context and recommend workspace init, starter, workstream, or task actions before execution starts. This tool does not write state automatically.",
+      "summary": "Inspect the current request context and recommend workspace init, starter, workstream, or task actions before execution starts. With autoCreate=true it may safely initialize existing or scaffold workspaces and auto-create or reuse a narrow point task.",
       "tags": [
         "advise",
         "advise_workflow",
@@ -137,7 +137,7 @@
       "cost_hint": "low",
       "follow_up_paths": [
         "README.md",
-        "references/workflow-kernel.md",
+        "references/command-surface.md",
         "skills/plugin-platform/SKILL.md"
       ],
       "id": "archive_project_note",
@@ -759,8 +759,8 @@
       "cost_hint": "low",
       "follow_up_paths": [
         "README.md",
-        "references/visual-verification.md",
-        "references/workflow-kernel.md"
+        "references/command-surface.md",
+        "references/visual-verification.md"
       ],
       "id": "get_auth_session",
       "kind": "mcp_tool",
@@ -1067,7 +1067,7 @@
       "cost_hint": "low",
       "follow_up_paths": [
         "README.md",
-        "references/workflow-kernel.md",
+        "references/command-surface.md",
         "skills/plugin-platform/SKILL.md"
       ],
       "id": "get_plugin_stats",
@@ -1099,7 +1099,7 @@
       "cost_hint": "low",
       "follow_up_paths": [
         "README.md",
-        "references/workflow-kernel.md",
+        "references/command-surface.md",
         "skills/plugin-platform/SKILL.md"
       ],
       "id": "get_project_note",
@@ -1585,8 +1585,8 @@
       "cost_hint": "low",
       "follow_up_paths": [
         "README.md",
-        "references/visual-verification.md",
-        "references/workflow-kernel.md"
+        "references/command-surface.md",
+        "references/visual-verification.md"
       ],
       "id": "invalidate_auth_session",
       "kind": "mcp_tool",
@@ -1988,8 +1988,8 @@
       "cost_hint": "medium",
       "follow_up_paths": [
         "README.md",
-        "references/dashboard.md",
-        "references/workflow-kernel.md"
+        "references/command-surface.md",
+        "references/dashboard.md"
       ],
       "id": "list_workspaces",
       "kind": "mcp_tool",
@@ -2159,6 +2159,44 @@
     {
       "cost_hint": "low",
       "follow_up_paths": [
+        "README.md",
+        "references/command-surface.md",
+        "references/workflow-kernel.md"
+      ],
+      "id": "preview_reset_workspace_state",
+      "kind": "mcp_tool",
+      "path": "scripts/agentiux_dev_mcp.py",
+      "primary_surface": "mcp",
+      "read_only": true,
+      "related_routes": [
+        "plugin-dev",
+        "workstream"
+      ],
+      "required_inputs": [
+        "workspacePath"
+      ],
+      "returns": "Structured JSON payload for inspection and routing.",
+      "summary": "Preview how a workspace-scoped state reset would remove external state, context cache, and workspace analytics slices.",
+      "tags": [
+        "plugin-dev",
+        "preview",
+        "preview_reset_workspace_state",
+        "reset",
+        "state",
+        "workspace",
+        "workstream"
+      ],
+      "title": "Preview Reset Workspace State",
+      "tool_name": "preview_reset_workspace_state",
+      "triggers": [
+        "plugin-dev",
+        "preview reset workspace state",
+        "workstream"
+      ]
+    },
+    {
+      "cost_hint": "low",
+      "follow_up_paths": [
         "references/command-surface.md",
         "references/workflow-kernel.md",
         "skills/workspace-kernel/SKILL.md"
@@ -2270,8 +2308,8 @@
       "cost_hint": "low",
       "follow_up_paths": [
         "README.md",
-        "references/visual-verification.md",
-        "references/workflow-kernel.md"
+        "references/command-surface.md",
+        "references/visual-verification.md"
       ],
       "id": "remove_auth_profile",
       "kind": "mcp_tool",
@@ -2308,8 +2346,8 @@
       "cost_hint": "low",
       "follow_up_paths": [
         "README.md",
-        "references/visual-verification.md",
-        "references/workflow-kernel.md"
+        "references/command-surface.md",
+        "references/visual-verification.md"
       ],
       "id": "remove_auth_session",
       "kind": "mcp_tool",
@@ -2444,6 +2482,43 @@
       "tool_name": "repair_workspace_state",
       "triggers": [
         "repair workspace state",
+        "workstream"
+      ]
+    },
+    {
+      "cost_hint": "low",
+      "follow_up_paths": [
+        "README.md",
+        "references/command-surface.md",
+        "references/visual-verification.md"
+      ],
+      "id": "reset_workspace_state",
+      "kind": "mcp_tool",
+      "path": "scripts/agentiux_dev_mcp.py",
+      "primary_surface": "mcp",
+      "read_only": false,
+      "related_routes": [
+        "verification",
+        "workstream"
+      ],
+      "required_inputs": [
+        "workspacePath"
+      ],
+      "returns": "Structured mutation result payload.",
+      "summary": "Remove the external state slice for one workspace so initialization and destructive test flows can restart from a clean baseline.",
+      "tags": [
+        "reset",
+        "reset_workspace_state",
+        "state",
+        "verification",
+        "workspace",
+        "workstream"
+      ],
+      "title": "Reset Workspace State",
+      "tool_name": "reset_workspace_state",
+      "triggers": [
+        "reset workspace state",
+        "verification",
         "workstream"
       ]
     },
@@ -2672,7 +2747,7 @@
       "cost_hint": "low",
       "follow_up_paths": [
         "README.md",
-        "references/workflow-kernel.md",
+        "references/command-surface.md",
         "skills/plugin-platform/SKILL.md"
       ],
       "id": "search_project_notes",
@@ -2819,7 +2894,7 @@
       "cost_hint": "low",
       "follow_up_paths": [
         "README.md",
-        "references/workflow-kernel.md",
+        "references/command-surface.md",
         "skills/plugin-platform/SKILL.md"
       ],
       "id": "show_capability_catalog",
@@ -3018,6 +3093,40 @@
       ]
     },
     {
+      "cost_hint": "low",
+      "follow_up_paths": [
+        "README.md",
+        "references/command-surface.md",
+        "references/dashboard.md"
+      ],
+      "id": "show_runtime_preflight",
+      "kind": "mcp_tool",
+      "path": "scripts/agentiux_dev_mcp.py",
+      "primary_surface": "mcp",
+      "read_only": true,
+      "related_routes": [
+        "youtrack"
+      ],
+      "required_inputs": [
+        "workspacePath"
+      ],
+      "returns": "Structured JSON payload for inspection and routing.",
+      "summary": "Internal cheap runtime preflight surface behind triage_repo_request. Use triage_repo_request first for general existing-repo questions, and only use this directly when you need the lower-level preflight packet.",
+      "tags": [
+        "preflight",
+        "runtime",
+        "show",
+        "show_runtime_preflight",
+        "youtrack"
+      ],
+      "title": "Show Runtime Preflight",
+      "tool_name": "show_runtime_preflight",
+      "triggers": [
+        "show runtime preflight",
+        "youtrack"
+      ]
+    },
+    {
       "cost_hint": "medium",
       "follow_up_paths": [],
       "id": "show_upgrade_plan",
@@ -3088,7 +3197,7 @@
       "follow_up_paths": [
         "README.md",
         "references/command-surface.md",
-        "references/visual-verification.md"
+        "references/dashboard.md"
       ],
       "id": "show_workspace_context_pack",
       "kind": "mcp_tool",
@@ -3096,29 +3205,29 @@
       "primary_surface": "mcp",
       "read_only": true,
       "related_routes": [
-        "verification",
-        "workstream"
+        "workstream",
+        "youtrack"
       ],
       "required_inputs": [
         "workspacePath"
       ],
       "returns": "Structured JSON payload for inspection and routing.",
-      "summary": "Load the current workspace context pack and optional semantic retrieval pack for a request.",
+      "summary": "Internal low-token context-pack surface. Use this only after triage_repo_request when triage still says broader repo context is needed.",
       "tags": [
         "context",
         "pack",
         "show",
         "show_workspace_context_pack",
-        "verification",
         "workspace",
-        "workstream"
+        "workstream",
+        "youtrack"
       ],
       "title": "Show Workspace Context Pack",
       "tool_name": "show_workspace_context_pack",
       "triggers": [
         "show workspace context pack",
-        "verification",
-        "workstream"
+        "workstream",
+        "youtrack"
       ]
     },
     {
@@ -3442,8 +3551,8 @@
       "cost_hint": "low",
       "follow_up_paths": [
         "README.md",
-        "references/visual-verification.md",
-        "references/workflow-kernel.md"
+        "references/command-surface.md",
+        "references/visual-verification.md"
       ],
       "id": "sync_verification_helpers",
       "kind": "mcp_tool",
@@ -3512,7 +3621,41 @@
       "cost_hint": "low",
       "follow_up_paths": [
         "README.md",
-        "references/workflow-kernel.md",
+        "references/command-surface.md",
+        "references/dashboard.md"
+      ],
+      "id": "triage_repo_request",
+      "kind": "mcp_tool",
+      "path": "scripts/agentiux_dev_mcp.py",
+      "primary_surface": "mcp",
+      "read_only": true,
+      "related_routes": [
+        "youtrack"
+      ],
+      "required_inputs": [
+        "workspacePath"
+      ],
+      "returns": "Structured JSON payload for inspection and routing.",
+      "summary": "First tool for existing repository triage. Before broad rg/find/manual scans, return the smallest owner files, exact package-level commands, route, and do-not-scan guidance for a user request. If it returns answer_ready=true, answer directly from candidate_files and candidate_commands instead of calling more retrieval surfaces.",
+      "tags": [
+        "repo",
+        "request",
+        "triage",
+        "triage_repo_request",
+        "youtrack"
+      ],
+      "title": "Triage Repo Request",
+      "tool_name": "triage_repo_request",
+      "triggers": [
+        "triage repo request",
+        "youtrack"
+      ]
+    },
+    {
+      "cost_hint": "low",
+      "follow_up_paths": [
+        "README.md",
+        "references/command-surface.md",
         "skills/plugin-platform/SKILL.md"
       ],
       "id": "update_learning_entry",
@@ -3650,8 +3793,8 @@
       "cost_hint": "low",
       "follow_up_paths": [
         "README.md",
-        "references/visual-verification.md",
-        "references/workflow-kernel.md"
+        "references/command-surface.md",
+        "references/visual-verification.md"
       ],
       "id": "write_auth_profile",
       "kind": "mcp_tool",
@@ -3688,8 +3831,8 @@
       "cost_hint": "low",
       "follow_up_paths": [
         "README.md",
-        "references/visual-verification.md",
-        "references/workflow-kernel.md"
+        "references/command-surface.md",
+        "references/visual-verification.md"
       ],
       "id": "write_auth_session",
       "kind": "mcp_tool",
@@ -3797,7 +3940,7 @@
       "cost_hint": "low",
       "follow_up_paths": [
         "README.md",
-        "references/workflow-kernel.md",
+        "references/command-surface.md",
         "skills/plugin-platform/SKILL.md"
       ],
       "id": "write_learning_entry",
@@ -3831,7 +3974,7 @@
       "cost_hint": "low",
       "follow_up_paths": [
         "README.md",
-        "references/workflow-kernel.md",
+        "references/command-surface.md",
         "skills/plugin-platform/SKILL.md"
       ],
       "id": "write_project_note",
@@ -3970,7 +4113,7 @@
       ]
     }
   ],
-  "entry_count": 114,
+  "entry_count": 118,
   "plugin": {
     "name": "agentiux-dev",
     "version": "0.8.0"

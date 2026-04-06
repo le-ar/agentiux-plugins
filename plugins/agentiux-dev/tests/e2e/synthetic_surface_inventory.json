@@ -1,0 +1,86 @@
+{
+  "schema_version": 1,
+  "surfaces": [
+    {
+      "path": "scripts/agentiux_dev_context_cache.py",
+      "symbol": "_synthetic_mtime_ns",
+      "scope": "test_support",
+      "used_by": [
+        "scripts/agentiux_dev_context_cache.py"
+      ],
+      "evidence_level": "synthetic_fixture",
+      "replacement_needed": "none"
+    },
+    {
+      "path": "scripts/agentiux_dev_e2e_support.py",
+      "symbol": "FakeYouTrackHandler",
+      "scope": "test_only",
+      "used_by": [
+        "scripts/agentiux_dev_e2e_support.py",
+        "tests/e2e/scenarios/dashboard.py",
+        "tests/e2e/scenarios/integration.py",
+        "tests/e2e/scenarios/self_host.py",
+        "scripts/smoke_test.py"
+      ],
+      "evidence_level": "fake_service",
+      "replacement_needed": "none"
+    },
+    {
+      "path": "scripts/agentiux_dev_e2e_support.py",
+      "symbol": "FakeYouTrackServer",
+      "scope": "test_only",
+      "used_by": [
+        "tests/e2e/scenarios/dashboard.py",
+        "tests/e2e/scenarios/integration.py",
+        "tests/e2e/scenarios/self_host.py",
+        "scripts/smoke_test.py"
+      ],
+      "evidence_level": "fake_service",
+      "replacement_needed": "none"
+    },
+    {
+      "path": "scripts/agentiux_dev_e2e_support.py",
+      "symbol": "write_fake_adb",
+      "scope": "test_only",
+      "used_by": [
+        "scripts/smoke_test.py"
+      ],
+      "evidence_level": "fake_service",
+      "replacement_needed": "none"
+    },
+    {
+      "path": "scripts/agentiux_dev_e2e_support.py",
+      "symbol": "write_fake_bootstrap_tools",
+      "scope": "test_only",
+      "used_by": [
+        "tests/e2e/scenarios/integration.py",
+        "tests/e2e/scenarios/self_host.py",
+        "scripts/smoke_test.py"
+      ],
+      "evidence_level": "fake_service",
+      "replacement_needed": "none"
+    },
+    {
+      "path": "scripts/agentiux_dev_e2e_support.py",
+      "symbol": "write_fake_host_setup_installer",
+      "scope": "test_only",
+      "used_by": [
+        "tests/e2e/scenarios/self_host.py",
+        "scripts/smoke_test.py"
+      ],
+      "evidence_level": "fake_service",
+      "replacement_needed": "none"
+    },
+    {
+      "path": "tests/e2e/tools/semantic_contract_runner.py",
+      "symbol": "__file__",
+      "scope": "test_only",
+      "used_by": [
+        "scripts/agentiux_dev_e2e_support.py",
+        "tests/e2e/scenarios/verification_auth.py"
+      ],
+      "evidence_level": "contract_only",
+      "replacement_needed": "live_playwright_integration"
+    }
+  ]
+}

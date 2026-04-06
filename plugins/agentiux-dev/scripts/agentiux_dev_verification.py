@@ -79,6 +79,7 @@ SEMANTIC_RESULT_STATUSES = {
     "not_applicable",
     "unknown",
 }
+SEMANTIC_REPORT_SCHEMA_VERSION = 2
 SEMANTIC_ASSERTION_CHECKS = {
     "presence_uniqueness",
     "visibility",
@@ -2727,23 +2728,42 @@ def _semantic_report_schema_errors(payload: Any, case: dict[str, Any]) -> list[s
     errors: list[str] = []
     if not isinstance(payload, dict):
         return ["Semantic assertions report must be a JSON object."]
+    schema_version = payload.get("schema_version")
+    if schema_version != SEMANTIC_REPORT_SCHEMA_VERSION:
+        errors.append(
+            "Semantic assertions report schema_version "
+            f"`{schema_version}` does not match `{SEMANTIC_REPORT_SCHEMA_VERSION}`."
+        )
     report_runner = payload.get("runner")
-    if report_runner and str(report_runner) != str(case.get("runner")):
+    if not report_runner:
+        errors.append("Semantic assertions report is missing `runner`.")
+    elif str(report_runner) != str(case.get("runner")):
         errors.append(
             f"Semantic assertions report runner `{report_runner}` does not match case runner `{case.get('runner')}`."
         )
-    helper_version = payload.get("helper_bundle_version") or payload.get("spec_version")
-    if helper_version and str(helper_version) != _verification_helper_version():
+    helper_version = payload.get("helper_bundle_version")
+    if not helper_version:
+        errors.append("Semantic assertions report is missing `helper_bundle_version`.")
+    elif str(helper_version) != _verification_helper_version():
         errors.append(
             f"Semantic assertions report helper version `{helper_version}` does not match `{_verification_helper_version()}`."
         )
     summary = payload.get("summary") or {}
-    if summary and not isinstance(summary, dict):
-        errors.append("Semantic assertions report summary must be an object when present.")
-    elif summary and _normalize_semantic_result_status(summary.get("status")) == "unknown" and summary.get("status") not in {None, ""}:
+    if not isinstance(summary, dict) or not summary:
+        errors.append("Semantic assertions report summary must be an object.")
+    elif not summary.get("status"):
+        errors.append("Semantic assertions report summary is missing `status`.")
+    elif _normalize_semantic_result_status(summary.get("status")) == "unknown" and str(summary.get("status")).strip().lower() != "unknown":
         errors.append(f"Semantic assertions report summary status `{summary.get('status')}` is unsupported.")
+    elif summary.get("check_counts") is not None and not isinstance(summary.get("check_counts"), dict):
+        errors.append("Semantic assertions report summary.check_counts must be an object when present.")
+    elif summary.get("required_checks") is not None and not isinstance(summary.get("required_checks"), list):
+        errors.append("Semantic assertions report summary.required_checks must be a list when present.")
     checks_payload = payload.get("checks")
     targets_payload = payload.get("targets")
+    expected_target_ids = [target.get("target_id") for target in case.get("semantic_assertions", {}).get("targets") or [] if target.get("target_id")]
+    if expected_target_ids and not isinstance(targets_payload, list):
+        errors.append("Semantic assertions report targets must be a list for target-level semantic cases.")
     if checks_payload is not None and not isinstance(checks_payload, (list, dict)):
         errors.append("Semantic assertions report checks must be a list or object.")
     if targets_payload is not None and not isinstance(targets_payload, list):
@@ -2757,7 +2777,9 @@ def _semantic_report_schema_errors(payload: Any, case: dict[str, Any]) -> list[s
         if not check_id:
             errors.append(f"{label} is missing `check_id`.")
         status = item.get("status")
-        if status is not None and _normalize_semantic_result_status(status) == "unknown" and str(status).strip().lower() != "unknown":
+        if status in {None, ""}:
+            errors.append(f"{label} is missing `status`.")
+        elif _normalize_semantic_result_status(status) == "unknown" and str(status).strip().lower() != "unknown":
             errors.append(f"{label} has unsupported status `{status}`.")
         artifact_paths = item.get("artifact_paths") or item.get("artifacts")
         if artifact_paths is not None and not isinstance(artifact_paths, list):
@@ -2773,6 +2795,7 @@ def _semantic_report_schema_errors(payload: Any, case: dict[str, Any]) -> list[s
                 label=f"checks.{check_id}",
             )
     if isinstance(targets_payload, list):
+        seen_target_ids: set[str] = set()
         for index, target in enumerate(targets_payload, start=1):
             if not isinstance(target, dict):
                 errors.append(f"targets[{index}] must be an object.")
@@ -2780,7 +2803,20 @@ def _semantic_report_schema_errors(payload: Any, case: dict[str, Any]) -> list[s
             target_id = target.get("target_id") or target.get("id")
             if not target_id:
                 errors.append(f"targets[{index}] is missing `target_id`.")
+            else:
+                target_id = str(target_id)
+                if target_id in seen_target_ids:
+                    errors.append(f"targets[{index}] duplicates target_id `{target_id}`.")
+                seen_target_ids.add(target_id)
+            target_status = target.get("status")
+            if target_status in {None, ""}:
+                errors.append(f"targets[{index}] is missing `status`.")
+            elif _normalize_semantic_result_status(target_status) == "unknown" and str(target_status).strip().lower() != "unknown":
+                errors.append(f"targets[{index}] has unsupported status `{target_status}`.")
             checks = target.get("checks")
+            if expected_target_ids and checks is None:
+                errors.append(f"targets[{index}] is missing `checks`.")
+                continue
             if checks is not None and not isinstance(checks, (list, dict)):
                 errors.append(f"targets[{index}].checks must be a list or object.")
                 continue
@@ -2914,7 +2950,7 @@ def _validate_semantic_assertions(run_paths: dict[str, Path], case: dict[str, An
         "failed_checks": failed_checks,
         "optional_failed_checks": optional_failed_checks,
         "targets": targets,
-        "helper_bundle_version": payload.get("helper_bundle_version") or payload.get("spec_version"),
+        "helper_bundle_version": payload.get("helper_bundle_version"),
         "summary_status": summary_status or ("passed" if report_status == "passed" else "failed"),
         "reason": reason,
         "message": (payload.get("summary") or {}).get("message") or payload.get("message"),

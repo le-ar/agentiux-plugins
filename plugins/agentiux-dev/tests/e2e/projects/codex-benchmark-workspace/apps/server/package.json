@@ -1,0 +1,7 @@
+{
+  "name": "@bench/server",
+  "private": true,
+  "scripts": {
+    "test:readiness": "tsx --test test/health.e2e-spec.ts"
+  }
+}

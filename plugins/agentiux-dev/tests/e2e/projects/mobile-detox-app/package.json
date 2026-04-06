@@ -1,0 +1,17 @@
+{
+  "name": "mobile-detox-app",
+  "private": true,
+  "packageManager": "pnpm@10.0.0",
+  "scripts": {
+    "test:detox": "detox test"
+  },
+  "dependencies": {
+    "expo": "^54.0.0",
+    "react": "^19.0.0",
+    "react-native": "^0.82.0"
+  },
+  "devDependencies": {
+    "detox": "^20.0.0",
+    "typescript": "^5.8.0"
+  }
+}

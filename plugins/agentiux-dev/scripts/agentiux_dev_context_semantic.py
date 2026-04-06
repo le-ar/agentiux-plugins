@@ -18,6 +18,17 @@ SEMANTIC_MANIFEST_SCHEMA_VERSION = 1
 SEMANTIC_EMBEDDER_VERSION = "local-hash-v1"
 SEMANTIC_VECTOR_DIM = 96
 SEMANTIC_MODE_VALUES = {"disabled", "auto", "enabled"}
+SEMANTIC_MODE_ALIASES = {
+    "balanced": "auto",
+    "default": "auto",
+    "normal": "auto",
+    "none": "disabled",
+    "off": "disabled",
+    "false": "disabled",
+    "on": "enabled",
+    "true": "enabled",
+}
+SEMANTIC_MODE_ARGUMENT_VALUES = tuple(sorted({*SEMANTIC_MODE_VALUES, *SEMANTIC_MODE_ALIASES}))
 SEMANTIC_MATCH_LIMIT = 12
 ANALYSIS_AUDIT_MODES = {"architecture", "performance", "docs_style"}
 SEMANTIC_STATUS_ACTIVE = "active"
@@ -86,6 +97,7 @@ def _write_jsonl(path: Path, records: list[dict[str, Any]]) -> None:
 
 def normalize_semantic_mode(value: str | None, *, default: str = "disabled") -> str:
     normalized = str(value or default).strip().lower() or default
+    normalized = SEMANTIC_MODE_ALIASES.get(normalized, normalized)
     if normalized not in SEMANTIC_MODE_VALUES:
         raise ValueError(f"Unsupported semantic mode: {value}")
     return normalized

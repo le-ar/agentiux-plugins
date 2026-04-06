@@ -4,12 +4,24 @@ AgentiUX Dev is a home-local Codex plugin for development workflows that should 
 
 ## Quick Start
 
-Initialize an existing repository in external state and let the plugin route the next action:
+In Codex, say:
+
+- `Initialize this repository and continue fixing the CTA spacing in checkout.`
+- `Continue work on the current checkout issue and run the right verification after the fix.`
+
+Codex should then use the plugin runtime to:
+
+- inspect workflow advice first
+- auto-initialize an `existing` or `scaffold` repository only when the request is safe for `autoCreate`
+- auto-create or reuse a narrow point task when the request is a focused fix
+- keep broad feature work in workstream mode until you confirm the stage plan
+- prefer cheap retrieval surfaces before broad repo reads or full context refresh
+
+CLI equivalents remain available for debugging, smoke, e2e, and installer verification:
 
 ```bash
 python3 scripts/agentiux_dev_state.py preview-init --workspace /path/to/repo
-python3 scripts/agentiux_dev_state.py init-workspace --workspace /path/to/repo
-python3 scripts/agentiux_dev_state.py workflow-advice --workspace /path/to/repo --request-text "Fix the CTA spacing"
+python3 scripts/agentiux_dev_state.py workflow-advice --workspace /path/to/repo --request-text "Fix the CTA spacing" --auto-create
 python3 scripts/agentiux_dev_state.py run-verification-suite --workspace /path/to/repo --suite-id full
 ```
 
@@ -30,7 +42,8 @@ The source repo remains the place where you edit and verify the plugin. The inst
 ## Core Rules
 
 - Keep all Codex-specific workflow state outside project repositories.
-- `workflow-advice` may auto-create or reuse point tasks for narrow fixes in initialized repositories, but workstreams, starter bootstrapping, stage plan changes, and upgrade application stay confirmation-driven.
+- The primary operator UX is chat-first through Codex. Raw `python3 scripts/...` commands are backend or debugging equivalents, not the preferred day-to-day flow.
+- `workflow-advice` with `autoCreate=true` may auto-initialize `existing` or `scaffold` repositories and auto-create or reuse point tasks for narrow fixes, but workstreams, starter bootstrapping, stage plan changes, and upgrade application stay confirmation-driven.
 - Verification events, stdout, stderr, Android logcat, and artifacts stay in external plugin state so the repo remains clean.
 - Web visual verification must use semantic assertions with the core layout guardrail set: `presence_uniqueness`, `visibility`, `overflow_clipping`, `computed_styles`, `interaction_states`, `scroll_reachability`, and `occlusion`.
 - Web workspaces must also ship at least one live `browser-layout-audit` case so computed overlap, occlusion, clipping, and viewport regressions are checked on a real rendered page.
@@ -50,6 +63,7 @@ The source repo remains the place where you edit and verify the plugin. The inst
 
 - external workspace state under `~/.agentiux/agentiux-dev/`
 - explicit workspace initialization before state creation
+- workspace-scoped state reset for destructive test preparation and clean re-initialization
 - automatic workflow advice that proposes initialization, starters, workstreams, or tasks from plain user requests without writing state automatically
 - named workstreams with independent stage registers, briefs, design state, and verification state
 - lightweight tasks for point fixes that should not require a full workstream
@@ -75,7 +89,7 @@ The source repo remains the place where you edit and verify the plugin. The inst
 - repo-aware Git workflow advice plus safe local branch, staging, and commit actions
 - workspace-scoped YouTrack integration with permanent-token connections, persisted search sessions, richer issue context plus linked-issue analysis for planning, idempotent plan apply, and issue-ledger aggregation
 - repo-tracked low-token catalogs for skills, MCP tools, scripts, references, and intent routes
-- global project context indexing under `~/.agentiux/agentiux-dev/cache/context/`, with structural artifacts plus a separate optional semantic tier (`semantic_units.jsonl`, `semantic_index.sqlite`, `semantic_manifest.json`) and query-pack cache packets in `semantic_cache.jsonl`
+- global project context indexing under `~/.agentiux/agentiux-dev/cache/context/`, with `context_store.sqlite` as the hot query backend plus a separate optional semantic tier (`semantic_units.jsonl`, `semantic_index.sqlite`, `semantic_manifest.json`) and compact JSON manifests for workspace and usage summaries
 - project memory notes plus generated audit snapshots stored outside repositories, with generated snapshots capped and expiring from semantic recall automatically
 - a cockpit-first local-only dashboard launched from chat, with dashboard writes for YouTrack integration management, universal E2E auth profiles and sessions, project memory notes, and learning entries
 
@@ -93,7 +107,7 @@ Deep links remain local-only and deterministic:
 - `/workspaces/<url-encoded-workspace-path>`
 - `/workspaces/<url-encoded-workspace-path>?panel=<panel-id>`
 
-`release_readiness.py dashboard-check` is the canonical evidence surface for cockpit hardening. It captures cold-start timing, first-usable render timing, payload byte sizes, live browser audit results, and deep-link or history assertions from the rendered dashboard.
+`release_readiness.py dashboard-check` is the canonical evidence surface for cockpit hardening. It captures cold-start timing, first-usable render timing, payload byte sizes, live browser audit results, deep-link or history assertions from the rendered dashboard, and hard budget verdicts for overview, bootstrap, plan-panel, fetch timings, and first-usable render.
 
 ## Low-Token Retrieval
 
@@ -102,12 +116,14 @@ Codex should prefer the low-token retrieval ladder before reading large docs or 
 1. existing cheap summaries such as plugin stats, dashboard snapshot, and workspace detail
 2. `show intent route`
 3. `show capability catalog`
-4. `show workspace context pack`
-5. `search context index`
-6. `show context structure`
-7. `run analysis audit`
-8. targeted file reads
-9. broad manual exploration only when the earlier layers are insufficient
+4. `triage repo request`
+5. `show runtime preflight`
+6. `show workspace context pack`
+7. `search context index`
+8. `show context structure`
+9. `run analysis audit`
+10. targeted file reads
+11. broad manual exploration only when the earlier layers are insufficient
 
 Cheap retrieval surfaces now expose explicit retrieval-mode metadata and payload ceilings:
 
@@ -116,17 +132,53 @@ Cheap retrieval surfaces now expose explicit retrieval-mode metadata and payload
 - `fix`: nearest-context retrieval for narrow bug or regression work
 - `execution`: active-slice retrieval for implementation once the boundary is already known
 
-`show intent route`, `workflow-advice`, `show workspace context pack`, and `search context index` stay Unicode-safe for mixed-script and non-ASCII requests when canonical tool names, paths, and schema fields remain in English.
+`show intent route`, `show capability catalog`, `triage repo request`, `show runtime preflight`, `workflow-advice`, `show workspace context pack`, and `search context index` stay Unicode-safe for mixed-script and non-ASCII requests when canonical tool names, paths, and schema fields remain in English. When Codex already understands the user's wording, it should pass an English `canonicalRequestText` into workflow advice rather than relying on tracked localized alias packs. `show runtime preflight` may also reuse the last high-confidence request saved in `usage.json` when a follow-up runtime call omits request text entirely, the warmed retrieval path now emits a compact `why_these_files` summary instead of forcing the model to infer shortlist rationale from raw paths alone, and compatible semantic-mode aliases such as `balanced` normalize safely onto the runtime semantic contract instead of failing the call. The warm triage path now also biases owner-style checkout or readiness questions toward `verification` or `analysis` instead of resolving them through `git` or `release`, infers owner-only command suppression from route-file or shared-package-file phrasing even when the shorter request omits explicit `candidate_commands=[]` wording, splits `primary_owner_files` from `supporting_evidence_files` so manifests and specs stop competing with direct owners in one flat shortlist, and emits explicit `follow_up_policy`, `proof_assertions`, and `dependency_edges` so an answer-ready bounded packet does not need a second retrieval hop just to justify wrapper, controller-service, or spec relationships.
+
+`show capability catalog` now follows the same cheap-surface payload contract as the rest of the retrieval ladder: it emits a `payload` block with serialized size and ceiling metadata and trims oversized entry lists back under the hard ceiling instead of spilling a large catalog into prompt context.
 
 Cheap retrieval surfaces also keep Stage 1 payload discipline. They project compact `design_summary`, `testability_summary`, `structure_summary`, `hotspot_summary`, and `semantic_summary` counts instead of embedding full design briefs, handoffs, verification recipes, structural artifacts, semantic units, or generated snapshot bodies.
+
+For benchmark-only evidence runs, setting `AGENTIUX_DEV_BENCHMARK_LOG=/path/to/file.jsonl` makes cheap retrieval surfaces append JSONL telemetry with payload bytes, ceiling status, route id, retrieval or semantic mode, cache status, selected chunk counts, selected tool counts, and refresh reason. Without that env var, no benchmark log is written.
 
 The plugin keeps canonical versioned catalogs in `catalogs/` and stores project-derived context indexes globally under `~/.agentiux/agentiux-dev/cache/context/<workspace-fingerprint>/`. No project-derived context cache is written into repositories.
 
 Context indexing stays symbolic-first by default. Python and Markdown always use parser-backed extraction, JS/TS can opt into a local TypeScript-compiler backend when `node` plus a resolvable `typescript` package are available, and Kotlin/Rust/other supported source types keep heuristic extraction with the same normalized chunk schema. Large files above `64_000` bytes switch into bounded structural mode instead of full-body summary synthesis, and all structural artifacts remain home-local under the context cache root. Stage 5 adds an optional semantic layer on top of those structural records, but semantic recall stays disabled unless the caller explicitly enables it on the `analysis` path or uses `run analysis audit`.
 
+## Retrieval Backend
+
+The product runtime no longer exposes a benchmark bootstrap command. Normal AgentiUX Dev operation uses the shared retrieval ladder only:
+
+- `show intent route`
+- `show capability catalog`
+- `triage repo request`
+- `show workspace context pack`
+- `search context index`
+- `show context structure`
+
+If `triage repo request` returns `answer_ready=true`, Codex should answer directly from `candidate_files`, `supporting_evidence_files`, and `candidate_commands` instead of chaining more retrieval surfaces. In that ready state the runtime now clears `selected_tools`, emits a zero-budget `follow_up_policy`, keeps `next_read_paths` equal to the bounded final packet, and uses `proof_assertions` plus compact `dependency_edges` to explain hidden wrapper, re-export, or controller-to-service chains without promoting those intermediaries into the owner shortlist. The warmed runtime also re-ranks final triage owner files against `do_not_scan_paths` and exact package-command ownership, keeps `candidate_files` focused on the primary owner slice, and moves manifests, specs, and other confirmation artifacts into `supporting_evidence_files` when they should stay visible without displacing the direct owners. Exact package scripts can also seed repo-relative spec or config references into the supporting evidence slice, while owner-only routing queries prune verification-only support when the request never asked for test artifacts.
+
+The hot path for workspace retrieval is now backed by `context_store.sqlite` under `~/.agentiux/agentiux-dev/cache/context/<workspace-fingerprint>/`. Compact JSON artifacts stay as summaries and manifests only:
+
+- `workspace_context.json`
+- `index_manifest.json`
+- `usage.json`
+- `structure_index.json`
+
+The SQLite store owns queryable modules, files, chunks, and query-cache packets. Refresh remains incremental:
+
+- touched or removed paths rebuild only the affected rows
+- context-pack cache entries are invalidated by source-hash drift or catalog drift
+- `refresh context index` also refreshes lightweight ownership-graph state plus route-scoped shortlist projections for the warmed runtime path
+- active task or workstream sessions can reuse a bounded task-scoped retrieval cache without leaking across unrelated scopes
+- large repositories avoid full JSONL rereads on every search or context-pack request
+
+The internal evidence-only benchmark harness still materializes an external transport file during A/B runs, but that adapter lives in the benchmark layer and is not part of the public runtime or command surface. Warm evidence runs now seed an isolated home-local install, marketplace file, and benchmark `CODEX_HOME` so the benchmark uses the same plugin-registration path as real product sessions instead of reading directly from the source checkout.
+
 ## Public Command Surface
 
 - `initialize workspace`
+- `preview reset workspace state`
+- `reset workspace state`
 - `preview repair workspace state`
 - `repair workspace state`
 - `show state paths`
@@ -147,6 +199,7 @@ Context indexing stays symbolic-first by default. Python and Markdown always use
 - `sync verification helpers`
 - `show capability catalog`
 - `show intent route`
+- `triage repo request`
 - `show workspace context pack`
 - `search context index`
 - `show context structure`
@@ -236,6 +289,8 @@ Localized aliases are matched at runtime. The tracked source remains English-onl
 
 - `python3 scripts/agentiux_dev_state.py preview-init --workspace /path/to/repo`
 - `python3 scripts/agentiux_dev_state.py init-workspace --workspace /path/to/repo`
+- `python3 scripts/agentiux_dev_state.py preview-reset-workspace-state --workspace /path/to/repo`
+- `python3 scripts/agentiux_dev_state.py reset-workspace-state --workspace /path/to/repo`
 - `python3 scripts/agentiux_dev_state.py preview-repair-workspace-state --workspace /path/to/repo`
 - `python3 scripts/agentiux_dev_state.py repair-workspace-state --workspace /path/to/repo`
 - `python3 scripts/agentiux_dev_state.py migrate-workspace-state --workspace /path/to/repo`
@@ -244,6 +299,7 @@ Localized aliases are matched at runtime. The tracked source remains English-onl
 - `python3 scripts/agentiux_dev_state.py workflow-advice --workspace /path/to/repo --request-text "Fix the CTA spacing"`
 - `python3 scripts/agentiux_dev_state.py show-capability-catalog --route-id git --query-text "commit worktree branch"`
 - `python3 scripts/agentiux_dev_state.py show-intent-route --request-text "Inspect plugin dashboard and MCP tool catalogs"`
+- `python3 scripts/agentiux_dev_state.py show-runtime-preflight --workspace /path/to/repo --request-text "Inspect checkout verification" --route-id verification`
 - `python3 scripts/agentiux_dev_state.py show-workspace-context-pack --workspace /path/to/repo --request-text "Inspect checkout verification" --route-id verification`
 - `python3 scripts/agentiux_dev_state.py search-context-index --workspace /path/to/repo --query-text "Detox helper bundle drift"`
 - `python3 scripts/agentiux_dev_state.py show-auth-profiles --workspace /path/to/repo`
@@ -280,7 +336,22 @@ Localized aliases are matched at runtime. The tracked source remains English-onl
 - `python3 scripts/agentiux_dev_gui.py stop`
 - `python3 scripts/agentiux.py web`
 - `python3 scripts/install_home_local.py`
+- `python3 scripts/external_repo_e2e.py`
 - `python3 scripts/smoke_test.py`
+
+## E2E Fixtures
+
+Tracked full-suite preparation assets live under `tests/e2e/`.
+
+- `tests/e2e/projects/fullstack-workspace/` is the broad-spectrum repo fixture for kernel, workflow, design, retrieval, repo-management, and dashboard flows.
+- `tests/e2e/projects/codex-benchmark-workspace/` is the dedicated Codex CLI benchmark fixture with real storefront/admin/server ownership edges, verification specs, and package-level commands for assisted-vs-raw evidence runs.
+- `tests/e2e/projects/mobile-detox-app/` is the mobile fixture for auth-backed verification, session reuse, helper sync, and Detox-native layout audit flows.
+- `tests/e2e/projects/android-compose-lab/` is the Android fixture for Compose screenshot and native semantic-layout flows.
+- `tests/e2e/tools/semantic_contract_runner.py` provides deterministic contract-only semantic reports for temp-cloned fixtures without relying on platform runtimes.
+- `tests/e2e/synthetic_surface_inventory.json` is the tracked classification registry for fake, mock, stub, and synthetic helpers used by the test harness.
+- `tests/e2e/TEST_CATALOG.md` is the canonical registry for the full scenario matrix and cleanup strategy.
+
+`scripts/external_repo_e2e.py` now copies these tracked fixtures into a temp run root, injects isolated install and state paths, exercises public `preview-reset-workspace-state` and `reset-workspace-state`, and deletes the run root after execution. The committed fixture templates are never mutated in place.
 
 ## Host Support
 
@@ -290,6 +361,7 @@ Localized aliases are matched at runtime. The tracked source remains English-onl
 - `show host setup plan` previews host-specific install or manual repair steps without mutating the machine.
 - `install host requirements` and `repair host requirements` run only after explicit confirmation and refresh `show host support` state after execution.
 - Automatic host setup currently covers the deterministic package-manager path the plugin can defend on the current host: Homebrew on macOS, APT on Linux, and WinGet or Chocolatey on Windows for supported tools such as Node.js and Android platform tools.
+- `AGENTIUX_DEV_TOOL_OVERRIDE_*` is test-gated. The runtime ignores those overrides unless `AGENTIUX_DEV_ALLOW_TEST_OVERRIDES=1` is set explicitly by a smoke or e2e harness.
 - Interactive or high-risk flows such as Xcode command-line tools and Docker remain manual.
 - Installed copies normalize `.mcp.json` to a host-appropriate Python launcher during install or sync.
 
@@ -453,51 +525,117 @@ Visual cases may also declare optional `semantic_assertions`. The plugin now own
 
 Verification recipes are schema v3. The semantic spec supports `enabled`, `report_path`, `required_checks`, `targets`, `reachability_paths`, `limitation_entries`, `auto_scan`, `heuristics`, `artifacts`, and `platform_hooks`. Targets are platform-neutral and use locator kinds such as `selector`, `role`, `test_id`, `semantics_tag`, or `text`, plus expected attributes, styles, layout invariants, and clipping or occlusion allowances. `reachability_paths[]` declare authored navigation or gesture steps for critical actions, while `limitation_entries[]` persist explicit known gaps when a runner cannot execute the intended path yet. At runtime AgentiUX Dev writes the resolved spec into the run root, passes helper and report env vars to the runner, validates helper sync and capability compatibility, and records `semantic_summary` in case and run state.
 
+Synthetic semantic fixture reports are contract-only evidence. They validate helper sync, shared report shape, and downstream audit contracts, but they do not prove live locator, interaction, reachability, or rendered UI integration on their own. Live browser layout audit remains the highest-trust shipped web signal, and mobile or Android fixture semantics should be treated as partially synthetic until a live runner path is available for those surfaces.
+
 The shared deterministic check families are `presence_uniqueness`, `visibility`, `scroll_reachability`, `overflow_clipping`, `occlusion`, `interaction_states`, `computed_styles`, `layout_relations`, `text_overflow`, `accessibility_state`, and `screenshot_baseline`. `scroll_reachability` is enough only for scroll-only critical actions. Gesture-led actions should have an authored path on `playwright-visual` or `detox-visual`, or an explicit limitation entry. Coverage audits now also warn when semantic cases have no explicit targets, when helper bundles are missing or stale, when required checks do not match the runner capability matrix, when critical actions lack authored path coverage, or when a known limitation is still open.
 
 Web recipes may also declare first-class `browser-layout-audit` cases. These cases can launch a local server with `argv` or `shell_command`, wait on `readiness_probe`, then run the bundled headless browser audit script against a real URL and persist both the JSON report and screenshot under the external artifact root. Coverage audits now warn when a web workspace has no such live browser audit case.
 
 `resolve verification` returns a canonical `VerificationSelection` payload with `selection_status`, `source`, `requested_mode`, `requested_mode_source`, `resolved_mode`, `selected_cases`, `heuristic_suggestions`, `baseline_sources`, and `host_compatibility`. Tasks without explicit selectors remain unresolved and targeted by default; the runtime does not silently fall back to `smoke`.
 
-## Existing Repositories
+## Operator Flows
 
-The existing repo flow is:
+### 1. Empty Or Scaffold Project
+
+Use this when the directory is empty or only has starter configs. `preview-init` now reports `repo_maturity.mode` as `empty` or `scaffold`.
+
+In Codex, say:
+
+- `Start a new Expo app here and set up the workspace for staged work.`
+
+Codex should do:
+
+- call workflow advice first
+- keep `empty` repositories in starter-first mode instead of silently initializing them
+- allow `scaffold` repositories to initialize safely when `autoCreate` is enabled and no starter bootstrap is needed
+- avoid a full context refresh until there is real project source to index
+
+CLI equivalent for debugging only:
+
+```bash
+python3 scripts/agentiux_dev_state.py preview-init --workspace /path/to/project
+python3 scripts/agentiux_dev_state.py workflow-advice --workspace /path/to/project --request-text "Build a new Expo mobile app from scratch" --auto-create
+python3 scripts/agentiux_dev_state.py starter-presets
+python3 scripts/agentiux_dev_state.py create-starter --preset-id expo-mobile --destination-root /tmp/projects --project-name demo-mobile
+python3 scripts/agentiux_dev_state.py init-workspace --workspace /tmp/projects/demo-mobile
+```
+
+Expected result:
+
+- `preview-init` shows `repo_maturity.mode=empty` or `scaffold`
+- `workflow-advice` proposes starter-first or scaffold-first initialization instead of upgrade-first hardening
+- `init-workspace` creates external state only after the project location is ready
+
+Next steps:
+
+- `python3 scripts/agentiux_dev_state.py create-workstream --workspace /tmp/projects/demo-mobile --title "Initial Delivery"`
+- `python3 scripts/agentiux_dev_state.py verification-recipes --workspace /tmp/projects/demo-mobile`
+
+### 2. Existing Project
+
+Use this when the repository already contains substantive source. `preview-init` should report `repo_maturity.mode=existing`.
+
+In Codex, say:
+
+- `Initialize this existing repository and audit what the plugin needs before execution.`
+
+Codex should do:
+
+- call workflow advice before mutating state
+- auto-initialize the repository when `autoCreate` is enabled and the repo already looks like `existing`
+- keep repo audit and upgrade-plan reads explicit and read-only until you confirm apply
+
+CLI equivalent for debugging only:
 
 ```bash
 python3 scripts/agentiux_dev_state.py preview-init --workspace /path/to/repo
-python3 scripts/agentiux_dev_state.py init-workspace --workspace /path/to/repo
+python3 scripts/agentiux_dev_state.py workflow-advice --workspace /path/to/repo --request-text "Initialize this existing repository and audit what the plugin needs before execution" --auto-create
 python3 scripts/agentiux_dev_state.py audit-repository --workspace /path/to/repo
 python3 scripts/agentiux_dev_state.py show-upgrade-plan --workspace /path/to/repo
 python3 scripts/agentiux_dev_state.py apply-upgrade-plan --workspace /path/to/repo --confirmed
 ```
 
-The audit is read-only for repo code. Applying an upgrade plan creates confirmed workstreams and tasks for the detected gaps after explicit confirmation and does not synthesize a generic umbrella workstream automatically.
+Expected result:
 
-## Greenfield Starters
+- the workspace is initialized in external state without touching repository files
+- the audit stays read-only for repo code
+- upgrade application creates concrete remediation workstreams or tasks instead of a synthetic umbrella container
 
-Codex should propose starter presets automatically for greenfield requests. The explicit commands remain available when you want direct control.
+### 3. Continue In An Initialized Project
 
-List the curated starter presets:
+Use this when the workspace already has external state and you want to resume a task or workstream.
+
+In Codex, say:
+
+- `Continue work on checkout CTA spacing and run the right verification after the fix.`
+
+Codex should do:
+
+- call workflow advice with `autoCreate=true`
+- reuse the current point task or create one if the request is narrow
+- leave broad feature work in workstream mode until the stage plan is confirmed
+- pass an English `canonicalRequestText` when the user request was phrased in another language or in a way that would classify poorly with the rule-based router
+- load `show-workspace-context-pack` and `search-context-index` before any broader repo scan
+
+CLI equivalent for debugging only:
 
 ```bash
-python3 scripts/agentiux_dev_state.py starter-presets
+python3 scripts/agentiux_dev_state.py workflow-advice --workspace /path/to/repo --request-text "Fix CTA spacing in checkout" --auto-create
+python3 scripts/agentiux_dev_state.py current-task --workspace /path/to/repo
+python3 scripts/agentiux_dev_state.py current-workstream --workspace /path/to/repo
+python3 scripts/agentiux_dev_state.py show-runtime-preflight --workspace /path/to/repo --request-text "Fix CTA spacing in checkout"
+python3 scripts/agentiux_dev_state.py show-workspace-context-pack --workspace /path/to/repo --request-text "Fix CTA spacing in checkout"
+python3 scripts/agentiux_dev_state.py search-context-index --workspace /path/to/repo --query-text "checkout CTA spacing"
 ```
 
-Create a starter:
+Expected result:
 
-```bash
-python3 scripts/agentiux_dev_state.py create-starter --preset-id next-web --destination-root /tmp/projects --project-name demo-web
-```
+- `workflow-advice` reuses or creates the right execution container
+- `show-runtime-preflight` returns the first narrow owner files to read next, exact package-level commands when they exist, and explicit `do_not_scan_paths` or stop/go hints
+- `show-workspace-context-pack` returns route-resolved chunks plus neutral `owner_candidates` and `command_suggestions`
+- `search-context-index` returns compact retrieval evidence backed by the shared SQLite context store
 
-The curated presets are:
-
-- `next-web`
-- `expo-mobile`
-- `nestjs-api`
-- `rust-service`
-- `nx-fullstack`
-
-Each starter uses the official upstream CLI for creation only. It records the starter run in external plugin state and leaves workspace initialization, stage planning, verification setup, and design state creation for explicit follow-up confirmation with the user.
+If the workspace is already initialized and the request is narrow, `workflow-advice` may auto-create or reuse the current point task. For broad feature work it should instead keep the request in workstream mode until you confirm the stage plan.
 
 ## Commit Style Matching
 

@@ -15,6 +15,7 @@ AgentiUX Dev combines the strongest workflow rules from the user's reference rep
 - Codex replies in the user's language unless the user asks to switch languages.
 - Stage 1 retrieval guarantees are Unicode-safe and mixed-script-safe around English canonical literals; localized semantic alias packs stay external to tracked source.
 - If the workspace is not initialized, Codex proposes initialization at the beginning of the workflow instead of waiting for a dedicated command.
+- When Codex already understands a non-English or messy user request, it should pass an English canonical request string into workflow advice rather than relying on tracked localized aliases.
 - Implementation starts only for explicit execution intent.
 - Workstream execution requires a confirmed concrete stage plan; empty workstreams are planning containers only.
 - Before the first implementation action, Codex must persist an external brief.
@@ -22,7 +23,7 @@ AgentiUX Dev combines the strongest workflow rules from the user's reference rep
 - If the user simply describes work, Codex must classify it and choose starter, workstream, task, or read-only audit mode automatically.
 - Large feature work belongs to named workstreams with independent stage registers.
 - Small targeted fixes belong to lightweight tasks by default.
-- In initialized repositories, narrow fixes may auto-create or reuse the active point task through workflow advice.
+- With workflow advice `autoCreate=true`, existing or scaffold repositories may initialize automatically, and initialized repositories may auto-create or reuse the active point task for narrow fixes.
 - Greenfield requests should trigger starter recommendations before manual scaffolding commands are requested.
 - Workflow advice may recommend the next state mutation, but it must not create workspace, workstream, or starter state without explicit confirmation.
 - Verification coverage gaps should surface as warnings when recipes are incomplete; they are not automatic blockers by default.
@@ -40,6 +41,7 @@ AgentiUX Dev combines the strongest workflow rules from the user's reference rep
 - Codex should prefer existing cheap summaries before opening large tracked files.
 - Resolve the intent route through the compact route catalog before reading long docs or Python entrypoints.
 - Use the capability catalog to choose skills, MCP tools, scripts, and reference docs instead of scanning the repo blindly.
+- Use `show runtime preflight` as the default first retrieval call in warm initialized repos when the next read path is still unclear.
 - Load the global workspace context pack and search the context index before broad `rg` or manual exploration.
 - Use `show context structure` for compact module, symbol, doc-section, hotspot, or incremental-index drill-down before opening large files.
 - Use `run analysis audit` only for explicit architecture, performance, or docs-style analysis when compact findings are more useful than raw matches.

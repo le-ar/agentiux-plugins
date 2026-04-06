@@ -7,7 +7,9 @@ from agentiux_dev_context_query import (
     show_capability_catalog,
     show_context_structure,
     show_intent_route,
+    show_runtime_preflight,
     show_workspace_context_pack,
+    triage_repo_request,
 )
 
 
@@ -18,5 +20,7 @@ __all__ = [
     "show_capability_catalog",
     "show_context_structure",
     "show_intent_route",
+    "show_runtime_preflight",
     "show_workspace_context_pack",
+    "triage_repo_request",
 ]
