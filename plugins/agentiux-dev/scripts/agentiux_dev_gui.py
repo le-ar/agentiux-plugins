@@ -49,6 +49,13 @@ from agentiux_dev_lib import (
     stop_process,
 )
 from agentiux_dev_memory import archive_project_note, get_project_note, list_project_notes, search_project_notes, write_project_note
+from agentiux_dev_sentry import (
+    connect_sentry,
+    list_sentry_connections,
+    remove_sentry_connection,
+    test_sentry_connection,
+    update_sentry_connection,
+)
 from agentiux_dev_verification import audit_verification_coverage
 from agentiux_dev_youtrack import (
     connect_youtrack,
@@ -462,6 +469,12 @@ class DashboardHandler(BaseHTTPRequestHandler):
                     return
                 self._send_json(list_youtrack_connections(workspace))
                 return
+            if parsed.path == "/api/sentry/connections":
+                if not workspace:
+                    self._send_json({"error": "workspace query parameter is required"}, status=400)
+                    return
+                self._send_json(list_sentry_connections(workspace))
+                return
             if parsed.path == "/api/auth/profiles":
                 if not workspace:
                     self._send_json({"error": "workspace query parameter is required"}, status=400)
@@ -561,9 +574,28 @@ class DashboardHandler(BaseHTTPRequestHandler):
                     )
                 )
                 return
+            if parsed.path == "/api/sentry/connections":
+                self._send_json(
+                    connect_sentry(
+                        workspace,
+                        base_url=body["baseUrl"],
+                        token=body["token"],
+                        organization_slug=body.get("organizationSlug"),
+                        label=body.get("label"),
+                        connection_id=body.get("connectionId"),
+                        project_scope=body.get("projectScope"),
+                        default=body.get("default", False),
+                        test_connection=body.get("testConnection", True),
+                    )
+                )
+                return
             match = re.match(r"^/api/youtrack/connections/([^/]+)/test$", parsed.path)
             if match:
                 self._send_json(test_youtrack_connection(workspace, urllib.parse.unquote(match.group(1))))
+                return
+            match = re.match(r"^/api/sentry/connections/([^/]+)/test$", parsed.path)
+            if match:
+                self._send_json(test_sentry_connection(workspace, urllib.parse.unquote(match.group(1))))
                 return
             if parsed.path == "/api/auth/profiles":
                 self._send_json(
@@ -629,7 +661,7 @@ class DashboardHandler(BaseHTTPRequestHandler):
             if not workspace:
                 self._send_json({"error": "workspacePath is required"}, status=400)
                 return
-            if parsed.path != "/api/youtrack/connections":
+            if parsed.path not in {"/api/youtrack/connections", "/api/sentry/connections"}:
                 if parsed.path == "/api/auth/profiles":
                     self._send_json(
                         write_auth_profile(
@@ -662,12 +694,27 @@ class DashboardHandler(BaseHTTPRequestHandler):
                     return
                 self._send_json({"error": f"Unsupported PATCH path: {parsed.path}"}, status=404)
                 return
+            if parsed.path == "/api/youtrack/connections":
+                self._send_json(
+                    update_youtrack_connection(
+                        workspace,
+                        body["connectionId"],
+                        base_url=body.get("baseUrl"),
+                        token=body.get("token"),
+                        label=body.get("label"),
+                        project_scope=body.get("projectScope"),
+                        default=body.get("default"),
+                        test_connection=body.get("testConnection", True),
+                    )
+                )
+                return
             self._send_json(
-                update_youtrack_connection(
+                update_sentry_connection(
                     workspace,
                     body["connectionId"],
                     base_url=body.get("baseUrl"),
                     token=body.get("token"),
+                    organization_slug=body.get("organizationSlug"),
                     label=body.get("label"),
                     project_scope=body.get("projectScope"),
                     default=body.get("default"),
@@ -686,7 +733,7 @@ class DashboardHandler(BaseHTTPRequestHandler):
             if not workspace:
                 self._send_json({"error": "workspacePath is required"}, status=400)
                 return
-            if parsed.path != "/api/youtrack/connections":
+            if parsed.path not in {"/api/youtrack/connections", "/api/sentry/connections"}:
                 if parsed.path == "/api/auth/profiles":
                     self._send_json(remove_auth_profile(workspace, body["profileId"]))
                     return
@@ -696,7 +743,10 @@ class DashboardHandler(BaseHTTPRequestHandler):
                     return
                 self._send_json({"error": f"Unsupported DELETE path: {parsed.path}"}, status=404)
                 return
-            self._send_json(remove_youtrack_connection(workspace, body["connectionId"]))
+            if parsed.path == "/api/youtrack/connections":
+                self._send_json(remove_youtrack_connection(workspace, body["connectionId"]))
+                return
+            self._send_json(remove_sentry_connection(workspace, body["connectionId"]))
         except Exception as exc:  # noqa: BLE001
             traceback.print_exc()
             self._send_json({"error": "Dashboard request failed", "detail": str(exc), "path": self.path}, status=500)

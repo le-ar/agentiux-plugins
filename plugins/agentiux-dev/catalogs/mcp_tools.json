@@ -383,6 +383,67 @@
     },
     {
       "cost_hint": "low",
+      "follow_up_paths": [],
+      "id": "collect_sentry_context",
+      "kind": "mcp_tool",
+      "path": "scripts/agentiux_dev_mcp.py",
+      "primary_surface": "mcp",
+      "read_only": false,
+      "related_routes": [],
+      "required_inputs": [
+        "workspacePath"
+      ],
+      "returns": "Structured mutation result payload.",
+      "summary": "Collect a rich Sentry diagnostic packet with issue details, event stack traces, device contexts, and tag breakdowns.",
+      "tags": [
+        "collect",
+        "collect_sentry_context",
+        "context",
+        "sentry"
+      ],
+      "title": "Collect Sentry Context",
+      "tool_name": "collect_sentry_context",
+      "triggers": [
+        "collect sentry context"
+      ]
+    },
+    {
+      "cost_hint": "low",
+      "follow_up_paths": [
+        "references/command-surface.md",
+        "references/workflow-kernel.md",
+        "skills/workspace-kernel/SKILL.md"
+      ],
+      "id": "connect_sentry",
+      "kind": "mcp_tool",
+      "path": "scripts/agentiux_dev_mcp.py",
+      "primary_surface": "mcp",
+      "read_only": false,
+      "related_routes": [
+        "workstream"
+      ],
+      "required_inputs": [
+        "workspacePath",
+        "baseUrl",
+        "token"
+      ],
+      "returns": "Structured mutation result payload.",
+      "summary": "Create or validate a workspace-scoped Sentry connection using a bearer token and auto-discovered topology.",
+      "tags": [
+        "connect",
+        "connect_sentry",
+        "sentry",
+        "workstream"
+      ],
+      "title": "Connect Sentry",
+      "tool_name": "connect_sentry",
+      "triggers": [
+        "connect sentry",
+        "workstream"
+      ]
+    },
+    {
+      "cost_hint": "low",
       "follow_up_paths": [
         "README.md",
         "references/command-surface.md",
@@ -2383,6 +2444,41 @@
     {
       "cost_hint": "low",
       "follow_up_paths": [
+        "references/command-surface.md",
+        "references/workflow-kernel.md",
+        "skills/workspace-kernel/SKILL.md"
+      ],
+      "id": "remove_sentry_connection",
+      "kind": "mcp_tool",
+      "path": "scripts/agentiux_dev_mcp.py",
+      "primary_surface": "mcp",
+      "read_only": false,
+      "related_routes": [
+        "workstream"
+      ],
+      "required_inputs": [
+        "workspacePath",
+        "connectionId"
+      ],
+      "returns": "Structured mutation result payload.",
+      "summary": "Remove a Sentry connection and its cached topology metadata from a workspace.",
+      "tags": [
+        "connection",
+        "remove",
+        "remove_sentry_connection",
+        "sentry",
+        "workstream"
+      ],
+      "title": "Remove Sentry Connection",
+      "tool_name": "remove_sentry_connection",
+      "triggers": [
+        "remove sentry connection",
+        "workstream"
+      ]
+    },
+    {
+      "cost_hint": "low",
+      "follow_up_paths": [
         "README.md",
         "references/command-surface.md",
         "references/dashboard.md"
@@ -2780,6 +2876,33 @@
     },
     {
       "cost_hint": "low",
+      "follow_up_paths": [],
+      "id": "search_sentry_issues",
+      "kind": "mcp_tool",
+      "path": "scripts/agentiux_dev_mcp.py",
+      "primary_surface": "mcp",
+      "read_only": false,
+      "related_routes": [],
+      "required_inputs": [
+        "workspacePath",
+        "queryText"
+      ],
+      "returns": "Structured mutation result payload.",
+      "summary": "Run a Sentry issue search, persist the shortlist, and use saved topology to narrow candidate projects.",
+      "tags": [
+        "issues",
+        "search",
+        "search_sentry_issues",
+        "sentry"
+      ],
+      "title": "Search Sentry Issues",
+      "tool_name": "search_sentry_issues",
+      "triggers": [
+        "search sentry issues"
+      ]
+    },
+    {
+      "cost_hint": "low",
       "follow_up_paths": [
         "README.md",
         "references/command-surface.md",
@@ -3124,6 +3247,67 @@
       "triggers": [
         "show runtime preflight",
         "youtrack"
+      ]
+    },
+    {
+      "cost_hint": "low",
+      "follow_up_paths": [
+        "references/command-surface.md",
+        "references/workflow-kernel.md",
+        "skills/workspace-kernel/SKILL.md"
+      ],
+      "id": "show_sentry_connections",
+      "kind": "mcp_tool",
+      "path": "scripts/agentiux_dev_mcp.py",
+      "primary_surface": "mcp",
+      "read_only": true,
+      "related_routes": [
+        "workstream"
+      ],
+      "required_inputs": [
+        "workspacePath"
+      ],
+      "returns": "Structured JSON payload for inspection and routing.",
+      "summary": "List sanitized Sentry connections for a workspace, including topology and project-catalog summaries.",
+      "tags": [
+        "connections",
+        "sentry",
+        "show",
+        "show_sentry_connections",
+        "workstream"
+      ],
+      "title": "Show Sentry Connections",
+      "tool_name": "show_sentry_connections",
+      "triggers": [
+        "show sentry connections",
+        "workstream"
+      ]
+    },
+    {
+      "cost_hint": "low",
+      "follow_up_paths": [],
+      "id": "show_sentry_issue_queue",
+      "kind": "mcp_tool",
+      "path": "scripts/agentiux_dev_mcp.py",
+      "primary_surface": "mcp",
+      "read_only": true,
+      "related_routes": [],
+      "required_inputs": [
+        "workspacePath"
+      ],
+      "returns": "Structured JSON payload for inspection and routing.",
+      "summary": "Read the current or explicit persisted Sentry search session and shortlist queue.",
+      "tags": [
+        "issue",
+        "queue",
+        "sentry",
+        "show",
+        "show_sentry_issue_queue"
+      ],
+      "title": "Show Sentry Issue Queue",
+      "tool_name": "show_sentry_issue_queue",
+      "triggers": [
+        "show sentry issue queue"
       ]
     },
     {
@@ -3585,6 +3769,33 @@
     },
     {
       "cost_hint": "low",
+      "follow_up_paths": [],
+      "id": "test_sentry_connection",
+      "kind": "mcp_tool",
+      "path": "scripts/agentiux_dev_mcp.py",
+      "primary_surface": "mcp",
+      "read_only": false,
+      "related_routes": [],
+      "required_inputs": [
+        "workspacePath",
+        "connectionId"
+      ],
+      "returns": "Structured mutation result payload.",
+      "summary": "Re-run connection validation and refresh the cached Sentry project topology.",
+      "tags": [
+        "connection",
+        "sentry",
+        "test",
+        "test_sentry_connection"
+      ],
+      "title": "Test Sentry Connection",
+      "tool_name": "test_sentry_connection",
+      "triggers": [
+        "test sentry connection"
+      ]
+    },
+    {
+      "cost_hint": "low",
       "follow_up_paths": [
         "README.md",
         "references/command-surface.md",
@@ -3684,6 +3895,33 @@
       "triggers": [
         "plugin-dev",
         "update learning entry"
+      ]
+    },
+    {
+      "cost_hint": "low",
+      "follow_up_paths": [],
+      "id": "update_sentry_connection",
+      "kind": "mcp_tool",
+      "path": "scripts/agentiux_dev_mcp.py",
+      "primary_surface": "mcp",
+      "read_only": false,
+      "related_routes": [],
+      "required_inputs": [
+        "workspacePath",
+        "connectionId"
+      ],
+      "returns": "Structured mutation result payload.",
+      "summary": "Update a Sentry connection, optionally rotate its token, and refresh the cached topology.",
+      "tags": [
+        "connection",
+        "sentry",
+        "update",
+        "update_sentry_connection"
+      ],
+      "title": "Update Sentry Connection",
+      "tool_name": "update_sentry_connection",
+      "triggers": [
+        "update sentry connection"
       ]
     },
     {
@@ -4113,7 +4351,7 @@
       ]
     }
   ],
-  "entry_count": 118,
+  "entry_count": 126,
   "plugin": {
     "name": "agentiux-dev",
     "version": "0.8.0"

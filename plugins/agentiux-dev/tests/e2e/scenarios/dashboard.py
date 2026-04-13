@@ -7,6 +7,7 @@ from typing import Any
 from support.runtime import ExecutionContext, ScenarioDefinition
 
 from agentiux_dev_e2e_support import (
+    FakeSentryServer,
     FakeYouTrackServer,
     dashboard_check,
     http_json,
@@ -40,7 +41,7 @@ def _dashboard_group(context: ExecutionContext) -> dict[str, Any]:
             scope_summary="Exercise dashboard bootstrap, singleton runtime, and CRUD endpoints.",
         )
         audit_payload = dashboard_check(workspace, context.plugin_root)
-        with FakeYouTrackServer() as fake_youtrack:
+        with FakeYouTrackServer() as fake_youtrack, FakeSentryServer() as fake_sentry:
             launch_one = launch_dashboard_gui(context.plugin_root, workspace, env)
             launch_two = launch_dashboard_gui(context.plugin_root, workspace, env)
             try:
@@ -146,6 +147,39 @@ def _dashboard_group(context: ExecutionContext) -> dict[str, Any]:
                     method="DELETE",
                     payload={"workspacePath": str(workspace.resolve()), "connectionId": "dashboard-tracker"},
                 )
+                sentry_create = http_json(
+                    f"{url}/api/sentry/connections",
+                    method="POST",
+                    payload={
+                        "workspacePath": str(workspace.resolve()),
+                        "label": "Dashboard Sentry",
+                        "connectionId": "dashboard-sentry",
+                        "baseUrl": fake_sentry.base_url,
+                        "token": fake_sentry.token,
+                    },
+                )
+                sentry_test = http_json(
+                    f"{url}/api/sentry/connections/dashboard-sentry/test",
+                    method="POST",
+                    payload={"workspacePath": str(workspace.resolve())},
+                )
+                sentry_update = http_json(
+                    f"{url}/api/sentry/connections",
+                    method="PATCH",
+                    payload={
+                        "workspacePath": str(workspace.resolve()),
+                        "connectionId": "dashboard-sentry",
+                        "label": "Dashboard Sentry updated",
+                        "default": True,
+                        "testConnection": False,
+                    },
+                )
+                sentry_listing = http_json(f"{url}/api/sentry/connections?workspace={encoded_workspace}")
+                sentry_delete = http_json(
+                    f"{url}/api/sentry/connections",
+                    method="DELETE",
+                    payload={"workspacePath": str(workspace.resolve()), "connectionId": "dashboard-sentry"},
+                )
             finally:
                 stop_payload = stop_dashboard_gui(context.plugin_root, workspace, env)
     return {
@@ -166,6 +200,11 @@ def _dashboard_group(context: ExecutionContext) -> dict[str, Any]:
         "connection_update": connection_update,
         "connection_listing": connection_listing,
         "connection_delete": connection_delete,
+        "sentry_create": sentry_create,
+        "sentry_test": sentry_test,
+        "sentry_update": sentry_update,
+        "sentry_listing": sentry_listing,
+        "sentry_delete": sentry_delete,
     }
 
 
@@ -208,11 +247,17 @@ def _case_dashboard_crud_integrations_memory(context: ExecutionContext) -> dict[
     assert group["connection_test"]["connection"]["status"] == "connected"
     assert group["connection_listing"]["default_connection_id"] == "dashboard-tracker"
     assert group["connection_delete"]["removed_connection_id"] == "dashboard-tracker"
+    assert group["sentry_create"]["created_connection_id"] == "dashboard-sentry"
+    assert group["sentry_test"]["connection"]["status"] == "connected"
+    assert group["sentry_update"]["connection"]["label"] == "Dashboard Sentry updated"
+    assert group["sentry_listing"]["default_connection_id"] == "dashboard-sentry"
+    assert group["sentry_delete"]["removed_connection_id"] == "dashboard-sentry"
     return {
         "auth_profile_id": group["auth_profile"]["profile"]["profile_id"],
         "note_id": group["note_create"]["note"]["note_id"],
         "learning_id": group["learning_create"]["entry"]["entry_id"],
         "connection_id": group["connection_create"]["created_connection_id"],
+        "sentry_connection_id": group["sentry_create"]["created_connection_id"],
     }
 
 

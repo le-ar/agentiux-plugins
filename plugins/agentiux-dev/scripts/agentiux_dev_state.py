@@ -30,6 +30,16 @@ from agentiux_dev_memory import (
     search_project_notes,
     write_project_note,
 )
+from agentiux_dev_sentry import (
+    collect_sentry_context,
+    connect_sentry,
+    list_sentry_connections,
+    remove_sentry_connection,
+    search_sentry_issues,
+    show_sentry_issue_queue,
+    test_sentry_connection,
+    update_sentry_connection,
+)
 from agentiux_dev_verification import (
     audit_verification_coverage,
     approve_verification_baseline,
@@ -450,6 +460,9 @@ def parse_args() -> argparse.Namespace:
     cmd = subparsers.add_parser("show-youtrack-connections")
     add_workspace_arg(cmd)
 
+    cmd = subparsers.add_parser("show-sentry-connections")
+    add_workspace_arg(cmd)
+
     cmd = subparsers.add_parser("show-auth-profiles")
     add_workspace_arg(cmd)
 
@@ -593,6 +606,64 @@ def parse_args() -> argparse.Namespace:
     cmd.add_argument("--confirmed", action="store_true")
     cmd.add_argument("--activate-first-task", action="store_true")
     cmd.add_argument("--reuse-current-workstream", action="store_true")
+
+    cmd = subparsers.add_parser("connect-sentry")
+    add_workspace_arg(cmd)
+    cmd.add_argument("--base-url", required=True)
+    cmd.add_argument("--token", required=True)
+    cmd.add_argument("--organization-slug")
+    cmd.add_argument("--label")
+    cmd.add_argument("--connection-id")
+    cmd.add_argument("--project-scope")
+    cmd.add_argument("--default", action="store_true")
+    cmd.add_argument("--no-test", action="store_true")
+
+    cmd = subparsers.add_parser("update-sentry-connection")
+    add_workspace_arg(cmd)
+    cmd.add_argument("--connection-id", required=True)
+    cmd.add_argument("--base-url")
+    cmd.add_argument("--token")
+    cmd.add_argument("--organization-slug")
+    cmd.add_argument("--label")
+    cmd.add_argument("--project-scope")
+    cmd.add_argument("--default", action="store_true")
+    cmd.add_argument("--no-test", action="store_true")
+
+    cmd = subparsers.add_parser("remove-sentry-connection")
+    add_workspace_arg(cmd)
+    cmd.add_argument("--connection-id", required=True)
+
+    cmd = subparsers.add_parser("test-sentry-connection")
+    add_workspace_arg(cmd)
+    cmd.add_argument("--connection-id", required=True)
+
+    cmd = subparsers.add_parser("search-sentry-issues")
+    add_workspace_arg(cmd)
+    cmd.add_argument("--query-text", required=True)
+    cmd.add_argument("--connection-id")
+    cmd.add_argument("--task-id")
+    cmd.add_argument("--external-issue-file")
+    cmd.add_argument("--project-slug", dest="project_slugs", action="append")
+    cmd.add_argument("--environment")
+    cmd.add_argument("--stats-period", default="14d")
+    cmd.add_argument("--limit", type=int, default=8)
+    cmd.add_argument("--shortlist-size", type=int, default=3)
+
+    cmd = subparsers.add_parser("show-sentry-issue-queue")
+    add_workspace_arg(cmd)
+    cmd.add_argument("--search-session-id")
+
+    cmd = subparsers.add_parser("collect-sentry-context")
+    add_workspace_arg(cmd)
+    cmd.add_argument("--query-text")
+    cmd.add_argument("--connection-id")
+    cmd.add_argument("--task-id")
+    cmd.add_argument("--external-issue-file")
+    cmd.add_argument("--project-slug", dest="project_slugs", action="append")
+    cmd.add_argument("--environment")
+    cmd.add_argument("--stats-period", default="14d")
+    cmd.add_argument("--limit", type=int, default=8)
+    cmd.add_argument("--shortlist-size", type=int, default=3)
 
     cmd = subparsers.add_parser("sync-verification-helpers")
     add_workspace_arg(cmd)
@@ -964,6 +1035,8 @@ def main() -> int:
             payload = refresh_context_index(args.workspace, force=args.force)
         elif args.command == "show-youtrack-connections":
             payload = list_youtrack_connections(args.workspace)
+        elif args.command == "show-sentry-connections":
+            payload = list_sentry_connections(args.workspace)
         elif args.command == "show-auth-profiles":
             payload = show_auth_profiles(args.workspace)
         elif args.command == "write-auth-profile":
@@ -1083,6 +1156,64 @@ def main() -> int:
                 confirmed=args.confirmed,
                 activate_first_task=args.activate_first_task,
                 reuse_current_workstream=args.reuse_current_workstream,
+            )
+        elif args.command == "connect-sentry":
+            payload = connect_sentry(
+                args.workspace,
+                base_url=args.base_url,
+                token=args.token,
+                organization_slug=args.organization_slug,
+                label=args.label,
+                connection_id=args.connection_id,
+                project_scope=args.project_scope,
+                default=args.default,
+                test_connection=not args.no_test,
+            )
+        elif args.command == "update-sentry-connection":
+            payload = update_sentry_connection(
+                args.workspace,
+                args.connection_id,
+                base_url=args.base_url,
+                token=args.token,
+                organization_slug=args.organization_slug,
+                label=args.label,
+                project_scope=args.project_scope,
+                default=True if args.default else None,
+                test_connection=not args.no_test,
+            )
+        elif args.command == "remove-sentry-connection":
+            payload = remove_sentry_connection(args.workspace, args.connection_id)
+        elif args.command == "test-sentry-connection":
+            payload = test_sentry_connection(args.workspace, args.connection_id)
+        elif args.command == "search-sentry-issues":
+            external_issue = _read_json(args.external_issue_file) if args.external_issue_file else None
+            payload = search_sentry_issues(
+                args.workspace,
+                query_text=args.query_text,
+                connection_id=args.connection_id,
+                external_issue=external_issue,
+                task_id=args.task_id,
+                project_slugs=args.project_slugs,
+                environment=args.environment,
+                stats_period=args.stats_period,
+                limit=args.limit,
+                shortlist_size=args.shortlist_size,
+            )
+        elif args.command == "show-sentry-issue-queue":
+            payload = show_sentry_issue_queue(args.workspace, search_session_id=args.search_session_id)
+        elif args.command == "collect-sentry-context":
+            external_issue = _read_json(args.external_issue_file) if args.external_issue_file else None
+            payload = collect_sentry_context(
+                args.workspace,
+                query_text=args.query_text,
+                connection_id=args.connection_id,
+                external_issue=external_issue,
+                task_id=args.task_id,
+                project_slugs=args.project_slugs,
+                environment=args.environment,
+                stats_period=args.stats_period,
+                limit=args.limit,
+                shortlist_size=args.shortlist_size,
             )
         elif args.command == "sync-verification-helpers":
             payload = sync_verification_helpers(args.workspace, force=args.force)

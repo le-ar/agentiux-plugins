@@ -73,6 +73,14 @@ The primary operator UX is through Codex. Raw CLI commands are transport and deb
 - `show youtrack issue queue`
 - `propose youtrack workstream plan`
 - `apply youtrack workstream plan`
+- `show sentry connections`
+- `connect sentry`
+- `update sentry connection`
+- `remove sentry connection`
+- `test sentry connection`
+- `search sentry issues`
+- `show sentry issue queue`
+- `collect sentry context`
 - `audit repository`
 - `show upgrade plan`
 - `apply upgrade plan`
@@ -145,6 +153,9 @@ The primary operator UX is through Codex. Raw CLI commands are transport and deb
 - `search youtrack issues` persists a search or triage session with ranked shortlist data plus richer ticket context for shortlisted issues, including linked-issue metadata, and must not auto-create workstreams or tasks.
 - `propose youtrack workstream plan` is a planning action layered on a persisted search session, should analyze linked-issue signals that affect execution order or duplicate risk, and must keep the result in draft form until the user confirms apply.
 - `apply youtrack workstream plan` requires explicit confirmation before creating a workstream, linked tasks, and stage batches from the approved issue set, and retries must reuse an already-applied plan instead of duplicating state.
+- `connect sentry` and `update sentry connection` accept bearer tokens in `v1`, should auto-discover the visible organization when the token only sees one, and must persist a heuristic topology for the workspace when no saved mapping exists yet.
+- `search sentry issues` persists a shortlist session and should narrow candidate projects through the saved or auto-generated topology before broad organization-wide search.
+- `collect sentry context` should resolve direct Sentry links when present, otherwise search by symptom or linked ticket context, and must return rich issue and event diagnostics such as stack traces, device contexts, and tag breakdowns without mutating workstreams or tasks.
 - With `autoCreate=true`, `workflow-advice` may auto-initialize `existing` or `scaffold` repositories, and in initialized repositories it may auto-create or reuse the active point task for narrow fixes.
 - Greenfield requests should trigger starter recommendations automatically instead of requiring `show starter presets` first.
 - `audit repository` is read-only for repo code and produces a structured gap report.

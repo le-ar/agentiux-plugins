@@ -11,7 +11,7 @@ AgentiUX Dev includes a local-only dashboard launched through `scripts/agentiux_
   - `GET /api/dashboard-bootstrap?workspace=<path>&panel=<id>` for overview plus one workspace shell plus one active panel payload
   - `GET /api/workspace-panel?workspace=<path>&panel=<id>` for shell metadata plus one lazy panel payload
 - first-class empty state for uninitialized workspace paths, including detection signals and external state paths
-- action-oriented summaries for current stage, current task, blockers, verification health, and YouTrack status
+- action-oriented summaries for current stage, current task, blockers, verification health, and tracker status such as YouTrack and Sentry
 - compact design and testability summaries on cheap surfaces instead of full artifact hydration
 - compact structural indexing summaries on cheap surfaces, including module, chunk, hotspot, and large-file counts without exposing full structural artifacts
 - compact semantic summaries on cheap surfaces, including backend status, unit counts, snapshot counts, and semantic refresh reuse or rebuild stats without exposing semantic unit bodies
@@ -21,7 +21,7 @@ AgentiUX Dev includes a local-only dashboard launched through `scripts/agentiux_
 ## Guardrails
 
 - The dashboard must not mutate stage or design state.
-- The allowed dashboard mutations are limited to external-state management flows: YouTrack integration management plus workspace-scoped auth profile, auth session, project note, and learning-entry CRUD.
+- The allowed dashboard mutations are limited to external-state management flows: YouTrack and Sentry integration management plus workspace-scoped auth profile, auth session, project note, and learning-entry CRUD.
 - The dashboard shows external/plugin state only, not hidden repo edits.
 - `Plan` should show design readiness, active surfaces, flow or state coverage, critical-action counts, and brief generation state from compact summaries.
 - `Plan` may also show semantic readiness hints such as semantic unit counts or active snapshot counts, but it must use compact `semantic_summary` only.

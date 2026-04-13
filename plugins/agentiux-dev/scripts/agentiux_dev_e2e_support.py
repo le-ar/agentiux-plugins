@@ -1059,6 +1059,458 @@ class FakeYouTrackServer:
             self.thread.join(timeout=2)
 
 
+class FakeSentryHandler(BaseHTTPRequestHandler):
+    server_version = "FakeSentry/1.0"
+
+    def log_message(self, format: str, *args) -> None:  # noqa: A003
+        return
+
+    def _send_json(self, payload: object, status: int = 200) -> None:
+        body = json.dumps(payload).encode("utf-8")
+        self.send_response(status)
+        self.send_header("Content-Type", "application/json; charset=utf-8")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+    def _unauthorized(self) -> None:
+        self._send_json({"detail": "unauthorized"}, status=401)
+
+    def _authorized(self) -> bool:
+        return self.headers.get("Authorization") == f"Bearer {self.server.token}"  # type: ignore[attr-defined]
+
+    def _projects(self) -> list[dict[str, Any]]:
+        return list(self.server.fixtures["projects"])  # type: ignore[attr-defined]
+
+    def _issues(self) -> dict[str, dict[str, Any]]:
+        return dict(self.server.fixtures["issues"])  # type: ignore[attr-defined]
+
+    def _events(self) -> dict[str, list[dict[str, Any]]]:
+        return dict(self.server.fixtures["events"])  # type: ignore[attr-defined]
+
+    def _matches_issue_query(self, issue: dict[str, Any], query_text: str) -> bool:
+        lowered = (query_text or "").lower()
+        if not lowered.strip():
+            return True
+        lowered = re.sub(r"\b[a-z_.-]+:[^\s]+\b", " ", lowered)
+        tokens = [token for token in re.findall(r"[a-z0-9_.-]+", lowered) if token]
+        if not tokens:
+            return True
+        haystack = " ".join(
+            [
+                str(issue.get("title") or ""),
+                str((issue.get("metadata") or {}).get("type") or ""),
+                str((issue.get("metadata") or {}).get("value") or ""),
+                str(issue.get("culprit") or ""),
+                str((issue.get("project") or {}).get("slug") or ""),
+            ]
+        ).lower()
+        return all(token in haystack for token in tokens)
+
+    def _issue_row(self, issue: dict[str, Any]) -> dict[str, Any]:
+        return {
+            "id": issue["id"],
+            "shortId": issue["shortId"],
+            "title": issue["title"],
+            "culprit": issue["culprit"],
+            "level": issue["level"],
+            "status": issue["status"],
+            "substatus": issue.get("substatus"),
+            "count": issue["count"],
+            "userCount": issue["userCount"],
+            "firstSeen": issue["firstSeen"],
+            "lastSeen": issue["lastSeen"],
+            "project": copy.deepcopy(issue["project"]),
+            "metadata": copy.deepcopy(issue["metadata"]),
+            "permalink": issue["permalink"],
+            "isBookmarked": False,
+            "isSubscribed": True,
+        }
+
+    def _tag_breakdown(self, issue_id: str, tag_key: str) -> list[dict[str, Any]]:
+        counts: dict[str, int] = {}
+        for event in self._events().get(issue_id, []):
+            tags = event.get("tags") or []
+            value = None
+            for item in tags:
+                if item.get("key") == tag_key:
+                    value = item.get("value")
+                    break
+            if value:
+                counts[str(value)] = counts.get(str(value), 0) + 1
+        return [
+            {"key": tag_key, "value": value, "name": value, "count": count}
+            for value, count in sorted(counts.items(), key=lambda entry: (-entry[1], entry[0]))
+        ]
+
+    def do_GET(self) -> None:  # noqa: N802
+        parsed = urllib.parse.urlparse(self.path)
+        if not parsed.path.startswith("/api/0/"):
+            self._send_json({"detail": "not found", "path": parsed.path}, status=404)
+            return
+        if not self._authorized():
+            self._unauthorized()
+            return
+        query = urllib.parse.parse_qs(parsed.query)
+        org_slug = self.server.organization_slug  # type: ignore[attr-defined]
+        if parsed.path == "/api/0/organizations/":
+            self._send_json([self.server.organization])  # type: ignore[attr-defined]
+            return
+        if parsed.path == f"/api/0/organizations/{org_slug}/projects/":
+            self._send_json(self._projects())
+            return
+
+        project_match = re.fullmatch(r"/api/0/projects/([^/]+)/([^/]+)/issues/?", parsed.path)
+        if project_match:
+            requested_org = urllib.parse.unquote(project_match.group(1))
+            project_slug = urllib.parse.unquote(project_match.group(2))
+            if requested_org != org_slug:
+                self._send_json({"detail": "not found", "path": parsed.path}, status=404)
+                return
+            limit = int(query.get("limit", ["8"])[0])
+            environment = query.get("environment", [None])[0]
+            query_text = query.get("query", [""])[0]
+            rows = []
+            for issue in self._issues().values():
+                if (issue.get("project") or {}).get("slug") != project_slug:
+                    continue
+                if environment and environment not in set(issue.get("environments") or []):
+                    continue
+                if not self._matches_issue_query(issue, query_text):
+                    continue
+                rows.append(self._issue_row(issue))
+            self._send_json(rows[:limit])
+            return
+
+        issue_match = re.fullmatch(rf"/api/0/organizations/{re.escape(org_slug)}/issues/([^/]+)/?", parsed.path)
+        if issue_match:
+            issue_id = urllib.parse.unquote(issue_match.group(1))
+            issue = self._issues().get(issue_id)
+            if not issue:
+                self._send_json({"detail": "not found", "path": parsed.path}, status=404)
+                return
+            self._send_json(copy.deepcopy(issue))
+            return
+
+        latest_match = re.fullmatch(rf"/api/0/organizations/{re.escape(org_slug)}/issues/([^/]+)/events/(latest|recommended)/?", parsed.path)
+        if latest_match:
+            issue_id = urllib.parse.unquote(latest_match.group(1))
+            selector = latest_match.group(2)
+            events = self._events().get(issue_id, [])
+            if not events:
+                self._send_json({"detail": "not found", "path": parsed.path}, status=404)
+                return
+            payload = events[-1] if selector == "latest" else events[0]
+            self._send_json(copy.deepcopy(payload))
+            return
+
+        events_match = re.fullmatch(rf"/api/0/organizations/{re.escape(org_slug)}/issues/([^/]+)/events/?", parsed.path)
+        if events_match:
+            issue_id = urllib.parse.unquote(events_match.group(1))
+            self._send_json(copy.deepcopy(self._events().get(issue_id, [])))
+            return
+
+        event_match = re.fullmatch(rf"/api/0/organizations/{re.escape(org_slug)}/issues/([^/]+)/events/([^/]+)/?", parsed.path)
+        if event_match:
+            issue_id = urllib.parse.unquote(event_match.group(1))
+            event_id = urllib.parse.unquote(event_match.group(2))
+            event = next((item for item in self._events().get(issue_id, []) if item.get("id") == event_id), None)
+            if not event:
+                self._send_json({"detail": "not found", "path": parsed.path}, status=404)
+                return
+            self._send_json(copy.deepcopy(event))
+            return
+
+        tag_match = re.fullmatch(rf"/api/0/organizations/{re.escape(org_slug)}/issues/([^/]+)/tags/([^/]+)/values/?", parsed.path)
+        if tag_match:
+            issue_id = urllib.parse.unquote(tag_match.group(1))
+            tag_key = urllib.parse.unquote(tag_match.group(2))
+            self._send_json(self._tag_breakdown(issue_id, tag_key))
+            return
+
+        self._send_json({"detail": "not found", "path": parsed.path}, status=404)
+
+
+class FakeSentryServer:
+    def __init__(self) -> None:
+        self.token = "sntrys_test_token"
+        self.organization = {"id": "org-1", "slug": "shop-lab", "name": "Shop Lab"}
+        self.organization_slug = self.organization["slug"]
+        self.fixtures: dict[str, Any] = {
+            "projects": [
+                {"id": "101", "slug": "api", "name": "API", "platform": "python", "status": "active"},
+                {"id": "102", "slug": "workers", "name": "Workers", "platform": "python", "status": "active"},
+                {"id": "103", "slug": "web-admin", "name": "Web Admin", "platform": "javascript-react", "status": "active"},
+                {"id": "104", "slug": "mobile-android", "name": "Mobile Android", "platform": "javascript-react-native", "status": "active"},
+                {"id": "105", "slug": "mobile-ios", "name": "Mobile iOS", "platform": "javascript-react-native", "status": "active"},
+            ],
+            "issues": {},
+            "events": {},
+        }
+        self.httpd: ThreadingHTTPServer | None = None
+        self.thread: threading.Thread | None = None
+        self.base_url: str | None = None
+
+    def issue_url(self, issue_id: str, event_id: str | None = None) -> str:
+        if not self.base_url:
+            raise RuntimeError("Fake Sentry server is not running.")
+        suffix = f"/events/{event_id}" if event_id else ""
+        return f"{self.base_url}/organizations/{self.organization_slug}/issues/{issue_id}/{suffix}"
+
+    def _event(
+        self,
+        issue_id: str,
+        event_id: str,
+        *,
+        title: str,
+        message: str,
+        timestamp: str,
+        environment: str,
+        release: str,
+        device_family: str,
+        device_model: str,
+        os_name: str,
+        os_version: str,
+        app_name: str,
+        app_version: str,
+        runtime_name: str,
+        runtime_version: str,
+        frames: list[dict[str, Any]],
+    ) -> dict[str, Any]:
+        return {
+            "id": event_id,
+            "eventID": event_id,
+            "title": title,
+            "message": message,
+            "platform": "javascript",
+            "dateCreated": timestamp,
+            "dateReceived": timestamp,
+            "level": "error",
+            "user": {"id": "user-1", "email": "qa@example.com"},
+            "tags": [
+                {"key": "environment", "value": environment},
+                {"key": "release", "value": release},
+                {"key": "dist", "value": "420100"},
+                {"key": "device.family", "value": device_family},
+                {"key": "device.model", "value": device_model},
+                {"key": "os.name", "value": os_name},
+                {"key": "os.version", "value": os_version},
+                {"key": "runtime.name", "value": runtime_name},
+                {"key": "runtime.version", "value": runtime_version},
+            ],
+            "contexts": {
+                "device": {"family": device_family, "model": device_model, "name": device_model},
+                "os": {"name": os_name, "version": os_version},
+                "app": {"app_name": app_name, "app_version": app_version},
+                "runtime": {"name": runtime_name, "version": runtime_version},
+            },
+            "sdk": {"name": "sentry.javascript.react-native", "version": "7.3.0"},
+            "dist": "420100",
+            "groupID": issue_id,
+            "entries": [
+                {
+                    "type": "exception",
+                    "data": {
+                        "values": [
+                            {
+                                "type": "TypeError",
+                                "value": message,
+                                "mechanism": {"type": "generic"},
+                                "stacktrace": {"frames": frames},
+                            }
+                        ]
+                    },
+                },
+                {
+                    "type": "breadcrumbs",
+                    "data": {
+                        "values": [
+                            {"timestamp": timestamp, "type": "navigation", "category": "app.lifecycle", "message": "Open checkout"},
+                            {"timestamp": timestamp, "type": "default", "category": "ui.click", "message": "Tap pay button"},
+                        ]
+                    },
+                },
+                {
+                    "type": "request",
+                    "data": {
+                        "url": "https://api.example.com/checkout",
+                        "method": "POST",
+                        "headers": {"x-release": release},
+                    },
+                },
+            ],
+        }
+
+    def _seed_fixtures(self) -> None:
+        assert self.base_url is not None
+        android_issue = {
+            "id": "9001",
+            "shortId": "SHOP-ANDROID-1",
+            "title": "Checkout crashes on Samsung devices",
+            "culprit": "CheckoutScreen submitOrder",
+            "level": "error",
+            "status": "unresolved",
+            "substatus": None,
+            "count": 24,
+            "userCount": 7,
+            "firstSeen": "2026-04-10T09:00:00Z",
+            "lastSeen": "2026-04-13T10:15:00Z",
+            "project": {"id": "104", "slug": "mobile-android", "name": "Mobile Android"},
+            "metadata": {"type": "TypeError", "value": "undefined is not an object"},
+            "permalink": self.issue_url("9001"),
+            "environments": ["production"],
+        }
+        admin_issue = {
+            "id": "9002",
+            "shortId": "SHOP-WEB-1",
+            "title": "Admin save fails after session timeout",
+            "culprit": "AdminOrderForm saveDraft",
+            "level": "error",
+            "status": "unresolved",
+            "substatus": None,
+            "count": 9,
+            "userCount": 3,
+            "firstSeen": "2026-04-11T09:00:00Z",
+            "lastSeen": "2026-04-13T11:30:00Z",
+            "project": {"id": "103", "slug": "web-admin", "name": "Web Admin"},
+            "metadata": {"type": "FetchError", "value": "401 Unauthorized"},
+            "permalink": self.issue_url("9002"),
+            "environments": ["production", "staging"],
+        }
+        api_issue = {
+            "id": "9003",
+            "shortId": "SHOP-API-1",
+            "title": "Checkout tax calculation timeout",
+            "culprit": "tax.calculate",
+            "level": "error",
+            "status": "unresolved",
+            "substatus": None,
+            "count": 13,
+            "userCount": 5,
+            "firstSeen": "2026-04-09T07:00:00Z",
+            "lastSeen": "2026-04-13T08:45:00Z",
+            "project": {"id": "101", "slug": "api", "name": "API"},
+            "metadata": {"type": "TimeoutError", "value": "Tax upstream exceeded 4s budget"},
+            "permalink": self.issue_url("9003"),
+            "environments": ["production"],
+        }
+        self.fixtures["issues"] = {
+            "9001": android_issue,
+            "9002": admin_issue,
+            "9003": api_issue,
+        }
+        self.fixtures["events"] = {
+            "9001": [
+                self._event(
+                    "9001",
+                    "android-event-a",
+                    title=android_issue["title"],
+                    message="undefined is not an object",
+                    timestamp="2026-04-13T10:12:00Z",
+                    environment="production",
+                    release="android@4.2.1+420100",
+                    device_family="Samsung",
+                    device_model="SM-S918B",
+                    os_name="Android",
+                    os_version="14",
+                    app_name="Shop Mobile",
+                    app_version="4.2.1",
+                    runtime_name="Hermes",
+                    runtime_version="0.78",
+                    frames=[
+                        {"filename": "src/screens/CheckoutScreen.tsx", "function": "submitOrder", "lineno": 221, "colno": 18, "inApp": True},
+                        {"filename": "src/api/checkout.ts", "function": "confirmOrder", "lineno": 84, "colno": 9, "inApp": True},
+                    ],
+                ),
+                self._event(
+                    "9001",
+                    "android-event-b",
+                    title=android_issue["title"],
+                    message="undefined is not an object",
+                    timestamp="2026-04-13T10:15:00Z",
+                    environment="production",
+                    release="android@4.2.1+420100",
+                    device_family="Google",
+                    device_model="Pixel 8",
+                    os_name="Android",
+                    os_version="14",
+                    app_name="Shop Mobile",
+                    app_version="4.2.1",
+                    runtime_name="Hermes",
+                    runtime_version="0.78",
+                    frames=[
+                        {"filename": "src/screens/CheckoutScreen.tsx", "function": "submitOrder", "lineno": 221, "colno": 18, "inApp": True},
+                        {"filename": "src/api/checkout.ts", "function": "confirmOrder", "lineno": 84, "colno": 9, "inApp": True},
+                    ],
+                ),
+            ],
+            "9002": [
+                self._event(
+                    "9002",
+                    "admin-event-a",
+                    title=admin_issue["title"],
+                    message="401 Unauthorized",
+                    timestamp="2026-04-13T11:30:00Z",
+                    environment="production",
+                    release="web-admin@2026.04.13",
+                    device_family="Desktop",
+                    device_model="Chrome",
+                    os_name="macOS",
+                    os_version="15.4",
+                    app_name="Web Admin",
+                    app_version="2026.04.13",
+                    runtime_name="V8",
+                    runtime_version="124",
+                    frames=[
+                        {"filename": "src/pages/orders/AdminOrderForm.tsx", "function": "saveDraft", "lineno": 88, "colno": 12, "inApp": True},
+                    ],
+                )
+            ],
+            "9003": [
+                self._event(
+                    "9003",
+                    "api-event-a",
+                    title=api_issue["title"],
+                    message="Tax upstream exceeded 4s budget",
+                    timestamp="2026-04-13T08:45:00Z",
+                    environment="production",
+                    release="api@2026.04.13",
+                    device_family="Server",
+                    device_model="api-1",
+                    os_name="Linux",
+                    os_version="6.8",
+                    app_name="API",
+                    app_version="2026.04.13",
+                    runtime_name="CPython",
+                    runtime_version="3.12",
+                    frames=[
+                        {"filename": "services/tax.py", "function": "calculate", "lineno": 144, "colno": 5, "inApp": True},
+                    ],
+                )
+            ],
+        }
+
+    def __enter__(self) -> "FakeSentryServer":
+        self.httpd = ThreadingHTTPServer(("127.0.0.1", 0), FakeSentryHandler)
+        self.httpd.token = self.token  # type: ignore[attr-defined]
+        host, port = self.httpd.server_address
+        self.base_url = f"http://{host}:{port}"
+        self._seed_fixtures()
+        self.httpd.organization = self.organization  # type: ignore[attr-defined]
+        self.httpd.organization_slug = self.organization_slug  # type: ignore[attr-defined]
+        self.httpd.fixtures = self.fixtures  # type: ignore[attr-defined]
+        self.thread = threading.Thread(target=self.httpd.serve_forever, daemon=True)
+        self.thread.start()
+        return self
+
+    def __exit__(self, exc_type, exc, tb) -> None:
+        if self.httpd is not None:
+            self.httpd.shutdown()
+            self.httpd.server_close()
+        if self.thread is not None:
+            self.thread.join(timeout=2)
+
+
 def launch_dashboard_gui(
     plugin_root: Path,
     workspace: Path,

@@ -13,6 +13,29 @@
     },
     {
       "path": "scripts/agentiux_dev_e2e_support.py",
+      "symbol": "FakeSentryHandler",
+      "scope": "test_only",
+      "used_by": [
+        "scripts/agentiux_dev_e2e_support.py",
+        "tests/e2e/scenarios/dashboard.py",
+        "tests/e2e/scenarios/integration.py"
+      ],
+      "evidence_level": "fake_service",
+      "replacement_needed": "none"
+    },
+    {
+      "path": "scripts/agentiux_dev_e2e_support.py",
+      "symbol": "FakeSentryServer",
+      "scope": "test_only",
+      "used_by": [
+        "tests/e2e/scenarios/dashboard.py",
+        "tests/e2e/scenarios/integration.py"
+      ],
+      "evidence_level": "fake_service",
+      "replacement_needed": "none"
+    },
+    {
+      "path": "scripts/agentiux_dev_e2e_support.py",
       "symbol": "FakeYouTrackHandler",
       "scope": "test_only",
       "used_by": [

@@ -31,13 +31,20 @@ Sync the source plugin into the home-local installed copy:
 python3 scripts/install_home_local.py
 ```
 
+By default the installer also refreshes the active Codex cache copy under `~/.codex/plugins/cache/local-plugins/agentiux-dev/local` when the current `CODEX_HOME` exists. Override that target or skip the cache refresh explicitly with:
+
+```bash
+python3 scripts/install_home_local.py --codex-home /path/to/.codex
+python3 scripts/install_home_local.py --skip-codex-cache-sync
+```
+
 If the installer finds a writable user directory that is already in `PATH`, it also installs a short `agentiux` launcher there. Otherwise re-run with an explicit bin directory:
 
 ```bash
 python3 scripts/install_home_local.py --bin-dir /path/already/in/PATH
 ```
 
-The source repo remains the place where you edit and verify the plugin. The installed copy under `~/plugins/agentiux-dev` is the runtime snapshot that Codex loads for day-to-day use.
+The source repo remains the place where you edit and verify the plugin. The installed copy under `~/plugins/agentiux-dev` is the canonical home-local snapshot for the launcher, and the installer keeps the active Codex cache copy aligned so manifest, skills, and MCP runtime assets do not drift.
 
 ## Core Rules
 
@@ -55,6 +62,7 @@ The source repo remains the place where you edit and verify the plugin. The inst
 - Small targeted fix: initialize the repo, let `workflow-advice` create or reuse a task, then run targeted verification.
 - Large feature or epic: create a workstream, confirm the stage plan, execute, and close stages explicitly.
 - YouTrack triage: connect a token-scoped tracker, inspect shortlisted issues with description, work items, comments, recent activity, and linked-issue context, draft a workstream plan, and apply it only after explicit confirmation.
+- Sentry triage: connect a bearer-token Sentry host, let the plugin auto-discover and persist a workspace topology for backend, frontend, and mobile surfaces, then collect issue, event, stack-trace, and device context from a symptom or linked ticket.
 - Existing repo hardening: initialize, audit the repository, inspect the upgrade plan, then apply only confirmed items.
 - Greenfield work: choose a starter preset, run the upstream CLI through the plugin, then initialize the new workspace explicitly.
 - Self-hosting this plugin: run the same workflow on this repository and let the `plugin-platform` profile route the work.
@@ -88,10 +96,11 @@ The source repo remains the place where you edit and verify the plugin. The inst
 - host-aware support reporting across Windows, Linux, and macOS
 - repo-aware Git workflow advice plus safe local branch, staging, and commit actions
 - workspace-scoped YouTrack integration with permanent-token connections, persisted search sessions, richer issue context plus linked-issue analysis for planning, idempotent plan apply, and issue-ledger aggregation
+- workspace-scoped Sentry integration with bearer-token connections, auto-discovered and persisted topology, saved search sessions, and rich issue or event diagnostic packets with stack traces, contexts, breadcrumbs, and device-aware tag breakdowns
 - repo-tracked low-token catalogs for skills, MCP tools, scripts, references, and intent routes
 - global project context indexing under `~/.agentiux/agentiux-dev/cache/context/`, with `context_store.sqlite` as the hot query backend plus a separate optional semantic tier (`semantic_units.jsonl`, `semantic_index.sqlite`, `semantic_manifest.json`) and compact JSON manifests for workspace and usage summaries
 - project memory notes plus generated audit snapshots stored outside repositories, with generated snapshots capped and expiring from semantic recall automatically
-- a cockpit-first local-only dashboard launched from chat, with dashboard writes for YouTrack integration management, universal E2E auth profiles and sessions, project memory notes, and learning entries
+- a cockpit-first local-only dashboard launched from chat, with dashboard writes for YouTrack and Sentry integration management, universal E2E auth profiles and sessions, project memory notes, and learning entries
 
 ## Dashboard Model
 
@@ -243,6 +252,14 @@ The internal evidence-only benchmark harness still materializes an external tran
 - `close current task`
 - `show youtrack connections`
 - `connect youtrack`
+- `show sentry connections`
+- `connect sentry`
+- `update sentry connection`
+- `remove sentry connection`
+- `test sentry connection`
+- `search sentry issues`
+- `show sentry issue queue`
+- `collect sentry context`
 - `update youtrack connection`
 - `remove youtrack connection`
 - `search youtrack issues`
@@ -315,6 +332,10 @@ Localized aliases are matched at runtime. The tracked source remains English-onl
 - `python3 scripts/agentiux_dev_state.py switch-task --workspace /path/to/repo --task-id task-123`
 - `python3 scripts/agentiux_dev_state.py show-youtrack-connections --workspace /path/to/repo`
 - `python3 scripts/agentiux_dev_state.py connect-youtrack --workspace /path/to/repo --base-url https://tracker.example.com --token perm:xxxx --project-scope SL`
+- `python3 scripts/agentiux_dev_state.py show-sentry-connections --workspace /path/to/repo`
+- `python3 scripts/agentiux_dev_state.py connect-sentry --workspace /path/to/repo --base-url https://sentry.example.com --token sntrys_xxxx --project-scope api,web-admin`
+- `python3 scripts/agentiux_dev_state.py search-sentry-issues --workspace /path/to/repo --query-text "checkout crash on samsung"`
+- `python3 scripts/agentiux_dev_state.py collect-sentry-context --workspace /path/to/repo --task-id task-123`
 - `python3 scripts/agentiux_dev_state.py search-youtrack-issues --workspace /path/to/repo --query-text "assignee: me"`
 - `python3 scripts/agentiux_dev_state.py propose-youtrack-workstream-plan --workspace /path/to/repo --search-session-id yt-search-123 --selected-issue-id SL-100`
 - `python3 scripts/agentiux_dev_state.py apply-youtrack-workstream-plan --workspace /path/to/repo --plan-id yt-plan-123 --confirmed`
@@ -412,7 +433,7 @@ The dashboard now uses browser routing:
 - `/#overview` keeps the global portfolio overview pinned when you do not want the default workspace cockpit
 - legacy `?workspace=/path/to/repo` links remain accepted and are rewritten to the canonical workspace route after load
 
-The workspace cockpit is the primary operator view. It promotes the next action, blockers, verification health, and YouTrack status above raw diagnostics. The portfolio overview remains available as a secondary route for multi-workspace monitoring.
+The workspace cockpit is the primary operator view. It promotes the next action, blockers, verification health, and tracker status such as YouTrack and Sentry above raw diagnostics. The portfolio overview remains available as a secondary route for multi-workspace monitoring.
 
 ## Automatic Routing
 

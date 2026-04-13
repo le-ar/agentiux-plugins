@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+import shutil
 import sys
 import tempfile
 import unittest
@@ -36,6 +37,7 @@ from agentiux_dev_context_store import (  # noqa: E402
     read_query_cache,
 )
 from agentiux_dev_e2e_support import create_fixture_repo, fixture_definition, isolated_plugin_env, temporary_env  # noqa: E402
+from install_home_local import install_plugin, sync_plugin_into_codex_home  # noqa: E402
 from agentiux_dev_lib import create_task, create_workstream, detect_workspace, init_workspace  # noqa: E402
 from agentiux_dev_memory import persist_generated_memory_snapshot  # noqa: E402
 
@@ -44,7 +46,75 @@ FIXTURE_ROOT = PLUGIN_ROOT / "tests" / "e2e" / "projects" / "codex-benchmark-wor
 REPO_ROOT = PLUGIN_ROOT.parents[1]
 
 
+def _seed_minimal_plugin(root: Path, *, version: str) -> None:
+    shutil.rmtree(root, ignore_errors=True)
+    (root / ".codex-plugin").mkdir(parents=True, exist_ok=True)
+    (root / "scripts").mkdir(parents=True, exist_ok=True)
+    (root / ".codex-plugin" / "plugin.json").write_text(
+        json.dumps(
+            {
+                "name": "agentiux-dev",
+                "version": version,
+                "description": "Synthetic plugin fixture",
+                "interface": {"category": "Coding"},
+            },
+            indent=2,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    (root / "scripts" / "agentiux.py").write_text(
+        "#!/usr/bin/env python3\nprint('launcher fixture')\n",
+        encoding="utf-8",
+    )
+    (root / "scripts" / "agentiux_dev_mcp.py").write_text(
+        "#!/usr/bin/env python3\nprint('mcp fixture')\n",
+        encoding="utf-8",
+    )
+
+
 class RuntimeBoundaryTests(unittest.TestCase):
+    def test_home_local_install_refreshes_active_codex_cache_copy(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="install-home-local-codex-cache-") as tmp_dir:
+            root = Path(tmp_dir)
+            source = root / "source-plugin"
+            install_root = root / "home" / "plugins" / "agentiux-dev"
+            marketplace = root / "home" / ".agents" / "plugins" / "marketplace.json"
+            codex_home = root / "home" / ".codex"
+            stale_cache = codex_home / "plugins" / "cache" / "local-plugins" / "agentiux-dev" / "local"
+
+            _seed_minimal_plugin(source, version="9.9.9")
+            _seed_minimal_plugin(stale_cache, version="0.1.0")
+            codex_home.mkdir(parents=True, exist_ok=True)
+
+            install_plugin(source, install_root, marketplace, install_global_command=False)
+            payload = sync_plugin_into_codex_home(source, codex_home, marketplace)
+
+            cache_manifest = json.loads((stale_cache / ".codex-plugin" / "plugin.json").read_text(encoding="utf-8"))
+            stage_manifest = json.loads(
+                (codex_home / ".tmp" / "plugins" / "plugins" / "agentiux-dev" / ".codex-plugin" / "plugin.json").read_text(
+                    encoding="utf-8"
+                )
+            )
+            cache_metadata = json.loads((stale_cache / "install-metadata.json").read_text(encoding="utf-8"))
+            cache_mcp = json.loads((stale_cache / ".mcp.json").read_text(encoding="utf-8"))
+            temp_marketplace = json.loads(
+                (codex_home / ".tmp" / "plugins" / ".agents" / "plugins" / "marketplace.json").read_text(encoding="utf-8")
+            )
+
+        self.assertEqual(payload["codex_cache_sync_status"], "synced")
+        self.assertEqual(payload["codex_cache_install_root"], str(stale_cache.resolve()))
+        self.assertEqual(payload["codex_stage_install_root"], str((codex_home / ".tmp" / "plugins" / "plugins" / "agentiux-dev").resolve()))
+        self.assertEqual(cache_manifest["version"], "9.9.9")
+        self.assertEqual(stage_manifest["version"], "9.9.9")
+        self.assertEqual(cache_metadata["marketplace_path"], str(marketplace.resolve()))
+        self.assertEqual(
+            cache_mcp["mcpServers"]["agentiux-dev-state"]["env"]["AGENTIUX_DEV_PLUGIN_ROOT"],
+            str(stale_cache.resolve()),
+        )
+        self.assertEqual(temp_marketplace["name"], "local-plugins")
+        self.assertEqual(temp_marketplace["plugins"][0]["name"], "agentiux-dev")
+
     def test_runtime_surface_does_not_expose_benchmark_codex_transport(self) -> None:
         forbidden_markers = (
             "show_codex_bootstrap",

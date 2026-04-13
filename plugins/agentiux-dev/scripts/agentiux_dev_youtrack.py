@@ -2862,7 +2862,11 @@ def workstream_issue_cards(workspace: str | Path, workstream_id: str | None = No
             continue
         if workstream_id and task.get("linked_workstream_id") != workstream_id:
             continue
-        ledger = read_issue_ledger(workspace, connection_id=external_issue["connection_id"], issue_id=external_issue["issue_id"])
+        connection_id = external_issue.get("connection_id")
+        issue_id = external_issue.get("issue_id")
+        if not connection_id or not issue_id:
+            continue
+        ledger = read_issue_ledger(workspace, connection_id=connection_id, issue_id=issue_id)
         latest_snapshot = (ledger or {}).get("latest_snapshot") or {}
         hover_snapshot = _merged_issue_snapshot(external_issue, latest_snapshot)
         items.append(
@@ -2870,7 +2874,7 @@ def workstream_issue_cards(workspace: str | Path, workstream_id: str | None = No
                 "task_id": task.get("task_id"),
                 "stage_id": task.get("stage_id"),
                 "task_status": task.get("status"),
-                "issue_id": external_issue.get("issue_id"),
+                "issue_id": issue_id,
                 "issue_key": external_issue.get("issue_key"),
                 "issue_url": external_issue.get("issue_url"),
                 "title": external_issue.get("summary") or task.get("title"),

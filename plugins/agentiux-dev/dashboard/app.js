@@ -31,6 +31,7 @@ const state = {
   panelLoading: false,
   error: null,
   panelError: null,
+  editingSentryConnection: null,
   editingConnection: null,
   editingAuthProfile: null,
   editingAuthSession: null,
@@ -257,6 +258,7 @@ function setOverviewPayload(payload) {
 }
 
 function clearWorkspaceEditingState() {
+  state.editingSentryConnection = null;
   state.editingConnection = null;
   state.editingAuthProfile = null;
   state.editingAuthSession = null;
@@ -267,9 +269,14 @@ function clearWorkspaceEditingState() {
 
 function syncEditingState(panelId, panelPayload) {
   if (panelId === "integrations") {
+    const sentryConnections = panelPayload?.sentry?.connections?.items || [];
     const connections = panelPayload?.youtrack?.connections?.items || [];
     const authProfiles = panelPayload?.auth?.items || [];
     const authSessions = panelPayload?.auth?.sessions?.items || [];
+    if (state.editingSentryConnection) {
+      state.editingSentryConnection =
+        sentryConnections.find((item) => item.connection_id === state.editingSentryConnection.connection_id) || null;
+    }
     if (state.editingConnection) {
       state.editingConnection =
         connections.find((item) => item.connection_id === state.editingConnection.connection_id) || null;
@@ -1211,6 +1218,151 @@ function renderConnectionList(connections) {
   `;
 }
 
+function renderSentryConnectionList(connections) {
+  if (!connections?.length) {
+    return `<div class="empty-note">No Sentry connections recorded.</div>`;
+  }
+  return `
+    <div class="stack-list">
+      ${connections
+        .map(
+          (connection) => `
+            <article class="stack-item">
+              <div class="stack-item-head">
+                <strong>${escapeHtml(connection.label)}</strong>
+                <span class="pill-chip ${toneClass(connection.status === "connected" ? "ok" : connection.status === "error" ? "bad" : "warn")}">${escapeHtml(
+                  connection.status || "unknown",
+                )}</span>
+              </div>
+              <p>${escapeHtml(connection.base_url)}</p>
+              <div class="chip-row">
+                <span class="pill-chip">${escapeHtml(connection.connection_id)}</span>
+                <span class="pill-chip">${escapeHtml(connection.organization_slug || "org")}</span>
+                <span class="pill-chip">${connection.default ? "default" : "secondary"}</span>
+                <span class="pill-chip">${escapeHtml(`projects ${connection.project_catalog_summary?.project_count || 0}`)}</span>
+                <span class="pill-chip">${escapeHtml(`mapped ${connection.topology_summary?.mapped_project_count || 0}`)}</span>
+              </div>
+              <div class="action-row">
+                <button onclick='window.__agentiux.editSentryConnection(${JSON.stringify(connection.connection_id)})'>Edit</button>
+                <button class="secondary" onclick='window.__agentiux.testSentryConnection(${JSON.stringify(connection.connection_id)})'>Test</button>
+                <button class="secondary" onclick='window.__agentiux.setDefaultSentryConnection(${JSON.stringify(connection.connection_id)})'>Make default</button>
+                <button class="secondary" onclick='window.__agentiux.removeSentryConnection(${JSON.stringify(connection.connection_id)})'>Remove</button>
+              </div>
+            </article>
+          `,
+        )
+        .join("")}
+    </div>
+  `;
+}
+
+function renderSentryTopology(topology, catalog, searchSession) {
+  const surfaces = topology?.surfaces || [];
+  const unmapped = topology?.unmapped_projects || [];
+  const projects = catalog?.items || [];
+  return `
+    <div class="stack-list">
+      <article class="stack-item">
+        <div class="stack-item-head">
+          <strong>Auto topology</strong>
+          <span class="pill-chip ${toneClass((topology?.mapped_project_slugs || []).length ? "ok" : "warn")}">${escapeHtml(
+            topology?.strategy || "not generated",
+          )}</span>
+        </div>
+        <div class="chip-row">
+          <span class="pill-chip">${escapeHtml(`projects ${projects.length}`)}</span>
+          <span class="pill-chip">${escapeHtml(`mapped ${(topology?.mapped_project_slugs || []).length}`)}</span>
+          <span class="pill-chip">${escapeHtml(`surfaces ${surfaces.filter((item) => (item.project_slugs || []).length).length}`)}</span>
+          <span class="pill-chip">${escapeHtml(`unmapped ${unmapped.length}`)}</span>
+        </div>
+        ${
+          surfaces.length
+            ? `<div class="sub-list">
+                ${surfaces
+                  .map(
+                    (surface) => `
+                      <div class="sub-row">
+                        <span>${escapeHtml(surface.label || surface.surface_id || "surface")}</span>
+                        <span>${escapeHtml((surface.project_slugs || []).join(", ") || "none")}</span>
+                        <span>${escapeHtml(surface.confidence || "heuristic")}</span>
+                      </div>
+                    `,
+                  )
+                  .join("")}
+              </div>`
+            : `<div class="empty-note">Topology has not been generated yet.</div>`
+        }
+      </article>
+      <article class="stack-item">
+        <div class="stack-item-head">
+          <strong>Latest search</strong>
+          <span class="pill-chip">${escapeHtml(searchSession?.session_id || "none")}</span>
+        </div>
+        <p>${escapeHtml(searchSession?.raw_query || "No persisted Sentry search session yet.")}</p>
+        <div class="chip-row">
+          <span class="pill-chip">${escapeHtml(`results ${searchSession?.result_count ?? 0}`)}</span>
+          <span class="pill-chip">${escapeHtml(`candidates ${(searchSession?.candidate_project_slugs || []).length}`)}</span>
+        </div>
+      </article>
+    </div>
+  `;
+}
+
+function renderSentryForm(connections, isEnabled) {
+  if (!isEnabled) {
+    return `
+      <section class="surface-card">
+        <div class="section-heading">
+          <h3>Sentry connection management</h3>
+          <span class="muted-copy">unavailable</span>
+        </div>
+        <div class="empty-note">Sentry connection management becomes available after workspace initialization.</div>
+      </section>
+    `;
+  }
+  const editing = state.editingSentryConnection;
+  const submitLabel = editing ? "Update connection" : "Add connection";
+  return `
+    <section class="surface-card">
+      <div class="section-heading">
+        <h3>${editing ? "Edit Sentry connection" : "Add Sentry connection"}</h3>
+        <span class="muted-copy">${escapeHtml(connections?.length || 0)} total</span>
+      </div>
+      <div class="form-grid">
+        <input id="sentry-connection-id" type="hidden" value="${escapeHtml(editing?.connection_id || "")}" />
+        <label>
+          <span>Label</span>
+          <input id="sentry-label" value="${escapeHtml(editing?.label || "")}" placeholder="Primary Sentry" />
+        </label>
+        <label>
+          <span>Base URL</span>
+          <input id="sentry-base-url" value="${escapeHtml(editing?.base_url || "")}" placeholder="https://sentry.example.com" />
+        </label>
+        <label>
+          <span>Bearer token</span>
+          <input id="sentry-token" type="password" placeholder="${editing ? "Leave empty to keep current token" : "sntrys_xxx"}" />
+        </label>
+        <label>
+          <span>Organization slug</span>
+          <input id="sentry-organization-slug" value="${escapeHtml(editing?.organization_slug || "")}" placeholder="optional if token sees one org" />
+        </label>
+        <label>
+          <span>Project scope</span>
+          <input id="sentry-project-scope" value="${escapeHtml((editing?.project_scope || []).join(", "))}" placeholder="api, web-admin, mobile-android" />
+        </label>
+        <label class="checkbox-row">
+          <input id="sentry-default" type="checkbox" ${editing?.default ? "checked" : ""} />
+          <span>Use as default connection</span>
+        </label>
+        <div class="action-row">
+          <button onclick="window.__agentiux.submitSentryConnection()">${submitLabel}</button>
+          ${editing ? `<button class="secondary" onclick="window.__agentiux.clearSentryForm()">Cancel</button>` : ""}
+        </div>
+      </div>
+    </section>
+  `;
+}
+
 function renderYouTrackIssues(items) {
   if (!items?.length) {
     return `<div class="empty-note">No workstream issues recorded for the current workspace.</div>`;
@@ -1565,8 +1717,12 @@ function renderIntegrationsPanel(cockpit) {
   const integrations = cockpit.integrations || {};
   const auth = integrations.auth || {};
   const authSummary = auth.summary || {};
+  const sentry = integrations.sentry || {};
+  const sentrySummary = sentry.summary || {};
+  const sentryConnections = sentry.connections?.items || [];
   const youtrack = integrations.youtrack || {};
   const summary = youtrack.summary || {};
+  const sentrySearch = sentry.current_search_session || null;
   const currentSearch = youtrack.current_search_session || null;
   const currentPlan = youtrack.current_plan || null;
   const connections = youtrack.connections?.items || [];
@@ -1575,7 +1731,9 @@ function renderIntegrationsPanel(cockpit) {
       <section class="surface-card emphasis-card">
         <div class="section-heading">
           <h3>Integration state</h3>
-          <span class="pill-chip ${toneClass(connections.length ? "ok" : "warn")}">${escapeHtml(connections.length ? "connected" : "needs setup")}</span>
+          <span class="pill-chip ${toneClass(sentryConnections.length || connections.length ? "ok" : "warn")}">${escapeHtml(
+            sentryConnections.length || connections.length ? "connected" : "needs setup",
+          )}</span>
         </div>
         ${renderMetricGrid(integrations.summary_cards || [])}
         <div class="chip-row">
@@ -1583,9 +1741,25 @@ function renderIntegrationsPanel(cockpit) {
           <span class="pill-chip">${escapeHtml(`active sessions: ${authSummary.active_session_count || 0}`)}</span>
           <span class="pill-chip">${escapeHtml(`mutating sessions: ${authSummary.mutating_session_count || 0}`)}</span>
           <span class="pill-chip">${escapeHtml(`policy alerts: ${authSummary.policy_mismatch_count || 0}`)}</span>
+          <span class="pill-chip">${escapeHtml(`sentry mapped: ${sentrySummary.mapped_project_count || 0}`)}</span>
           <span class="pill-chip">${escapeHtml(`workstream issues: ${summary.current_workstream_issue_count || 0}`)}</span>
           <span class="pill-chip">${escapeHtml(`default: ${summary.default_connection_id || "none"}`)}</span>
         </div>
+      </section>
+      <section class="surface-card">
+        <div class="section-heading">
+          <h3>Sentry connections</h3>
+          <span class="muted-copy">${escapeHtml(sentryConnections.length)}</span>
+        </div>
+        ${renderSentryConnectionList(sentryConnections)}
+      </section>
+      ${renderSentryForm(sentryConnections, cockpit.state_kind === "initialized")}
+      <section class="surface-card">
+        <div class="section-heading">
+          <h3>Sentry topology</h3>
+          <span class="muted-copy">${escapeHtml(sentrySummary.current_connection_id || sentrySummary.default_connection_id || "none")}</span>
+        </div>
+        ${renderSentryTopology(sentry.current_topology, sentry.current_project_catalog, sentrySearch)}
       </section>
       <section class="surface-card">
         <div class="section-heading">
@@ -1605,7 +1779,7 @@ function renderIntegrationsPanel(cockpit) {
       ${renderAuthSessionForm(auth, cockpit.state_kind === "initialized")}
       <section class="surface-card">
         <div class="section-heading">
-          <h3>Connections</h3>
+          <h3>YouTrack connections</h3>
           <span class="muted-copy">${escapeHtml(connections.length)}</span>
         </div>
         ${renderConnectionList(connections)}
@@ -2031,6 +2205,78 @@ function renderCockpit(cockpit) {
   `;
 }
 
+async function submitSentryConnection() {
+  const workspacePath = state.selectedWorkspace;
+  if (!workspacePath || state.cockpitShell?.state_kind !== "initialized") return;
+  const connectionId = document.getElementById("sentry-connection-id")?.value || "";
+  const label = document.getElementById("sentry-label")?.value || "";
+  const baseUrl = document.getElementById("sentry-base-url")?.value || "";
+  const token = document.getElementById("sentry-token")?.value || "";
+  const organizationSlug = document.getElementById("sentry-organization-slug")?.value || "";
+  const projectScope = parseCommaList(document.getElementById("sentry-project-scope")?.value || "");
+  const isDefault = Boolean(document.getElementById("sentry-default")?.checked);
+  const body = {
+    workspacePath,
+    label,
+    baseUrl,
+    token: token || undefined,
+    organizationSlug: organizationSlug || undefined,
+    projectScope,
+    default: isDefault,
+  };
+  if (connectionId) {
+    body.connectionId = connectionId;
+    await apiJson("/api/sentry/connections", { method: "PATCH", body: JSON.stringify(body) });
+  } else {
+    await apiJson("/api/sentry/connections", { method: "POST", body: JSON.stringify(body) });
+  }
+  state.editingSentryConnection = null;
+  await reloadActiveWorkspacePanel("integrations");
+}
+
+function clearSentryForm() {
+  state.editingSentryConnection = null;
+  render();
+}
+
+async function testSentryConnection(connectionId) {
+  if (!state.selectedWorkspace || state.cockpitShell?.state_kind !== "initialized") return;
+  await apiJson(`/api/sentry/connections/${encodeURIComponent(connectionId)}/test`, {
+    method: "POST",
+    body: JSON.stringify({ workspacePath: state.selectedWorkspace }),
+  });
+  await reloadActiveWorkspacePanel("integrations");
+}
+
+async function removeSentryConnection(connectionId) {
+  if (!state.selectedWorkspace || state.cockpitShell?.state_kind !== "initialized") return;
+  await apiJson("/api/sentry/connections", {
+    method: "DELETE",
+    body: JSON.stringify({ workspacePath: state.selectedWorkspace, connectionId }),
+  });
+  if (state.editingSentryConnection?.connection_id === connectionId) {
+    state.editingSentryConnection = null;
+  }
+  await reloadActiveWorkspacePanel("integrations");
+}
+
+async function setDefaultSentryConnection(connectionId) {
+  if (!state.selectedWorkspace || state.cockpitShell?.state_kind !== "initialized") return;
+  await apiJson("/api/sentry/connections", {
+    method: "PATCH",
+    body: JSON.stringify({ workspacePath: state.selectedWorkspace, connectionId, default: true, testConnection: false }),
+  });
+  await reloadActiveWorkspacePanel("integrations");
+}
+
+function editSentryConnection(connectionId) {
+  const integrationsPanel = state.panelPayloads.integrations || currentPanelPayload() || {};
+  const connections = integrationsPanel?.sentry?.connections?.items || [];
+  state.editingSentryConnection = connections.find((item) => item.connection_id === connectionId) || null;
+  state.panel = "integrations";
+  render();
+}
+
 async function submitYouTrackConnection() {
   const workspacePath = state.selectedWorkspace;
   if (!workspacePath || state.cockpitShell?.state_kind !== "initialized") return;
@@ -2377,6 +2623,12 @@ window.__agentiux = {
   clearSelection,
   selectWorkspace,
   setPanel,
+  submitSentryConnection,
+  clearSentryForm,
+  testSentryConnection,
+  removeSentryConnection,
+  setDefaultSentryConnection,
+  editSentryConnection,
   submitYouTrackConnection,
   clearYouTrackForm,
   testYouTrackConnection,
