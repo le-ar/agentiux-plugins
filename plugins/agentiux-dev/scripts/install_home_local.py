@@ -27,6 +27,10 @@ def default_install_root() -> Path:
     return (Path.home() / "plugins" / PLUGIN_NAME).resolve()
 
 
+def default_codex_home() -> Path:
+    return Path(os.environ.get("CODEX_HOME") or (Path.home() / ".codex")).expanduser()
+
+
 def launcher_name(host_os: str | None = None) -> str:
     return "agentiux.cmd" if (host_os or current_host_os()) == "windows" else "agentiux"
 
@@ -355,25 +359,119 @@ def install_plugin_into_codex_home(
     }
 
 
+def sync_plugin_into_codex_home(
+    source: Path,
+    codex_home: Path,
+    marketplace: Path,
+    *,
+    provider_name: str = "local-plugins",
+) -> dict[str, Any]:
+    resolved_codex_home = codex_home.expanduser().resolve()
+    cache_root = codex_cache_install_root(resolved_codex_home, provider_name=provider_name)
+    stage_root = codex_tmp_plugin_install_root(resolved_codex_home)
+    temp_marketplace = codex_tmp_marketplace_path(resolved_codex_home)
+
+    install_plugin(
+        source,
+        stage_root,
+        temp_marketplace,
+        install_global_command=False,
+    )
+    _copy_plugin(source, cache_root)
+    _write_install_metadata(cache_root, source, marketplace)
+    _write_installed_mcp(cache_root)
+    return {
+        "codex_home": str(resolved_codex_home),
+        "codex_provider_name": provider_name,
+        "codex_cache_install_root": str(cache_root),
+        "codex_stage_install_root": str(stage_root),
+        "codex_tmp_marketplace_path": str(temp_marketplace),
+        "codex_cache_sync_status": "synced",
+        "codex_cache_sync_reason": None,
+    }
+
+
+def maybe_sync_plugin_into_codex_home(
+    source: Path,
+    codex_home: Path,
+    marketplace: Path,
+    *,
+    provider_name: str = "local-plugins",
+) -> dict[str, Any]:
+    resolved_codex_home = codex_home.expanduser().resolve()
+    if not resolved_codex_home.exists():
+        return {
+            "codex_home": str(resolved_codex_home),
+            "codex_provider_name": provider_name,
+            "codex_cache_install_root": None,
+            "codex_stage_install_root": None,
+            "codex_tmp_marketplace_path": None,
+            "codex_cache_sync_status": "skipped",
+            "codex_cache_sync_reason": "Codex home does not exist, so no active plugin cache was refreshed.",
+        }
+    if not resolved_codex_home.is_dir():
+        return {
+            "codex_home": str(resolved_codex_home),
+            "codex_provider_name": provider_name,
+            "codex_cache_install_root": None,
+            "codex_stage_install_root": None,
+            "codex_tmp_marketplace_path": None,
+            "codex_cache_sync_status": "skipped",
+            "codex_cache_sync_reason": "Codex home is not a directory, so no active plugin cache was refreshed.",
+        }
+    return sync_plugin_into_codex_home(
+        source,
+        resolved_codex_home,
+        marketplace,
+        provider_name=provider_name,
+    )
+
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Install or sync AgentiUX Dev into the home-local plugin directory")
     parser.add_argument("--source-plugin-root", default=str(source_plugin_root()))
     parser.add_argument("--install-root", default=str(default_install_root()))
     parser.add_argument("--marketplace-path", default=str(marketplace_path()))
+    parser.add_argument("--codex-home", default=str(default_codex_home()))
     parser.add_argument("--bin-dir", help="Install the global `agentiux` launcher into this directory.")
+    parser.add_argument("--skip-codex-cache-sync", action="store_true")
     parser.add_argument("--skip-global-command", action="store_true")
     return parser.parse_args()
 
 
 def main() -> int:
     args = parse_args()
+    source_root = Path(args.source_plugin_root).expanduser().resolve()
+    install_root = Path(args.install_root).expanduser().resolve()
+    marketplace = Path(args.marketplace_path).expanduser().resolve()
     payload = install_plugin(
-        Path(args.source_plugin_root).expanduser().resolve(),
-        Path(args.install_root).expanduser().resolve(),
-        Path(args.marketplace_path).expanduser().resolve(),
+        source_root,
+        install_root,
+        marketplace,
         bin_dir=Path(args.bin_dir).expanduser().resolve() if args.bin_dir else None,
         install_global_command=not args.skip_global_command,
     )
+    codex_home = Path(args.codex_home).expanduser().resolve()
+    if args.skip_codex_cache_sync:
+        payload.update(
+            {
+                "codex_home": str(codex_home),
+                "codex_provider_name": "local-plugins",
+                "codex_cache_install_root": None,
+                "codex_stage_install_root": None,
+                "codex_tmp_marketplace_path": None,
+                "codex_cache_sync_status": "skipped",
+                "codex_cache_sync_reason": "Codex cache sync was disabled by --skip-codex-cache-sync.",
+            }
+        )
+    else:
+        payload.update(
+            maybe_sync_plugin_into_codex_home(
+                source_root,
+                codex_home,
+                marketplace,
+            )
+        )
     print(json.dumps(payload, indent=2))
     return 0
 

@@ -1,6 +1,6 @@
 {
   "name": "agentiux-dev",
-  "version": "0.8.0",
+  "version": "0.9.0",
   "description": "Home-local Codex development workflow plugin with first-pass repository triage, external workspace state, dynamic planning, task and workstream routing, self-hosted plugin support, repository audits, deterministic verification, Android logcat capture, and safe local Git execution.",
   "author": {
     "name": "le-ar",

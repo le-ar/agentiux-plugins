@@ -311,7 +311,9 @@
         "--source-plugin-root",
         "--install-root",
         "--marketplace-path",
+        "--codex-home",
         "--bin-dir",
+        "--skip-codex-cache-sync",
         "--skip-global-command"
       ],
       "cost_hint": "low",
@@ -325,6 +327,7 @@
       "primary_surface": "installer",
       "produced_artifacts": [
         "installed plugin copy",
+        "Codex cache plugin copy",
         "install-metadata.json",
         "marketplace.json",
         "agentiux launcher"
@@ -333,8 +336,8 @@
         "plugin-dev",
         "release"
       ],
-      "safe_usage": "Copies tracked plugin files to the install root, updates local marketplace metadata, and optionally writes a user-local command shim.",
-      "summary": "Installs the plugin into a home-local plugins directory, updates marketplace metadata, and can place a global `agentiux` launcher into PATH.",
+      "safe_usage": "Copies tracked plugin files to the install root, refreshes the active Codex cache when available, updates local marketplace metadata, and optionally writes a user-local command shim.",
+      "summary": "Installs the plugin into a home-local plugins directory, refreshes the active Codex cache copy, updates marketplace metadata, and can place a global `agentiux` launcher into PATH.",
       "tags": [
         "install",
         "marketplace",
