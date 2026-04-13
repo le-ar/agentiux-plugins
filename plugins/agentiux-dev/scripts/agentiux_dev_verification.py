@@ -25,6 +25,7 @@ from agentiux_dev_lib import (
     _design_and_testability_summary,
     _resolve_verification_fragments,
     _tool_available,
+    _task_payload_from_disk,
     current_task,
     detect_workspace,
     get_active_brief,
@@ -1505,10 +1506,19 @@ def resolve_verification_selection(
     changed_paths: list[str] | None = None,
     confirm_heuristics: bool = False,
     request_mode: str | None = None,
+    task_payload: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     resolved_workspace = Path(workspace).expanduser().resolve()
     state = read_workspace_state(resolved_workspace)
-    task = current_task(resolved_workspace) if state.get("workspace_mode") == "task" else None
+    task = copy.deepcopy(task_payload) if task_payload else None
+    if task is None and state.get("workspace_mode") == "task":
+        task_index = _load_json(Path(workspace_paths(resolved_workspace)["tasks_index"]), default={}, strict=False) or {}
+        current_task_id = sanitize_identifier(task_index.get("current_task_id"), "")
+        if current_task_id:
+            try:
+                task = _task_payload_from_disk(resolved_workspace, current_task_id)
+            except Exception:
+                task = current_task(resolved_workspace)
     target_workstream_id = workstream_id or state.get("current_workstream_id") or (task.get("linked_workstream_id") if task else None)
     task_selectors = _selector_map(task.get("verification_selectors")) if task else {}
     task_default_mode = task.get("verification_mode_default") if task else None
